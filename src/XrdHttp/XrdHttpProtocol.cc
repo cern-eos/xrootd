@@ -1579,6 +1579,7 @@ int XrdHttpProtocol::StartSimpleResp(int code, const char *desc, const char *hea
     else if (code == 403) ss << "Forbidden";
     else if (code == 404) ss << "Not Found";
     else if (code == 405) ss << "Method Not Allowed";
+    else if (code == 411) ss << "Length Required";
     else if (code == 416) ss << "Range Not Satisfiable";
     else if (code == 500) ss << "Internal Server Error";
     else if (code == 504) ss << "Gateway Timeout";

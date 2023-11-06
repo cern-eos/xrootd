@@ -60,6 +60,7 @@ if( NOT XRDCL_ONLY )
   if( BUILD_HTTP )
     include( XrdHttp )
     include( XrdTpc )
+    include( XrdS3 )
   endif()
 
   if( BUILD_MACAROONS )

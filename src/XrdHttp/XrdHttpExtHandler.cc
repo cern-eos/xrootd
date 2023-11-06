@@ -70,6 +70,14 @@ int XrdHttpExtReq::BuffgetData(int blen, char **data, bool wait) {
   return nb;
 }
 
+int XrdHttpExtReq::BuffgetLine(XrdOucString &dest) {
+
+  if (!prot) return -1;
+  int nb = prot->BuffgetLine(dest);
+
+  return nb;
+}
+
 void XrdHttpExtReq::GetClientID(std::string &clid)
 {
    char buff[512];

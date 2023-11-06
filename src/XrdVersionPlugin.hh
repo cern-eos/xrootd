@@ -183,6 +183,7 @@
          "libXrdCryptossl.so",       \
          "libXrdHttp.so",            \
          "libXrdHttpTPC.so",         \
+         "libXrdHttpS3.so",         \
          "libXrdMacaroons.so",       \
          "libXrdN2No2p.so",          \
          "libXrdOssSIgpfsT.so",      \

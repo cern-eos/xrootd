@@ -37,6 +37,7 @@
 #include <string>
 
 #include "XrdNet/XrdNetPMark.hh"
+#include "XrdOuc/XrdOucString.hh"
 
 class XrdLink;
 class XrdSecEntity;
@@ -71,6 +72,8 @@ public:
 
   /// Get a pointer to data read from the client, valid for up to blen bytes from the buffer. Returns the validity
   int BuffgetData(int blen, char **data, bool wait);
+
+  int BuffgetLine(XrdOucString &dest);
 
   /// Sends a basic response. If the length is < 0 then it is calculated internally
   int SendSimpleResp(int code, const char *desc, const char *header_to_add, const char *body, long long bodylen);
