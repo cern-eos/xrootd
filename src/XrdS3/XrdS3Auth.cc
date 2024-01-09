@@ -143,7 +143,7 @@ std::string S3Auth::GetCanonicalRequestHash(
                           canonical_headers, signed_headers, hashed_payload);
 
   fprintf(stderr, "Canonical request:\n%s\n", canonical_request.c_str());
-  const auto hashed_request = ctx->crypt.mSha256.calculate(canonical_request);
+  const auto hashed_request = S3Crypt::SHA256_OS(canonical_request);
 
   return S3Utils::HexEncode(hashed_request);
 }
@@ -168,13 +168,13 @@ std::string S3Auth::GetStringToSign(const std::string &algorithm,
 sha256_digest S3Auth::GetSigningKey(Context *ctx, const std::string &secret_key,
                                     const SigV4::Scope &scope) {
   std::string key = "AWS4" + secret_key;
-  auto dateKey = ctx->crypt.mHmac.calculate(scope.date, key);
+  auto dateKey = S3Crypt::HMAC_SHA256(scope.date, key);
 
-  auto dateRegionKey = ctx->crypt.mHmac.calculate(scope.region, dateKey);
+  auto dateRegionKey = S3Crypt::HMAC_SHA256(scope.region, dateKey);
   auto dateRegionServiceKey =
-      ctx->crypt.mHmac.calculate(scope.service, dateRegionKey);
-  return ctx->crypt.mHmac.calculate(std::string("aws4_request"),
-                                    dateRegionServiceKey);
+      S3Crypt::HMAC_SHA256(scope.service, dateRegionKey);
+  return S3Crypt::HMAC_SHA256(std::string("aws4_request"),
+                              dateRegionServiceKey);
 }
 
 std::string S3Auth::GetSignature(Context *ctx, const std::string &secret_key,
@@ -182,7 +182,7 @@ std::string S3Auth::GetSignature(Context *ctx, const std::string &secret_key,
                                  const std::string &string_to_sign) {
   const auto signing_key = GetSigningKey(ctx, secret_key, scope);
 
-  const auto digest = ctx->crypt.mHmac.calculate(string_to_sign, signing_key);
+  const auto digest = S3Crypt::HMAC_SHA256(string_to_sign, signing_key);
 
   return S3Utils::HexEncode(digest);
 }

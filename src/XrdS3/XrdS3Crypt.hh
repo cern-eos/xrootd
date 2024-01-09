@@ -6,6 +6,7 @@
 #define XROOTD_XRDS3CRYPT_HH
 
 #include <openssl/evp.h>
+#include <openssl/hmac.h>
 #include <openssl/sha.h>
 #include <unistd.h>
 
@@ -25,78 +26,43 @@ class S3Crypt {
   S3Crypt() = default;
   ~S3Crypt() = default;
 
-  class HMAC_SHA256 {
+  template <typename T>
+  static sha256_digest SHA256_OS(const T &src) {
+    sha256_digest digest;
+
+    SHA256(reinterpret_cast<const unsigned char *>(src.data()), src.size(),
+           digest.data());
+
+    return digest;
+  }
+  template <typename T, typename U>
+  static sha256_digest HMAC_SHA256(const T &src, const U &key) {
+    sha256_digest digest;
+    unsigned int outl;
+
+    HMAC(EVP_sha256(), key.data(), key.size(),
+         reinterpret_cast<const unsigned char *>(src.data()), src.size(),
+         digest.data(), &outl);
+
+    // todo: use outl;
+    return digest;
+  }
+
+  class S3SHA256 {
    public:
-    HMAC_SHA256();
-    ~HMAC_SHA256();
+    S3SHA256();
+    ~S3SHA256();
 
-    template <typename T, typename U>
-    sha256_digest calculate(const T &src, const U &key) {
-      if (!EVP_MAC_init(ctx, (const unsigned char *)key.data(), key.size(),
-                        nullptr)) {
-        return {};
-      }
-
-      if (!EVP_MAC_update(ctx, (const unsigned char *)src.data(), src.size())) {
-        return {};
-      }
-
-      size_t outl;
-      if (!EVP_MAC_final(ctx, digest.data(), &outl, digest.size())) {
-        return {};
-      }
-
-      return digest;
-    }
-
-   private:
-    EVP_MAC *mac;
-    EVP_MAC_CTX *ctx;
-    sha256_digest digest{};
-  };
-
-  class SHA256 {
-   public:
-    SHA256();
-    ~SHA256();
-
-    template <typename T>
-    sha256_digest calculate(const T &src) {
-      if (!EVP_DigestInit_ex2(ctx, nullptr, nullptr)) {
-        return {};
-      }
-
-      if (!EVP_DigestUpdate(ctx, src.data(), src.size())) {
-        return {};
-      }
-
-      unsigned int outl;
-      if (!EVP_DigestFinal_ex(ctx, digest.data(), &outl)) {
-        return {};
-      }
-
-      return digest;
-    }
-
-    void Init() { EVP_DigestInit_ex2(ctx, nullptr, nullptr); }
+    void Init();
 
     template <typename T>
     void Update(const T &src) {
       EVP_DigestUpdate(ctx, src.data(), src.size());
     }
 
-    void Update(const char *src, size_t size) {
-      EVP_DigestUpdate(ctx, src, size);
-    }
+    void Update(const char *src, size_t size);
 
-    sha256_digest Finish() {
-      unsigned int outl;
-      if (!EVP_DigestFinal_ex(ctx, digest.data(), &outl)) {
-        return {};
-      }
-
-      return digest;
-    }
+    sha256_digest Finish();
 
    private:
     EVP_MD *md;
@@ -106,62 +72,48 @@ class S3Crypt {
 
   class Base64 {
    public:
-    Base64();
-    ~Base64();
+    Base64() = default;
+    ~Base64() = default;
 
     template <typename T>
-    std::string encode(const T &src) {
-      EVP_EncodeInit(ctx);
+    static std::string encode(const T &src) {
       std::vector<unsigned char> res;
       res.resize(4 * (src.size() + 2) / 3 + 1);
 
-      int outl;
-      if (!EVP_EncodeUpdate(ctx, res.data(), &outl,
-                            reinterpret_cast<const unsigned char *>(src.data()),
-                            src.size())) {
-        return {};
-      }
+      size_t outl = EVP_EncodeBlock(
+          res.data(), reinterpret_cast<const unsigned char *>(src.data()),
+          src.size());
 
-      int outlf;
-      EVP_EncodeFinal(ctx, res.data() + outl, &outlf);
-
-      assert(static_cast<size_t>(outl + outlf) <= res.size());
-      return {reinterpret_cast<char *>(res.data()),
-              static_cast<size_t>(outl + outlf - 1)};
+      assert(outl <= res.size());
+      return {reinterpret_cast<char *>(res.data()), outl - 1};
     }
 
     template <typename T>
-    std::vector<unsigned char> decode(const T &src) {
-      EVP_DecodeInit(ctx);
+    static std::vector<unsigned char> decode(const T &src) {
+      if (src.size() < 4) {
+        return {};
+      }
 
       std::vector<unsigned char> res;
       res.resize(3 * src.size() / 4 + 1);
 
-      int outl;
-      if (EVP_DecodeUpdate(ctx, res.data(), &outl,
-                           reinterpret_cast<const unsigned char *>(src.data()),
-                           src.size()) < 0) {
+      int outl = EVP_DecodeBlock(
+          res.data(), reinterpret_cast<const unsigned char *>(src.data()),
+          src.size());
+      if (outl < 0) {
         return {};
       }
 
-      int outlf;
-      if (EVP_DecodeFinal(ctx, res.data() + outl, &outlf) == -1) {
-        return {};
+      auto padding = src.find('=', src.size() - 2);
+      if (padding != std::string::npos) {
+        res.resize(outl - (src.size() - padding));
+      } else {
+        res.resize(outl);
       }
 
-      assert(static_cast<size_t>(outl + outlf) <= res.size());
-
-      res.resize(outl + outlf);
       return res;
     }
-
-   private:
-    EVP_ENCODE_CTX *ctx;
   };
-
-  HMAC_SHA256 mHmac;
-  SHA256 mSha256;
-  Base64 mBase64;
 };
 
 }  // namespace S3

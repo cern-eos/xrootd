@@ -36,7 +36,6 @@ const std::map<HttpMethod, std::string> HttpMethodMap{
 
 struct Context {
   S3Utils utils;
-  S3Crypt crypt;
   XrdSysError *log;
 };
 

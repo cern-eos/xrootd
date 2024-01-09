@@ -408,8 +408,8 @@ S3Error S3ObjectStore::CopyObject(const std::string &bucket,
 //  create a temp object
 
 S3Error S3ObjectStore::UploadPart(XrdS3Req &req, const std::string &upload_id,
-                                 size_t part_number, unsigned long size,
-                                 bool chunked, Headers &headers) {
+                                  size_t part_number, unsigned long size,
+                                  bool chunked, Headers &headers) {
   auto buploads = multipartUploads.find(req.bucket);
   if (buploads == multipartUploads.end()) {
     return S3Error::InternalError;
@@ -437,7 +437,7 @@ S3Error S3ObjectStore::UploadPart(XrdS3Req &req, const std::string &upload_id,
   // todo: dont check if not neededd, handle different cheksum types
   XrdCksCalcmd5 xs;
   xs.Init();
-  S3Crypt::SHA256 sha;
+  S3Crypt::S3SHA256 sha;
   sha.Init();
 
   auto readBuffer = [&req, &xs, &sha, f](unsigned long length) {
@@ -447,9 +447,10 @@ S3Error S3ObjectStore::UploadPart(XrdS3Req &req, const std::string &upload_id,
     while (length > 0 &&
            (buflen = req.ReadBody(
                 length > INT_MAX ? INT_MAX : static_cast<int>(length), &ptr,
-                false)) > 0) {
+                true)) > 0) {
       readlen = buflen;
       if (length < readlen) {
+        fprintf(stderr, "Read too many bytes: %zu < %zu\n", length, readlen);
         return S3Error::IncompleteBody;
       }
       length -= readlen;
@@ -460,6 +461,7 @@ S3Error S3ObjectStore::UploadPart(XrdS3Req &req, const std::string &upload_id,
       }
     }
     if (buflen < 0 || length != 0) {
+      fprintf(stderr, "Length mismatch: %d %zu\n", buflen, length);
       return S3Error::IncompleteBody;
     }
     return S3Error::None;
@@ -565,7 +567,7 @@ S3Error S3ObjectStore::PutObject(XrdS3Req &req, unsigned long size,
   // todo: dont check if not needed, handle different cheksum types
   XrdCksCalcmd5 xs;
   xs.Init();
-  S3Crypt::SHA256 sha;
+  S3Crypt::S3SHA256 sha;
   sha.Init();
 
   auto readBuffer = [&req, &xs, &sha, &ofs](unsigned long length) {
@@ -575,7 +577,7 @@ S3Error S3ObjectStore::PutObject(XrdS3Req &req, unsigned long size,
     while (length > 0 &&
            (buflen = req.ReadBody(
                 length > INT_MAX ? INT_MAX : static_cast<int>(length), &ptr,
-                false)) > 0) {
+                true)) > 0) {
       readlen = buflen;
       if (length < readlen) {
         return S3Error::IncompleteBody;
@@ -870,8 +872,8 @@ std::string S3ObjectStore::CreateMultipartUpload(XrdS3Req &req,
                                                  const std::string &bucket,
                                                  const std::string &key) {
   // todo: handle metadata
-  auto upload_id = S3Utils::HexEncode(req.ctx->crypt.mSha256.calculate(
-      bucket + key + std::to_string(std::rand())));
+  auto upload_id = S3Utils::HexEncode(
+      S3Crypt::SHA256_OS(bucket + key + std::to_string(std::rand())));
 
   auto p = std::filesystem::path(path) / XRD_MULTIPART_UPLOAD_DIR / bucket /
            upload_id;

@@ -173,7 +173,7 @@ bool XrdS3Req::ParseMd5Header() {
   if (it->second.empty()) {
     return false;
   }
-  md5 = ctx->crypt.mBase64.decode(it->second);
+  md5 = S3Crypt::Base64::decode(it->second);
 
   fprintf(stderr, "%zu\n", md5.size());
   if (md5.size() != 16) {
