@@ -1009,6 +1009,19 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
   // todo: set metadata
   ofs.close();
 
+  std::map<std::string, std::string> metadata;
+
+  metadata.insert({"last-modified", std::to_string(std::time(nullptr))});
+  // todo: calculate etag, add headers from create multipart upload
+
+  S3Error error = SetMetadata(p, metadata);
+  if (error != S3Error::None) {
+    // todo: remove path too
+    fprintf(stderr, "meta error %d\n", (int)error);
+    std::filesystem::remove(p);
+    return error;
+  }
+
   std::filesystem::remove_all(std::filesystem::path(path) /
                               XRD_MULTIPART_UPLOAD_DIR / bucket / upload_id);
   buploads->second.erase(upload);

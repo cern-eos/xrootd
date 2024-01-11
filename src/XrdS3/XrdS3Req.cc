@@ -246,9 +246,7 @@ int XrdS3Req::S3ErrorResponse(S3Error err, const string &ressource,
     throw std::runtime_error("Error " + std::to_string(static_cast<int>(err)) +
                              " not implemented");
   }
-  if (err == S3Error::InternalError) {
-    throw std::runtime_error("INTERNAL ERROR");
-  }
+
   auto f = e->second;
 
   fprintf(stderr, "Sending error: %s %s %d\n", f.code.c_str(),
