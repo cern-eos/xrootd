@@ -27,7 +27,8 @@ int ListBucketsResponse(XrdS3Req& req, const std::string& id,
   for (const auto& bucket : buckets) {
     printer.OpenElement("Bucket");
     printer.AddElement("Name", bucket.name);
-    printer.AddElement("CreationDate", bucket.created);
+    printer.AddElement("CreationDate",
+                       S3Utils::timestampToIso8016(bucket.created));
     printer.CloseElement();
   }
 
