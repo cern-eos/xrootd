@@ -4,8 +4,6 @@
 
 #include "XrdS3Crypt.hh"
 
-#include <openssl/core_names.h>
-#include <openssl/ecdsa.h>
 #include <openssl/evp.h>
 
 #include <exception>

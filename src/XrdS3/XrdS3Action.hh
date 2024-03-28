@@ -1,9 +1,9 @@
 //
-// Created by segransm on 11/17/23.
+// Created by segransm on //.
 //
 
-#ifndef XROOTD_XRDS3ACTION_HH
-#define XROOTD_XRDS3ACTION_HH
+#ifndef XROOTD_XRDSACTION_HH
+#define XROOTD_XRDSACTION_HH
 
 namespace S3 {
 
@@ -105,6 +105,7 @@ enum class Action {
   UploadPartCopy,
   WriteGetObjectResponse,
 };
-}
 
-#endif  // XROOTD_XRDS3ACTION_HH
+}  // namespace S
+
+#endif  // XROOTD_XRDSACTION_HH

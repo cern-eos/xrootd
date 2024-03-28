@@ -5,13 +5,16 @@
 #ifndef XROOTD_XRDS3UTILS_HH
 #define XROOTD_XRDS3UTILS_HH
 
+#include <dirent.h>
+
 #include <bitset>
+#include <filesystem>
+#include <functional>
 #include <iomanip>
 #include <map>
 #include <numeric>
 #include <sstream>
 #include <string>
-#include <filesystem>
 
 namespace S3 {
 
@@ -40,15 +43,15 @@ class S3Utils {
   static void TrimAll(std::string &str);
 
   template <typename... T>
-  static std::string stringJoin(char delim, const T &...args) {
+  static std::string stringJoin(const char delim, const T &...args) {
     std::string res;
 
     size_t size = 0;
     for (const auto &x : {args...}) {
-      size += x.size();
+      size += x.size() + 1;
     }
 
-    res.reserve(size + sizeof...(args));
+    res.reserve(size);
 
     for (const auto &x : {args...}) {
       res += x;
@@ -59,23 +62,69 @@ class S3Utils {
     return res;
   }
 
+  template <typename T>
+  static std::string stringJoin(const char delim, const T &src) {
+    std::string res;
+
+    size_t size = 0;
+    for (const auto &x : src) {
+      size += x.size() + 1;
+    }
+
+    res.reserve(size);
+
+    for (const auto &x : src) {
+      res += x;
+      res += delim;
+    }
+    res.pop_back();
+
+    return res;
+  }
+
   static std::string UriEncode(const std::bitset<256> &encoder,
                                const std::string &str);
-  static bool HasHeader(const std::map<std::string, std::string> &header,
+  static bool MapHasKey(const std::map<std::string, std::string> &map,
                         const std::string &key);
-  static bool HeaderEq(const std::map<std::string, std::string> &header,
-                       const std::string &key, const std::string &val);
-  static bool HeaderStartsWith(const std::map<std::string, std::string> &header,
-                               const std::string &key, const std::string &val);
+  static bool MapHasEntry(const std::map<std::string, std::string> &map,
+                          const std::string &key, const std::string &val);
+  static bool MapEntryStartsWith(const std::map<std::string, std::string> &map,
+                                 const std::string &key,
+                                 const std::string &val);
+
+  template <typename T, typename U>
+  static U MapGetValue(const std::map<T, U> &map, const T &key) {
+    auto it = map.find(key);
+
+    if (it == map.end()) {
+      return {};
+    }
+
+    return it->second;
+  }
 
   static std::string timestampToIso8016(const std::string &t);
   static std::string timestampToIso8016(const time_t &t);
   static std::string timestampToIso8016(const tm *t);
-  static std::string timestampToIso8016(const std::filesystem::file_time_type &t);
+
+  static int makePath(char *path, mode_t mode);
+
+  static void RmPath(std::filesystem::path path,
+                     const std::filesystem::path &stop);
+  static std::string GetXattr(const std::filesystem::path &path,
+                              const std::string &key);
+
+  static int SetXattr(const std::filesystem::path &path, const std::string &key,
+                      const std::string &value, int flags);
+  static bool IsDirEmpty(const std::filesystem::path &path);
+
+  static int DirIterator(const std::filesystem::path &path,
+                         const std::function<void(dirent *)> &f);
+
  private:
   std::bitset<256> mEncoder;
   std::bitset<256> mObjectEncoder;
-  unsigned char mDecoder[256]{};
+  unsigned char mDecoder[256];
 };
 
 }  // namespace S3

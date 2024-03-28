@@ -45,9 +45,9 @@ class XrdS3Req : protected XrdHttpExtReq {
 
   ~XrdS3Req() = default;
 
-  bool isValid() const { return valid; }
+  [[nodiscard]] bool isValid() const { return valid; }
 
-  void ParseReq();
+  int ParseReq();
 
   bool valid;
   std::string bucket;
@@ -77,7 +77,6 @@ class XrdS3Req : protected XrdHttpExtReq {
   int S3Response(int code, const std::map<std::string, std::string> &headers,
                  const char *body, long long size);
 
-
   int S3ErrorResponse(S3Error err);
   int S3ErrorResponse(S3Error err, const std::string &ressource,
                       const std::string &request_id, bool chunked);
@@ -88,6 +87,8 @@ class XrdS3Req : protected XrdHttpExtReq {
   int StartChunkedResp(int code, const Headers &headers);
   using XrdHttpExtReq::BuffgetLine;
   using XrdHttpExtReq::ChunkResp;
+  using XrdHttpExtReq::GetSecEntity;
+
  private:
   bool has_read{};
 };

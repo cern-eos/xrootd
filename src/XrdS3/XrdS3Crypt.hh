@@ -44,7 +44,6 @@ class S3Crypt {
          reinterpret_cast<const unsigned char *>(src.data()), src.size(),
          digest.data(), &outl);
 
-    // todo: use outl;
     return digest;
   }
 

@@ -12,6 +12,8 @@
 #include <tuple>
 #include <vector>
 
+#include "XrdPosix/XrdPosixXrootd.hh"
+#include "XrdS3Auth.hh"
 #include "XrdS3ErrorResponse.hh"
 #include "XrdS3Req.hh"
 
@@ -19,6 +21,7 @@ namespace S3 {
 
 struct ObjectInfo {
   std::string name;
+  std::string etag;
   time_t last_modified;
   std::string size;
   std::string owner;
@@ -57,7 +60,7 @@ class S3ObjectStore {
  public:
   S3ObjectStore() = default;
 
-  explicit S3ObjectStore(std::string path);
+  S3ObjectStore(const std::string &config, const std::string &mtpu);
 
   ~S3ObjectStore() = default;
 
@@ -68,75 +71,83 @@ class S3ObjectStore {
   class Object {
    public:
     Object() = default;
-    ~Object() = default;
+    ~Object();
 
     S3Error Init(const std::filesystem::path &path);
 
-    std::ifstream &GetStream() { return ifs; };
+    [[nodiscard]] ssize_t GetSize() const { return size; };
+    [[nodiscard]] size_t BufferSize() const { return buffer_size; };
+    time_t LastModified() const { return last_modified; }
+    ssize_t Read(size_t length, char **data);
+    off_t Lseek(off_t offset, int whence);
 
-    size_t GetSize() const { return size; };
     const std::map<std::string, std::string> &GetAttributes() const {
       return attributes;
     };
 
    private:
-    // 32 MB
-    const int bufsize = 32000000;
-    size_t read{};
+    static constexpr size_t MAX_BUFFSIZE = 32000000;
+    bool init{};
+    std::vector<char> buffer{};
     std::string name{};
+    size_t buffer_size{};
     size_t size{};
-    std::ifstream ifs{};
+    time_t last_modified{};
+    int fd{};
     std::map<std::string, std::string> attributes{};
   };
 
-  // todo: handle location constraint
-  S3Error CreateBucket(const std::string &id, const std::string &bucket,
+  S3Error CreateBucket(S3Auth &auth, S3Auth::Bucket bucket,
                        const std::string &_location);
-  S3Error DeleteBucket(const std::string &bucket);
-  S3Error GetObject(const std::string &bucket, const std::string &object,
+  S3Error DeleteBucket(S3Auth &auth, const S3Auth::Bucket &bucket);
+  S3Error GetObject(const S3Auth::Bucket &bucket, const std::string &object,
                     Object &obj);
-  S3Error DeleteObject(const std::string &bucket, const std::string &object);
+  S3Error DeleteObject(const S3Auth::Bucket &bucket, const std::string &object);
   std::string GetBucketOwner(const std::string &bucket) const;
   static S3Error SetMetadata(
       const std::string &object,
       const std::map<std::string, std::string> &metadata);
   std::vector<BucketInfo> ListBuckets(const std::string &id) const;
-  ListObjectsInfo ListObjectVersions(const std::string &bucket,
+  ListObjectsInfo ListObjectVersions(const S3Auth::Bucket &bucket,
                                      const std::string &prefix,
                                      const std::string &key_marker,
                                      const std::string &version_id_marker,
                                      char delimiter, int max_keys);
-  ListObjectsInfo ListObjectsV2(const std::string &bucket,
+  ListObjectsInfo ListObjectsV2(const S3Auth::Bucket &bucket,
                                 const std::string &prefix,
                                 const std::string &continuation_token,
                                 char delimiter, int max_keys, bool fetch_owner,
                                 const std::string &start_after);
-  ListObjectsInfo ListObjects(const std::string &bucket,
+  ListObjectsInfo ListObjects(const S3Auth::Bucket &bucket,
                               const std::string &prefix,
                               const std::string &marker, char delimiter,
                               int max_keys);
-  S3Error PutObject(XrdS3Req &req, unsigned long size, bool chunked,
-                    Headers &headers);
+  S3Error PutObject(XrdS3Req &req, const S3Auth::Bucket &bucket,
+                    unsigned long size, bool chunked, Headers &headers);
 
   std::tuple<std::vector<DeletedObject>, std::vector<ErrorObject>>
-  DeleteObjects(const std::string &bucket,
+  DeleteObjects(const S3Auth::Bucket &bucket,
                 const std::vector<SimpleObject> &objects);
 
-  S3Error CopyObject(const std::string &bucket, const std::string &object,
+  S3Error CopyObject(const S3Auth::Bucket &bucket, const std::string &object,
                      Object &source_obj, const Headers &reqheaders,
                      Headers &headers);
-
-  std::string CreateMultipartUpload(XrdS3Req &req, const std::string &bucket,
-                                    const std::string &object);
+  std::pair<std::string, S3Error> CreateMultipartUpload(
+      const S3Auth::Bucket &bucket, const std::string &object);
 
   struct Part {
     std::string etag;
-    std::filesystem::file_time_type last_modified;
+    time_t last_modified;
     size_t size;
   };
   struct MultipartUpload {
     std::string key;
     std::map<size_t, Part> parts;
+    std::set<size_t> progress;
+    bool optimized;
+    size_t last_part_number;
+    size_t part_size;
+    size_t last_part_size;
   };
   struct MultipartUploadInfo {
     std::string key;
@@ -144,7 +155,7 @@ class S3ObjectStore {
   };
   struct PartInfo {
     std::string etag;
-    std::filesystem::file_time_type last_modified;
+    time_t last_modified;
     size_t part_number;
     size_t size;
   };
@@ -152,35 +163,64 @@ class S3ObjectStore {
   std::vector<MultipartUploadInfo> ListMultipartUploads(
       const std::string &bucket);
 
-  S3Error AbortMultipartUpload(const string &bucket, const string &key,
-                               const string &upload_id);
+  S3Error AbortMultipartUpload(const S3Auth::Bucket &bucket,
+                               const std::string &key,
+                               const std::string &upload_id);
 
   typedef std::map<std::string, MultipartUpload> MultipartUploads;
   std::pair<S3Error, std::vector<S3ObjectStore::PartInfo>> ListParts(
-      const string &bucket, const string &key, const string &upload_id);
+      const std::string &bucket, const std::string &key,
+      const std::string &upload_id);
 
-  S3Error UploadPart(XrdS3Req &req, const string &upload_id, size_t part_number,
-                    unsigned long size, bool chunked, Headers &headers);
-  S3Error CompleteMultipartUpload(XrdS3Req &req, const string &bucket,
-                                  const string &key, const string &upload_id,
+  S3Error UploadPart(XrdS3Req &req, const std::string &upload_id,
+                     size_t part_number, unsigned long size, bool chunked,
+                     Headers &headers);
+  S3Error CompleteMultipartUpload(XrdS3Req &req, const S3Auth::Bucket &bucket,
+                                  const std::string &key,
+                                  const std::string &upload_id,
                                   const std::vector<PartInfo> &parts);
 
  private:
-  static const int BUFFSIZE = 8000;
-  char BUFFER[BUFFSIZE]{};
   static bool ValidateBucketName(const std::string &name);
 
-  std::filesystem::path path;
+  std::filesystem::path config_path;
+  std::filesystem::path user_map;
 
-  std::map<std::string, std::string> bucketOwners;
-  std::map<std::string, BucketInfo> bucketInfo;
-  std::map<std::string, MultipartUploads> multipartUploads;
+  std::filesystem::path mtpu_path;
 
   ListObjectsInfo ListObjectsCommon(
-      const std::string &bucket, std::string prefix, const std::string &marker,
-      char delimiter, int max_keys, bool get_versions,
+      const S3Auth::Bucket &bucket, std::string prefix,
+      const std::string &marker, char delimiter, int max_keys,
+      bool get_versions,
       const std::function<ObjectInfo(const std::filesystem::path &,
                                      const std::string &)> &f);
+  static S3Error UploadPartOptimized(XrdS3Req &req, const std::string &tmp_path,
+                                     size_t part_size, size_t part_number,
+                                     size_t size, Headers &headers);
+
+  static std::vector<std::string> GetPartsNumber(const std::string &path);
+
+  static S3Error SetPartsNumbers(const std::string &path,
+                                 std::vector<std::string> &parts);
+
+  static S3Error AddPartAttr(const std::string &object, size_t part_number);
+
+  [[nodiscard]] std::string GetUserDefaultBucketPath(
+      const std::string &user_id) const;
+
+  bool KeepOptimize(const std::filesystem::path &upload_path,
+                    size_t part_number, unsigned long size,
+                    const std::string &tmp_path, size_t part_size);
+  [[nodiscard]] static S3Error ValidateMultipartUpload(
+      const std::string &upload_path, const std::string &key);
+  S3Error DeleteMultipartUpload(const S3Auth::Bucket &bucket,
+                                const std::string &key,
+                                const std::string &upload_id);
+
+  static bool CompleteOptimizedMultipartUpload(
+      const std::filesystem::path &final_path,
+      const std::filesystem::path &tmp_path,
+      const std::vector<PartInfo> &parts);
 };
 
 }  // namespace S3

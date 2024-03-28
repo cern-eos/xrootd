@@ -2,7 +2,7 @@
 // Created by segransm on 11/16/23.
 //
 
-#include "S3Response.hh"
+#include "XrdS3Response.hh"
 
 #include <set>
 
@@ -35,8 +35,8 @@ int ListBucketsResponse(XrdS3Req& req, const std::string& id,
   printer.CloseElement();
   printer.CloseElement();
 
-  std::string hd = "Content-Type: application/xml";
-  return req.S3Response(200, {}, printer.CStr(), printer.CStrSize() - 1);
+  return req.S3Response(200, {{"Content-Type", "application/xml"}},
+                        printer.CStr(), printer.CStrSize() - 1);
 }
 
 int ListObjectVersionsResponse(XrdS3Req& req, const std::string& bucket,
@@ -50,15 +50,14 @@ int ListObjectVersionsResponse(XrdS3Req& req, const std::string& bucket,
 
   printer.OpenElement("ListVersionsResult");
 
-  // todo: put common code like this in separate func
   for (const auto& pfx : vinfo.common_prefixes) {
     printer.OpenElement("CommonPrefixes");
     printer.AddElement("Prefix", encoder(pfx));
     printer.CloseElement();
   }
 
-  // todo: delete marker
-  //  printer.AddElement("DeleteMarker", "");
+  // TODO: Add delete marker support
+  //  printer.AddElement("DeleteMarker", ...);
 
   if (delimiter) {
     printer.AddElement("Delimiter", encoder(std::string(1, delimiter)));
@@ -85,21 +84,20 @@ int ListObjectVersionsResponse(XrdS3Req& req, const std::string& bucket,
   printer.AddElement("Prefix", encoder(prefix));
   for (const auto& version : vinfo.objects) {
     printer.OpenElement("Version");
-    // todo: all fields
+    // TODO: Implement all Version fields:
     //  https://docs.aws.amazon.com/AmazonS3/latest/API/API_ObjectVersion.html
 
     printer.AddElement("Key", encoder(version.name));
     printer.AddElement("LastModified",
                        S3Utils::timestampToIso8016(version.last_modified));
     printer.AddElement("Size", version.size);
-    // todo:
     printer.AddElement("VersionId", "1");
     printer.CloseElement();
   }
 
   printer.CloseElement();
-  std::string hd = "Content-Type: application/xml";
-  return req.S3Response(200, {}, printer.CStr(), printer.CStrSize() - 1);
+  return req.S3Response(200, {{"Content-Type", "application/xml"}},
+                        printer.CStr(), printer.CStrSize() - 1);
 }
 
 int DeleteObjectsResponse(XrdS3Req& req, bool quiet,
@@ -131,8 +129,8 @@ int DeleteObjectsResponse(XrdS3Req& req, bool quiet,
 
   printer.CloseElement();
 
-  std::string hd = "Content-Type: application/xml";
-  return req.S3Response(200, {}, printer.CStr(), printer.CStrSize() - 1);
+  return req.S3Response(200, {{"Content-Type", "application/xml"}},
+                        printer.CStr(), printer.CStrSize() - 1);
 }
 
 int ListObjectsV2Response(XrdS3Req& req, const std::string& bucket,
@@ -174,14 +172,16 @@ int ListObjectsV2Response(XrdS3Req& req, const std::string& bucket,
 
   for (const auto& object : oinfo.objects) {
     printer.OpenElement("Contents");
+    printer.AddElement("ETag", object.etag);
     printer.AddElement("Key", encoder(object.name));
     printer.AddElement("LastModified",
                        S3Utils::timestampToIso8016(object.last_modified));
     printer.AddElement("Size", object.size);
     if (fetch_owner) {
       printer.OpenElement("Owner");
-      // todo: display name
+      // TODO: Owner display name should probably be different from owner id
       printer.AddElement("ID", object.owner);
+      printer.AddElement("DisplayName", object.owner);
       printer.CloseElement();
     }
     printer.CloseElement();
@@ -195,8 +195,8 @@ int ListObjectsV2Response(XrdS3Req& req, const std::string& bucket,
 
   printer.CloseElement();
 
-  std::string hd = "Content-Type: application/xml";
-  return req.S3Response(200, {}, printer.CStr(), printer.CStrSize() - 1);
+  return req.S3Response(200, {{"Content-Type", "application/xml"}},
+                        printer.CStr(), printer.CStrSize() - 1);
 }
 
 int ListObjectsResponse(XrdS3Req& req, const std::string& bucket,
@@ -218,10 +218,18 @@ int ListObjectsResponse(XrdS3Req& req, const std::string& bucket,
 
   for (const auto& object : objects.objects) {
     printer.OpenElement("Contents");
+    printer.AddElement("ETag", object.etag);
     printer.AddElement("Key", encoder(object.name));
     printer.AddElement("LastModified",
                        S3Utils::timestampToIso8016(object.last_modified));
     printer.AddElement("Size", object.size);
+    printer.OpenElement("Owner");
+
+    printer.AddElement("ID", object.owner);
+    printer.AddElement("DisplayName", object.owner);
+
+    printer.CloseElement();
+
     printer.CloseElement();
   }
 
@@ -246,8 +254,8 @@ int ListObjectsResponse(XrdS3Req& req, const std::string& bucket,
 
   printer.CloseElement();
 
-  std::string hd = "Content-Type: application/xml";
-  return req.S3Response(200, {}, printer.CStr(), printer.CStrSize() - 1);
+  return req.S3Response(200, {{"Content-Type", "application/xml"}},
+                        printer.CStr(), printer.CStrSize() - 1);
 }
 
 int CopyObjectResponse(XrdS3Req& req, const std::string& etag) {
@@ -271,7 +279,8 @@ int CreateMultipartUploadResponse(XrdS3Req& req, const std::string& upload_id) {
 
   printer.CloseElement();
 
-  return req.S3Response(200, {}, printer.CStr(), printer.CStrSize() - 1);
+  return req.S3Response(200, {{"Content-Type", "application/xml"}},
+                        printer.CStr(), printer.CStrSize() - 1);
 }
 int ListMultipartUploadResponse(
     XrdS3Req& req,
@@ -318,7 +327,8 @@ int ListPartsResponse(XrdS3Req& req, const std::string& upload_id,
 
   printer.CloseElement();
 
-  return req.S3Response(200, {}, printer.CStr(), printer.CStrSize() - 1);
+  return req.S3Response(200, {{"Content-Type", "application/xml"}},
+                        printer.CStr(), printer.CStrSize() - 1);
 }
 
 int CompleteMultipartUploadResponse(XrdS3Req& req) {
@@ -329,8 +339,45 @@ int CompleteMultipartUploadResponse(XrdS3Req& req) {
   printer.AddElement("Key", req.object);
 
   printer.CloseElement();
+  return req.S3Response(200, {{"Content-Type", "application/xml"}},
+                        printer.CStr(), printer.CStrSize() - 1);
+}
 
-  return req.S3Response(200, {}, printer.CStr(), printer.CStrSize() - 1);
+int GetAclResponse(XrdS3Req& req, const S3Auth::Bucket& bucket) {
+  S3Xml printer;
+  printer.OpenElement("AccessControlPolicy");
+
+  printer.OpenElement("Owner");
+
+  printer.AddElement("DisplayName", bucket.owner.display_name);
+  printer.AddElement("ID", bucket.owner.id);
+
+  printer.CloseElement();
+
+  // This is hardcoded as we do not support setting different acls.
+  printer.OpenElement("AccessControlList");
+
+  printer.OpenElement("Grant");
+
+  printer.OpenElement("Grantee");
+  printer.PushAttribute("xmlns:xsi",
+                        "http://www.w3.org/2001/XMLSchema-instance");
+  printer.PushAttribute("xsi:type", "CanonicalUser");
+
+  printer.AddElement("Type", "CanonicalUser");
+
+  printer.CloseElement();
+
+  printer.AddElement("Permission", "FULL_CONTROL");
+
+  printer.CloseElement();
+
+  printer.CloseElement();
+
+  printer.CloseElement();
+
+  return req.S3Response(200, {{"Content-Type", "application/xml"}},
+                        printer.CStr(), printer.CStrSize() - 1);
 }
 
 }  // namespace S3

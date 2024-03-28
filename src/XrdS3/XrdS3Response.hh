@@ -2,8 +2,8 @@
 // Created by segransm on 11/16/23.
 //
 
-#ifndef XROOTD_S3RESPONSE_HH
-#define XROOTD_S3RESPONSE_HH
+#ifndef XROOTD_XRDS3RESPONSE_HH
+#define XROOTD_XRDS3RESPONSE_HH
 
 #include <string>
 #include <vector>
@@ -46,12 +46,13 @@ int ListMultipartUploadResponse(
     XrdS3Req& req,
     const std::vector<S3ObjectStore::MultipartUploadInfo>& uploads);
 
-
 int ListPartsResponse(XrdS3Req& req, const std::string& upload_id,
                       const std::vector<S3ObjectStore::PartInfo>& parts);
 
 int CompleteMultipartUploadResponse(XrdS3Req& req);
 
+int GetAclResponse(XrdS3Req& req, const S3Auth::Bucket& bucket);
+
 }  // namespace S3
 
-#endif  // XROOTD_S3RESPONSE_HH
+#endif  // XROOTD_XRDS3RESPONSE_HH

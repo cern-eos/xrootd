@@ -5,87 +5,30 @@
 #include "XrdS3ObjectStore.hh"
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
-#include <sys/time.h>
 #include <sys/xattr.h>
-#include <unistd.h>
 
+#include <XrdOuc/XrdOucTUtils.hh>
 #include <algorithm>
-#include <cstring>
 #include <ctime>
 #include <filesystem>
-#include <fstream>
-#include <iostream>
 #include <stack>
-#include <stdexcept>
 #include <utility>
 
 #include "XrdCks/XrdCksCalcmd5.hh"
+#include "XrdPosix/XrdPosixExtern.hh"
+#include "XrdS3Auth.hh"
 #include "XrdS3Req.hh"
-
-#define XRD_MULTIPART_UPLOAD_DIR "__XRD__MULTIPART__"
 
 namespace S3 {
 
-std::string GetDirName(const std::filesystem::path &p) {
-  std::string name;
-  for (const auto &v : p) {
-    if (!v.empty()) {
-      name = v;
-    }
-  }
-  return name;
-}
+S3ObjectStore::S3ObjectStore(const std::string &config, const std::string &mtpu)
+    : config_path(config), mtpu_path(mtpu) {
+  user_map = config_path / "users";
 
-std::string GetXattr(const std::filesystem::path &path,
-                     const std::string &key) {
-  std::string res;
-
-  res.resize(getxattr(path.c_str(), key.c_str(), nullptr, 0));
-  getxattr(path.c_str(), key.c_str(), res.data(), res.size());
-
-  return res;
-}
-
-S3ObjectStore::S3ObjectStore(std::string p) : path(p) {
-  std::filesystem::create_directory(std::filesystem::path(path) /
-                                    XRD_MULTIPART_UPLOAD_DIR);
-
-  for (const auto &bucket : std::filesystem::directory_iterator(path)) {
-    ssize_t i;
-    auto name = GetDirName(bucket.path());
-    if (name == XRD_MULTIPART_UPLOAD_DIR) {
-      continue;
-    }
-    if ((i = getxattr(bucket.path().c_str(), "user.owner", BUFFER, BUFFSIZE)) >=
-        0) {
-      BUFFER[i] = 0;
-      bucketOwners.insert({name, BUFFER});
-    }
-    if ((i = getxattr(bucket.path().c_str(), "user.createdAt", BUFFER,
-                      BUFFSIZE)) >= 0) {
-      BUFFER[i] = 0;
-      bucketInfo.insert({name, {name, BUFFER}});
-    }
-
-    MultipartUploads uploads;
-    for (const auto &entry : std::filesystem::directory_iterator(
-             std::filesystem::path(path) / XRD_MULTIPART_UPLOAD_DIR / name)) {
-      if (entry.is_directory()) {
-        MultipartUpload upload{GetXattr(entry.path(), "user.key"), {}};
-
-        for (const auto &part : std::filesystem::directory_iterator(entry)) {
-          auto etag = GetXattr(part.path(), "user.etag");
-          auto last_modified = part.last_write_time();
-          auto size = part.file_size();
-          upload.parts.insert({std::stoul(part.path().filename()),
-                               {etag, last_modified, size}});
-        }
-        uploads.insert({GetDirName(entry.path()), upload});
-      }
-    }
-    multipartUploads.insert({name, uploads});
-  }
+  XrdPosix_Mkdir(user_map.c_str(), S_IRWXU | S_IRWXG);
+  XrdPosix_Mkdir(mtpu_path.c_str(), S_IRWXU | S_IRWXG);
 }
 
 bool S3ObjectStore::ValidateBucketName(const std::string &name) {
@@ -102,71 +45,102 @@ bool S3ObjectStore::ValidateBucketName(const std::string &name) {
   });
 }
 
-std::string S3ObjectStore::GetBucketOwner(const std::string &bucket) const {
-  auto it = bucketOwners.find(bucket);
-  if (it != bucketOwners.end()) {
-    return it->second;
-  }
-  return {};
+std::string S3ObjectStore::GetUserDefaultBucketPath(
+    const std::string &user_id) const {
+  return S3Utils::GetXattr(user_map / user_id, "new_bucket_path");
 }
 
 S3Error S3ObjectStore::SetMetadata(
     const std::string &object,
     const std::map<std::string, std::string> &metadata) {
   for (const auto &meta : metadata) {
-    if (setxattr(object.c_str(), ("user." + meta.first).c_str(),
-                 meta.second.c_str(), meta.second.size(), 0)) {
-      // fprintf(stderr, "UNABLE TO SET XATTR: %s", metadata)
+    if (S3Utils::SetXattr(object, meta.first, meta.second, 0)) {
       return S3Error::InternalError;
     }
   }
   return S3Error::None;
 }
 
-S3Error S3ObjectStore::CreateBucket(const std::string &id,
-                                    const std::string &bucket,
+std::vector<std::string> S3ObjectStore::GetPartsNumber(
+    const std::string &path) {
+  auto p = S3Utils::GetXattr(path, "parts");
+
+  if (p.empty()) {
+    return {};
+  }
+
+  std::vector<std::string> res;
+  XrdOucTUtils::splitString(res, p, ",");
+
+  return res;
+}
+
+// todo:
+S3Error S3ObjectStore::SetPartsNumbers(const std::string &path,
+                                       std::vector<std::string> &parts) {
+  auto p = S3Utils::stringJoin(',', parts);
+  if (setxattr(path.c_str(), "user.parts", p.c_str(), p.size(), 0)) {
+    return S3Error::InternalError;
+  }
+  return S3Error::None;
+}
+
+// TODO: We need a mutex here as multiple threads can write to the same file
+S3Error S3ObjectStore::AddPartAttr(const std::string &object,
+                                   size_t part_number) {
+  auto parts = GetPartsNumber(object);
+
+  auto n = std::to_string(part_number);
+  if (std::find(parts.begin(), parts.end(), n) == parts.end()) {
+    parts.push_back(n);
+    return SetPartsNumbers(object, parts);
+  }
+  return S3Error::None;
+}
+
+S3Error S3ObjectStore::CreateBucket(S3Auth &auth, S3Auth::Bucket bucket,
                                     const std::string &_location) {
-  if (!ValidateBucketName(bucket)) {
+  if (!ValidateBucketName(bucket.name)) {
     return S3Error::InvalidBucketName;
   }
 
-  auto owner = GetBucketOwner(bucket);
-  if (!owner.empty()) {
-    if (owner == id) {
-      return S3Error::BucketAlreadyOwnedByYou;
-    }
-    return S3Error::BucketAlreadyExists;
+  bucket.path =
+      std::filesystem::path(GetUserDefaultBucketPath(bucket.owner.id)) /
+      bucket.name;
+
+  auto err = auth.CreateBucketInfo(bucket);
+  if (err != S3Error::None) {
+    return err;
   }
 
-  auto bucketPath = path / bucket;
-  if (!std::filesystem::create_directory(std::filesystem::path(path) /
-                                         XRD_MULTIPART_UPLOAD_DIR / bucket) ||
-      !std::filesystem::create_directory(std::filesystem::path(path) /
-                                         bucket)) {
+  auto userInfoBucket = user_map / bucket.owner.id / bucket.name;
+  auto fd = XrdPosix_Open(userInfoBucket.c_str(), O_CREAT | O_EXCL | O_WRONLY,
+                          S_IRWXU | S_IRWXG);
+  if (fd <= 0) {
+    auth.DeleteBucketInfo(bucket);
+    return S3Error::InternalError;
+  }
+  XrdPosix_Close(fd);
+
+  if (S3Utils::SetXattr(userInfoBucket, "createdAt",
+                        std::to_string(std::time(nullptr)), XATTR_CREATE)) {
+    auth.DeleteBucketInfo(bucket);
+    XrdPosix_Unlink(userInfoBucket.c_str());
     return S3Error::InternalError;
   }
 
-  if (setxattr(bucketPath.c_str(), "user.owner", id.c_str(), id.size(),
-               XATTR_CREATE)) {
-    fprintf(stderr, "Unable to set xattr...\n");
-    std::filesystem::remove_all(bucketPath.c_str());
+  if (XrdPosix_Mkdir((mtpu_path / bucket.name).c_str(), S_IRWXU | S_IRWXG)) {
+    auth.DeleteBucketInfo(bucket);
+    XrdPosix_Unlink(userInfoBucket.c_str());
     return S3Error::InternalError;
   }
 
-  auto now = std::to_string(std::time(nullptr));
-  if (setxattr(bucketPath.c_str(), "user.createdAt", now.c_str(), now.size(),
-               XATTR_CREATE)) {
-    fprintf(stderr, "Unable to set xattr...\n");
-    std::filesystem::remove_all(bucketPath.c_str());
+  if (XrdPosix_Mkdir(bucket.path.c_str(), S_IRWXU | S_IRWXG)) {
+    auth.DeleteBucketInfo(bucket);
+    XrdPosix_Unlink(userInfoBucket.c_str());
+    XrdPosix_Rmdir((mtpu_path / bucket.name).c_str());
     return S3Error::InternalError;
   }
-
-  fprintf(stderr, "Created bucket %s with owner %s\n", bucketPath.c_str(),
-          id.c_str());
-
-  bucketOwners.insert({bucket, id});
-  bucketInfo.insert({bucket, {bucket, now}});
-  multipartUploads.insert({bucket, {}});
 
   return S3Error::None;
 }
@@ -182,41 +156,63 @@ std::pair<std::string, std::string> BaseDir(std::string p) {
   return {basedir, p};
 }
 
-S3Error S3ObjectStore::DeleteBucket(const std::string &bucket) {
-  if (!ValidateBucketName(bucket)) {
-    return S3Error::InvalidBucketName;
-  }
-
-  if (GetBucketOwner(bucket).empty()) {
-    return S3Error::NoSuchBucket;
-  }
-
-  auto bucketPath = path / bucket;
-
-  if (!std::filesystem::is_empty(bucketPath) ||
-      !std::filesystem::is_empty(path / XRD_MULTIPART_UPLOAD_DIR / bucket)) {
+S3Error S3ObjectStore::DeleteBucket(S3Auth &auth,
+                                    const S3Auth::Bucket &bucket) {
+  if (!S3Utils::IsDirEmpty(bucket.path)) {
     return S3Error::BucketNotEmpty;
   }
 
-  std::filesystem::remove(bucketPath);
-  std::filesystem::remove(path / XRD_MULTIPART_UPLOAD_DIR / bucket);
+  auto upload_path = mtpu_path / bucket.name;
+  auto rm_mtpu_uploads = [&upload_path](dirent *entry) {
+    if (entry->d_name[0] == '.') {
+      return;
+    }
 
-  bucketOwners.erase(bucket);
-  bucketInfo.erase(bucket);
+    auto dir_name = upload_path / entry->d_name;
+    auto rm_files = [&dir_name](dirent *entry) {
+      if (entry->d_name[0] == '.') {
+        return;
+      }
+
+      XrdPosix_Unlink((dir_name / entry->d_name).c_str());
+    };
+
+    S3Utils::DirIterator(dir_name, rm_files);
+
+    XrdPosix_Rmdir((upload_path / entry->d_name).c_str());
+  };
+
+  S3Utils::DirIterator(upload_path, rm_mtpu_uploads);
+
+  XrdPosix_Rmdir(bucket.path.c_str());
+  XrdPosix_Rmdir(upload_path.c_str());
+  auth.DeleteBucketInfo(bucket);
+  XrdPosix_Unlink((user_map / bucket.owner.id / bucket.name).c_str());
 
   return S3Error::None;
 }
 
+S3ObjectStore::Object::~Object() {
+  if (fd != 0) {
+    XrdPosix_Close(fd);
+  }
+}
+
+// TODO: Replace with the real XrdPosix_Listxattr once implemented.
+#define XrdPosix_Listxattr listxattr
+
 S3Error S3ObjectStore::Object::Init(const std::filesystem::path &p) {
-  if (!exists(p) || is_directory(p)) {
+  struct stat buf;
+
+  if (XrdPosix_Stat(p.c_str(), &buf) || S_ISDIR(buf.st_mode)) {
     return S3Error::NoSuchKey;
   }
 
   std::vector<std::string> attrnames;
   std::vector<char> attrlist;
-  auto attrlen = listxattr(p.c_str(), nullptr, 0);
+  auto attrlen = XrdPosix_Listxattr(p.c_str(), nullptr, 0);
   attrlist.resize(attrlen);
-  listxattr(p.c_str(), attrlist.data(), attrlen);
+  XrdPosix_Listxattr(p.c_str(), attrlist.data(), attrlen);
   auto i = attrlist.begin();
   while (i != attrlist.end()) {
     auto tmp = std::find(i, attrlist.end(), 0);
@@ -225,45 +221,69 @@ S3Error S3ObjectStore::Object::Init(const std::filesystem::path &p) {
   }
   std::vector<char> value;
   for (const auto &attr : attrnames) {
-    if (attr.substr(0, 5) != "user.") continue;
-    attrlen = getxattr(p.c_str(), attr.c_str(), nullptr, 0);
-    value.resize(attrlen);
-    if (attrlen > 0) {
-      value[attrlen - 1] = 0;
-    }
-    getxattr(p.c_str(), attr.c_str(), value.data(), attrlen);
-    attributes.insert({attr.substr(5), {value.begin(), value.end()}});
+    if (attr.substr(0, 8) != "user.s3.") continue;
+    attributes.insert({attr.substr(8), S3Utils::GetXattr(p, attr.substr(8))});
   }
 
-  name = p;
-  this->size = file_size(p);
-  this->ifs = std::ifstream(p, std::ios_base::binary);
+  this->init = true;
+  this->name = p;
+  this->size = buf.st_size;
+  this->buffer_size = std::min(this->size, MAX_BUFFSIZE);
+  this->last_modified = buf.st_mtim.tv_sec;
 
   return S3Error::None;
 }
 
-S3Error S3ObjectStore::GetObject(const std::string &bucket,
-                                 const std::string &object, Object &obj) {
-  auto objectPath = path / bucket / object;
+ssize_t S3ObjectStore::Object::Read(size_t length, char **ptr) {
+  if (!init) {
+    return 0;
+  }
 
-  return obj.Init(objectPath);
+  if (fd == 0) {
+    this->buffer.resize(this->buffer_size);
+    this->fd = XrdPosix_Open(name.c_str(), O_RDONLY);
+  }
+
+  size_t l = std::min(length, buffer.size());
+
+  auto ret = XrdPosix_Read(fd, buffer.data(), l);
+
+  *ptr = buffer.data();
+
+  return ret;
 }
 
-S3Error S3ObjectStore::DeleteObject(const std::string &bucket,
+off_t S3ObjectStore::Object::Lseek(off_t offset, int whence) {
+  if (!init) {
+    return -1;
+  }
+
+  if (fd == 0) {
+    this->buffer.resize(this->buffer_size);
+    this->fd = XrdPosix_Open(name.c_str(), O_RDONLY);
+  }
+
+  return XrdPosix_Lseek(fd, offset, whence);
+}
+
+S3Error S3ObjectStore::GetObject(const S3Auth::Bucket &bucket,
+                                 const std::string &object, Object &obj) {
+  return obj.Init(bucket.path / object);
+}
+
+S3Error S3ObjectStore::DeleteObject(const S3Auth::Bucket &bucket,
                                     const std::string &key) {
   std::string base, obj;
 
-  auto full_path = path / bucket / key;
+  auto full_path = bucket.path / key;
 
-  if (!std::filesystem::remove(full_path)) {
+  if (XrdPosix_Unlink(full_path.c_str())) {
     return S3Error::NoSuchKey;
   }
 
-  std::error_code ec;
   do {
     full_path = full_path.parent_path();
-  } while (full_path != path / bucket &&
-           std::filesystem::remove(full_path, ec));
+  } while (full_path != bucket.path && !XrdPosix_Rmdir(full_path.c_str()));
 
   return S3Error::None;
 }
@@ -271,106 +291,102 @@ S3Error S3ObjectStore::DeleteObject(const std::string &bucket,
 std::vector<S3ObjectStore::BucketInfo> S3ObjectStore::ListBuckets(
     const std::string &id) const {
   std::vector<BucketInfo> buckets;
-  for (const auto &b : bucketOwners) {
-    if (b.second == id) {
-      // todo:
-      buckets.push_back(bucketInfo.find(b.first)->second);
+  auto get_entry = [this, &buckets, &id](dirent *entry) {
+    if (entry->d_name[0] == '.') {
+      return;
     }
-  }
+
+    auto created_at =
+        S3Utils::GetXattr(user_map / id / entry->d_name, "createdAt");
+
+    buckets.push_back(BucketInfo{entry->d_name, created_at});
+  };
+
+  S3Utils::DirIterator(user_map / id, get_entry);
+
   return buckets;
 }
 
-// todo: this should only be a simple wrapper around a LostObjects that is used
-//  with ListObjectsV2 ListObjects ListObjectVersion, etc.
+// TODO: At the moment object versioning is not supported, this returns a
+//  hardcoded object version.
 ListObjectsInfo S3ObjectStore::ListObjectVersions(
-    const std::string &bucket, const std::string &prefix,
+    const S3Auth::Bucket &bucket, const std::string &prefix,
     const std::string &key_marker, const std::string &version_id_marker,
     const char delimiter, int max_keys) {
   auto f = [](const std::filesystem::path &root, const std::string &object) {
     struct stat buf;
 
     if (!stat((root / object).c_str(), &buf)) {
-      return ObjectInfo{object, buf.st_mtim.tv_sec, std::to_string(buf.st_size),
-                        ""};
+      return ObjectInfo{object, S3Utils::GetXattr(root / object, "etag"),
+                        buf.st_mtim.tv_sec, std::to_string(buf.st_size),
+                        S3Utils::GetXattr(root / object, "owner")};
     }
     return ObjectInfo{};
   };
 
-  // todo: vid_marker
   return ListObjectsCommon(bucket, prefix, key_marker, delimiter, max_keys,
                            true, f);
 }
 
-int mkpath(std::string s, mode_t mode, size_t pos = 0) {
-  std::string dir;
-  int mdret;
-
-  while ((pos = s.find_first_of('/', pos)) != std::string::npos) {
-    dir = s.substr(0, pos++);
-    if (dir.size() == 0) continue;  // if leading / first time is 0 length
-    fprintf(stderr, "MKPATH: MKDIR: %s\n", dir.c_str());
-    if ((mdret = mkdir(dir.c_str(), mode)) && errno != EEXIST) {
-      fprintf(stderr, "--> MKDIR: ERRNO: %s %s\n", dir.c_str(),
-              strerror(errno));
-      return mdret;
-    }
-    fprintf(stderr, "MKDIR: ERRNO: %s %s\n", dir.c_str(), strerror(errno));
-  }
-  return mdret;
-}
-// todo:
-#define PUT_LIMIT 5000000000
-
-S3Error S3ObjectStore::CopyObject(const std::string &bucket,
+S3Error S3ObjectStore::CopyObject(const S3Auth::Bucket &bucket,
                                   const std::string &key, Object &source_obj,
                                   const Headers &reqheaders, Headers &headers) {
-  auto final_path = path / bucket / key;
-  auto tmp_path = path / XRD_MULTIPART_UPLOAD_DIR / bucket /
-                  S3Utils::HexEncode(key + std::to_string(std::rand()));
-  std::error_code ec;
+  auto final_path = bucket.path / key;
 
-  if (is_directory(final_path)) {
+  struct stat buf;
+  if (!XrdPosix_Stat(final_path.c_str(), &buf) && S_ISDIR(buf.st_mode)) {
     return S3Error::ObjectExistAsDir;
   }
 
-  if (!std::filesystem::create_directories(final_path.parent_path(), ec)) {
-    if (ec.value() == ENOTDIR) {
-      return S3Error::ObjectExistInObjectPath;
-    } else if (ec.value() != 0) {
-      throw std::runtime_error("INTERNAL ERROR");
-      return S3Error::InternalError;
-    }
+  auto tmp_path =
+      bucket.path / ("." + key + "." + std::to_string(std::time(nullptr)) +
+                     std::to_string(std::rand()));
+
+  auto err = S3Utils::makePath((char *)final_path.parent_path().c_str(),
+                               S_IRWXU | S_IRWXG);
+
+  if (err == ENOTDIR) {
+    return S3Error::ObjectExistInObjectPath;
+  } else if (err != 0) {
+    return S3Error::InternalError;
   }
 
-  std::ofstream ofs(tmp_path, std::ios_base::binary | std::ios_base::trunc);
+  auto fd = XrdPosix_Open(tmp_path.c_str(), O_CREAT | O_EXCL | O_WRONLY,
+                          S_IRWXU | S_IRWXG);
 
-  if (!ofs.is_open()) {
-    throw std::runtime_error("INTERNAL ERROR");
+  if (fd < 0) {
+    S3Utils::RmPath(final_path.parent_path(), bucket.path);
     return S3Error::InternalError;
   }
 
   XrdCksCalcmd5 xs;
   xs.Init();
-  size_t final_size = 0;
 
-  auto stream = &source_obj.GetStream();
-  streamsize i = 0;
-  while ((i = stream->readsome(BUFFER, BUFFSIZE)) > 0) {
-    xs.Update(BUFFER, i);
-    final_size += i;
-    ofs.write(BUFFER, i);
+  char *ptr;
+
+  ssize_t len = source_obj.GetSize();
+  ssize_t i = 0;
+  while ((i = source_obj.Read(len, &ptr)) > 0) {
+    len -= i;
+    xs.Update(ptr, i);
+    XrdPosix_Write(fd, ptr, i);
   }
-  ofs.close();
+
+  XrdPosix_Close(fd);
 
   char *fxs = xs.Final();
   std::vector<unsigned char> md5(fxs, fxs + 16);
-  auto error = S3Error::None;
 
-  std::map<std::string, std::string> metadata;
-  if (S3Utils::HeaderEq(headers, "x-amz-metadata-directive", "REPLACE")) {
-    auto add_header = [&metadata, &headers](const std::string &name) {
-      if (S3Utils::HasHeader(headers, name)) {
-        metadata.insert({name, headers.find(name)->second});
+  std::map<std::string, std::string> metadata = source_obj.GetAttributes();
+  auto md5hex = '"' + S3Utils::HexEncode(md5) + '"';
+  metadata["etag"] = md5hex;
+  headers.clear();
+  headers["ETag"] = md5hex;
+
+  if (S3Utils::MapHasEntry(reqheaders, "x-amz-metadata-directive", "REPLACE")) {
+    auto add_header = [&metadata, &reqheaders](const std::string &name) {
+      if (S3Utils::MapHasKey(reqheaders, name)) {
+        metadata[name] = reqheaders.find(name)->second;
       }
     };
 
@@ -378,273 +394,354 @@ S3Error S3ObjectStore::CopyObject(const std::string &bucket,
     add_header("content-disposition");
     add_header("content-type");
 
-    metadata.insert({"last-modified", std::to_string(std::time(nullptr))});
-  } else {
-    metadata = source_obj.GetAttributes();
-    // Metadata
-    // todo: validate headers
-
-    // todo: validate calculated md5
-    // todo: etag not always md5
-    // (https://docs.aws.amazon.com/AmazonS3/latest/API/API_Object.html)
-    auto md5hex = '"' + S3Utils::HexEncode(md5) + '"';
-    metadata.insert({"etag", md5hex});
-    headers.clear();
-    headers.insert({"ETag", md5hex});
+    //    metadata.insert({"last-modified",
+    //    std::to_string(std::time(nullptr))});
   }
-  error = SetMetadata(tmp_path, metadata);
+
+  auto error = SetMetadata(tmp_path, metadata);
   if (error != S3Error::None) {
-    // todo: remove path too
-    std::filesystem::remove(tmp_path);
-  }
-
-  std::filesystem::rename(tmp_path, final_path);
-
-  return error;
-}
-
-// todo: check path of multipart upload on creation
-//  todo: deny uploads with path of multipart upload if in progress, maybe
-//  create a temp object
-
-S3Error S3ObjectStore::UploadPart(XrdS3Req &req, const std::string &upload_id,
-                                  size_t part_number, unsigned long size,
-                                  bool chunked, Headers &headers) {
-  auto buploads = multipartUploads.find(req.bucket);
-  if (buploads == multipartUploads.end()) {
-    return S3Error::InternalError;
-  }
-
-  auto upload = buploads->second.find(upload_id);
-  if (upload == buploads->second.end()) {
-    return S3Error::NoSuchUpload;
-  }
-  if (upload->second.key != req.object) {
-    return S3Error::InvalidRequest;
-  }
-
-  auto part_path = std::filesystem::path(path) / XRD_MULTIPART_UPLOAD_DIR /
-                   req.bucket / upload_id / std::to_string(part_number);
-
-  fprintf(stderr, "Opening part %s\n", part_path.c_str());
-  auto *f = fopen(part_path.c_str(), "w");
-  if (f == nullptr) {
-    fprintf(stderr, "ERRNO: %s\n", strerror(errno));
-    return S3Error::InternalError;
-  }
-
-  auto error = S3Error::None;
-  // todo: dont check if not neededd, handle different cheksum types
-  XrdCksCalcmd5 xs;
-  xs.Init();
-  S3Crypt::S3SHA256 sha;
-  sha.Init();
-
-  auto readBuffer = [&req, &xs, &sha, f](unsigned long length) {
-    int buflen = 0;
-    unsigned long readlen = 0;
-    char *ptr;
-    while (length > 0 &&
-           (buflen = req.ReadBody(
-                length > INT_MAX ? INT_MAX : static_cast<int>(length), &ptr,
-                true)) > 0) {
-      readlen = buflen;
-      if (length < readlen) {
-        fprintf(stderr, "Read too many bytes: %zu < %zu\n", length, readlen);
-        return S3Error::IncompleteBody;
-      }
-      length -= readlen;
-      xs.Update(ptr, buflen);
-      sha.Update(ptr, buflen);
-      if (fwrite(ptr, 1, readlen, f) != readlen) {
-        return S3Error::InternalError;
-      }
-    }
-    if (buflen < 0 || length != 0) {
-      fprintf(stderr, "Length mismatch: %d %zu\n", buflen, length);
-      return S3Error::IncompleteBody;
-    }
-    return S3Error::None;
-  };
-
-  unsigned long final_size = size;
-  if (chunked) {
-    int length;
-    final_size = 0;
-    XrdOucString chunk_size;
-
-    do {
-      req.BuffgetLine(chunk_size);
-      chunk_size.erasefromend(2);
-      try {
-        length = std::stoi(chunk_size.c_str(), nullptr, 16);
-      } catch (std::exception &) {
-        error = S3Error::InvalidRequest;
-        break;
-      }
-      final_size += length;
-      if (final_size > PUT_LIMIT) {
-        error = S3Error::EntityTooLarge;
-        break;
-      }
-      error = readBuffer(length);
-      req.BuffgetLine(chunk_size);
-    } while (error == S3Error::None && length != 0);
-  } else {
-    error = readBuffer(size);
-  }
-
-  fclose(f);
-
-  char *fxs = xs.Final();
-  sha256_digest sha256 = sha.Finish();
-  std::vector<unsigned char> md5(fxs, fxs + 16);
-  if (error == S3Error::None) {
-    if (!req.md5.empty() && req.md5 != md5) {
-      error = S3Error::BadDigest;
-    } else if (!S3Utils::HeaderEq(req.lowercase_headers, "x-amz-content-sha256",
-                                  S3Utils::HexEncode(sha256))) {
-      error = S3Error::XAmzContentSHA256Mismatch;
-    }
-  }
-
-  if (error != S3Error::None) {
-    // todo: remove path too
-    std::remove(part_path.c_str());
+    XrdPosix_Unlink(tmp_path.c_str());
+    S3Utils::RmPath(final_path.parent_path(), bucket.path);
     return error;
   }
 
-  std::map<std::string, std::string> metadata;
-  // Metadata
-  // todo: validate headers
-  // todo: etag not always md5
-  // (https://docs.aws.amazon.com/AmazonS3/latest/API/API_Object.html)
-  auto md5hex = '"' + S3Utils::HexEncode(md5) + '"';
-  metadata.insert({"etag", md5hex});
-  headers.insert({"ETag", md5hex});
-
-  error = SetMetadata(part_path, metadata);
-  if (error != S3Error::None) {
-    // todo: remove path too
-    fprintf(stderr, "meta error %d\n", (int)error);
-    std::remove(part_path.c_str());
-  } else {
-    upload->second.parts[part_number] = {md5hex, last_write_time(part_path),
-                                         final_size};
-  }
+  XrdPosix_Rename(tmp_path.c_str(), final_path.c_str());
 
   return error;
 }
 
-S3Error S3ObjectStore::PutObject(XrdS3Req &req, unsigned long size,
-                                 bool chunked, Headers &headers) {
-  auto final_path = path / req.bucket / req.object;
-  auto tmp_path = path / XRD_MULTIPART_UPLOAD_DIR / req.bucket /
-                  S3Utils::HexEncode(req.object + std::to_string(std::rand()));
-
-  std::error_code ec;
-
-  if (is_directory(final_path)) {
-    return S3Error::ObjectExistAsDir;
+//! When doing multipart uploads, we can do an optimisation for the most common
+//! case, by directly writing to the final file, to avoid doing a concatenation
+//! later. In order to do this optimisation, the multipart upload needs to
+//! fulfill multiple conditions:
+//! - Every part must be the same size (except the last part)\n
+//! - There must be no gap in the part numbers (this will be checked when
+//! completing the multipart upload)\n
+//! - There cannot be another upload in progress of the same part.\n
+bool S3ObjectStore::KeepOptimize(const std::filesystem::path &upload_path,
+                                 size_t part_number, unsigned long size,
+                                 const std::string &tmp_path,
+                                 size_t part_size) {
+  size_t last_part_size;
+  try {
+    last_part_size =
+        std::stoul(S3Utils::GetXattr(upload_path, "last_part_size"));
+  } catch (std::exception &) {
+    return false;
   }
 
-  if (!std::filesystem::create_directories(final_path.parent_path(), ec)) {
-    if (ec.value() == ENOTDIR) {
-      return S3Error::ObjectExistInObjectPath;
-    } else if (ec.value() != 0) {
-      fprintf(stderr, "Unable to create directories... %d\n", ec.value());
+  if (part_size == 0) {
+    S3Utils::SetXattr(upload_path, "part_size", std::to_string(size),
+                      XATTR_REPLACE);
+    S3Utils::SetXattr(upload_path, "last_part_size", std::to_string(size),
+                      XATTR_REPLACE);
+    return true;
+  }
+
+  auto parts = GetPartsNumber(tmp_path);
+
+  size_t last_part_number = 0;
+  for (auto p : parts) {
+    size_t n;
+    try {
+      n = std::stoul(p);
+    } catch (std::exception &) {
+      return false;
+    }
+    if (part_number == n) {
+      return false;
+    }
+    if (n > last_part_number) {
+      last_part_number = n;
+    }
+  }
+
+  if (part_number < last_part_number) {
+    // Part must be the same size as the other parts
+    if (part_size != size) {
+      return false;
+    }
+  } else {
+    // This is the new last part, if `last_part_size` was already set, all the
+    // parts do not have the same size.
+    if (last_part_size != part_size) {
+      return false;
+    }
+    S3Utils::SetXattr(upload_path, "last_part_size", std::to_string(size),
+                      XATTR_REPLACE);
+  }
+
+  return true;
+}
+
+S3Error ReadBufferAt(XrdS3Req &req, XrdCksCalcmd5 &md5XS,
+                     S3Crypt::S3SHA256 &sha256XS, int fd,
+                     unsigned long length) {
+  int buflen = 0;
+  unsigned long readlen = 0;
+  char *ptr;
+  while (length > 0 &&
+         (buflen = req.ReadBody(
+              length > INT_MAX ? INT_MAX : static_cast<int>(length), &ptr,
+              true)) > 0) {
+    readlen = buflen;
+    if (length < readlen) {
+      return S3Error::IncompleteBody;
+    }
+    length -= readlen;
+    md5XS.Update(ptr, buflen);
+    sha256XS.Update(ptr, buflen);
+
+    if (XrdPosix_Write(fd, ptr, buflen) == -1) {
       return S3Error::InternalError;
     }
   }
+  if (buflen < 0 || length != 0) {
+    return S3Error::IncompleteBody;
+  }
+  return S3Error::None;
+}
 
-  std::ofstream ofs(tmp_path, std::ios_base::binary | std::ios_base::trunc);
+std::pair<S3Error, size_t> ReadBufferIntoFile(XrdS3Req &req,
+                                              XrdCksCalcmd5 &md5XS,
+                                              S3Crypt::S3SHA256 &sha256XS,
+                                              int fd, bool chunked,
+                                              unsigned long size) {
+#define PUT_LIMIT 5000000000
+  auto reader = [&req, &md5XS, &sha256XS, fd](unsigned long length) {
+    return ReadBufferAt(req, md5XS, sha256XS, fd, length);
+  };
 
-  if (!ofs.is_open()) {
+  if (!chunked) {
+    return {reader(size), size};
+  }
+
+  int length;
+  unsigned long final_size = 0;
+  XrdOucString chunk_header;
+
+  auto error = S3Error::None;
+
+  do {
+    req.BuffgetLine(chunk_header);
+    // TODO: Handle chunk extension parameters
+    chunk_header.erasefromend(2);
+    try {
+      length = std::stoi(chunk_header.c_str(), nullptr, 16);
+    } catch (std::exception &) {
+      return {S3Error::InvalidRequest, 0};
+    }
+    final_size += length;
+    if (final_size > PUT_LIMIT) {
+      return {S3Error::EntityTooLarge, 0};
+    }
+    error = reader(length);
+    req.BuffgetLine(chunk_header);
+  } while (error == S3Error::None && length != 0);
+
+  return {error, final_size};
+#undef PUT_LIMIT
+}
+
+struct FileUploadResult {
+  S3Error result;
+  sha256_digest sha256;
+  std::string md5hex;
+  size_t size;
+};
+
+FileUploadResult FileUploader(XrdS3Req &req, bool chunked, size_t size,
+                              std::filesystem::path &path) {
+  auto fd = XrdPosix_Open(path.c_str(), O_CREAT | O_EXCL | O_WRONLY,
+                          S_IRWXU | S_IRWXG);
+
+  if (fd < 0) {
+    return FileUploadResult{S3Error::InternalError, {}, {}, {}};
+  }
+
+  // TODO: Implement handling of different checksum types.
+  XrdCksCalcmd5 md5XS;
+  md5XS.Init();
+  S3Crypt::S3SHA256 sha256XS;
+  sha256XS.Init();
+
+  auto [error, final_size] =
+      ReadBufferIntoFile(req, md5XS, sha256XS, fd, chunked, size);
+
+  XrdPosix_Close(fd);
+
+  if (error != S3Error::None) {
+    XrdPosix_Unlink(path.c_str());
+    return FileUploadResult{error, {}, {}, {}};
+  }
+
+  char *md5f = md5XS.Final();
+  sha256_digest sha256 = sha256XS.Finish();
+  std::vector<unsigned char> md5(md5f, md5f + 16);
+
+  if (!req.md5.empty() && req.md5 != md5) {
+    error = S3Error::BadDigest;
+  } else if (!S3Utils::MapHasEntry(req.lowercase_headers,
+                                   "x-amz-content-sha256",
+                                   S3Utils::HexEncode(sha256))) {
+    error = S3Error::XAmzContentSHA256Mismatch;
+  }
+
+  const auto md5hex = '"' + S3Utils::HexEncode(md5) + '"';
+
+  return FileUploadResult{error, sha256, md5hex, final_size};
+}
+
+S3Error S3ObjectStore::UploadPartOptimized(XrdS3Req &req,
+                                           const std::string &tmp_path,
+                                           size_t part_size, size_t part_number,
+                                           size_t size, Headers &headers) {
+  auto fd = XrdPosix_Open(tmp_path.c_str(), O_WRONLY);
+
+  if (fd < 0) {
     return S3Error::InternalError;
   }
 
-  auto error = S3Error::None;
-  // todo: dont check if not needed, handle different cheksum types
-  XrdCksCalcmd5 xs;
-  xs.Init();
-  S3Crypt::S3SHA256 sha;
-  sha.Init();
+  XrdCksCalcmd5 md5XS;
+  md5XS.Init();
+  S3Crypt::S3SHA256 sha256XS;
+  sha256XS.Init();
 
-  auto readBuffer = [&req, &xs, &sha, &ofs](unsigned long length) {
-    int buflen = 0;
-    unsigned long readlen = 0;
-    char *ptr;
-    while (length > 0 &&
-           (buflen = req.ReadBody(
-                length > INT_MAX ? INT_MAX : static_cast<int>(length), &ptr,
-                true)) > 0) {
-      readlen = buflen;
-      if (length < readlen) {
-        return S3Error::IncompleteBody;
-      }
-      length -= readlen;
-      xs.Update(ptr, buflen);
-      sha.Update(ptr, buflen);
-      ofs.write(ptr, readlen);
-    }
-    if (buflen < 0 || length != 0) {
-      return S3Error::IncompleteBody;
-    }
-    return S3Error::None;
-  };
+  long long offset = (long long)part_size * (part_number - 1);
 
-  unsigned long final_size = size;
-  if (chunked) {
-    int length;
-    final_size = 0;
-    XrdOucString chunk_size;
+  XrdPosix_Lseek(fd, offset, SEEK_SET);
 
-    do {
-      req.BuffgetLine(chunk_size);
-      chunk_size.erasefromend(2);
-      try {
-        length = std::stoi(chunk_size.c_str(), nullptr, 16);
-      } catch (std::exception &) {
-        error = S3Error::InvalidRequest;
-        break;
-      }
-      final_size += length;
-      if (final_size > PUT_LIMIT) {
-        error = S3Error::EntityTooLarge;
-        break;
-      }
-      error = readBuffer(length);
-      req.BuffgetLine(chunk_size);
-    } while (error == S3Error::None && length != 0);
-  } else {
-    error = readBuffer(size);
-  }
+  auto [error, final_size] =
+      ReadBufferIntoFile(req, md5XS, sha256XS, fd, false, size);
 
-  ofs.close();
-
-  char *fxs = xs.Final();
-  sha256_digest sha256 = sha.Finish();
-  std::vector<unsigned char> md5(fxs, fxs + 16);
-  if (error == S3Error::None) {
-    if (!req.md5.empty() && req.md5 != md5) {
-      error = S3Error::BadDigest;
-    } else if (!S3Utils::HeaderEq(req.lowercase_headers, "x-amz-content-sha256",
-                                  S3Utils::HexEncode(sha256))) {
-      error = S3Error::XAmzContentSHA256Mismatch;
-    }
-  }
+  XrdPosix_Close(fd);
 
   if (error != S3Error::None) {
-    // todo: remove path too
-    std::filesystem::remove(tmp_path);
+    return error;
+  }
+  char *md5f = md5XS.Final();
+  sha256XS.Finish();
+  std::vector<unsigned char> md5(md5f, md5f + 16);
+
+  if (!req.md5.empty() && req.md5 != md5) {
+    return S3Error::BadDigest;
+  }
+
+  const auto md5hex = '"' + S3Utils::HexEncode(md5) + '"';
+  std::map<std::string, std::string> metadata;
+
+  auto prefix = "part" + std::to_string(part_number) + '.';
+  metadata.insert({prefix + "etag", md5hex});
+  headers.insert({"ETag", md5hex});
+  metadata.insert({prefix + "start", std::to_string(offset)});
+
+  error = SetMetadata(tmp_path, metadata);
+  if (error == S3Error::None) {
+    AddPartAttr(tmp_path, part_number);
+  }
+
+  return error;
+}
+
+// TODO: Needs a mutex for some operations
+// TODO: Can be optimized by keeping in memory part information data instead of
+//  using xattr
+S3Error S3ObjectStore::UploadPart(XrdS3Req &req, const std::string &upload_id,
+                                  size_t part_number, unsigned long size,
+                                  bool chunked, Headers &headers) {
+  auto upload_path = mtpu_path / req.bucket / upload_id;
+
+  auto err = ValidateMultipartUpload(upload_path, req.object);
+  if (err != S3Error::None) {
+    return err;
+  }
+
+  auto optimized = S3Utils::GetXattr(upload_path, "optimized");
+
+  // Chunked uploads disables optimizations as we do not know the part size.
+  if (chunked && !optimized.empty()) {
+    S3Utils::SetXattr(upload_path, "optimized", "", XATTR_REPLACE);
+  }
+
+  if (!optimized.empty()) {
+    auto tmp_path = S3Utils::GetXattr(upload_path, "tmp");
+
+    size_t part_size;
+    try {
+      part_size = std::stoul(S3Utils::GetXattr(upload_path, "part_size"));
+    } catch (std::exception &) {
+      return S3Error::InternalError;
+    }
+    if (KeepOptimize(upload_path, part_number, size, tmp_path, part_size)) {
+      return UploadPartOptimized(req, tmp_path, part_size, part_number, size,
+                                 headers);
+    }
+    S3Utils::SetXattr(upload_path, "optimized", "", XATTR_REPLACE);
+  }
+
+  auto tmp_path = upload_path / ("." + std::to_string(part_number) + "." +
+                                 std::to_string(std::time(nullptr)) +
+                                 std::to_string(std::rand()));
+  auto final_path = upload_path / std::to_string(part_number);
+
+  auto [error, _, md5hex, final_size] =
+      FileUploader(req, chunked, size, tmp_path);
+
+  if (error != S3Error::None) {
     return error;
   }
 
   std::map<std::string, std::string> metadata;
   // Metadata
-  // todo: validate headers
+  metadata.insert({"etag", md5hex});
+  headers.insert({"ETag", md5hex});
+
+  error = SetMetadata(tmp_path, metadata);
+  if (error != S3Error::None) {
+    XrdPosix_Unlink(tmp_path.c_str());
+  }
+
+  XrdPosix_Rename(tmp_path.c_str(), final_path.c_str());
+  return error;
+}
+
+S3Error S3ObjectStore::PutObject(XrdS3Req &req, const S3Auth::Bucket &bucket,
+                                 unsigned long size, bool chunked,
+                                 Headers &headers) {
+  auto final_path = bucket.path / req.object;
+
+  struct stat buf;
+  if (!XrdPosix_Stat(final_path.c_str(), &buf) && S_ISDIR(buf.st_mode)) {
+    return S3Error::ObjectExistAsDir;
+  }
+
+  auto tmp_path =
+      final_path.parent_path() /
+      ("." + final_path.filename().string() + "." +
+       std::to_string(std::time(nullptr)) + std::to_string(std::rand()));
+
+  auto err = S3Utils::makePath((char *)final_path.parent_path().c_str(),
+                               S_IRWXU | S_IRWXG);
+
+  if (err == ENOTDIR) {
+    return S3Error::ObjectExistInObjectPath;
+  } else if (err != 0) {
+    return S3Error::InternalError;
+  }
+
+  auto [error, _, md5hex, final_size] =
+      FileUploader(req, chunked, size, tmp_path);
+
+  if (error != S3Error::None) {
+    XrdPosix_Unlink(tmp_path.c_str());
+    S3Utils::RmPath(final_path.parent_path(), bucket.path);
+    return error;
+  }
+
+  std::map<std::string, std::string> metadata;
+  // Metadata
   auto add_header = [&metadata, &req](const std::string &name) {
-    if (S3Utils::HasHeader(req.lowercase_headers, name)) {
+    if (S3Utils::MapHasKey(req.lowercase_headers, name)) {
       metadata.insert({name, req.lowercase_headers.find(name)->second});
     }
   };
@@ -653,15 +750,12 @@ S3Error S3ObjectStore::PutObject(XrdS3Req &req, unsigned long size,
   add_header("content-disposition");
   add_header("content-type");
 
-  metadata.insert({"last-modified", std::to_string(std::time(nullptr))});
-  // todo: etag not always md5
+  // TODO: etag is not always md5.
   // (https://docs.aws.amazon.com/AmazonS3/latest/API/API_Object.html)
-  auto md5hex = '"' + S3Utils::HexEncode(md5) + '"';
   metadata.insert({"etag", md5hex});
   headers.insert({"ETag", md5hex});
-  // todo: all other system-headers
-
-  // todo: handle non asccii chars:
+  // TODO: Add metadata from other headers.
+  // TODO: Handle non asccii characters.
   // (https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingMetadata.html)
   for (const auto &hd : req.lowercase_headers) {
     if (hd.first.substr(0, 11) == "x-amz-meta-") {
@@ -670,27 +764,23 @@ S3Error S3ObjectStore::PutObject(XrdS3Req &req, unsigned long size,
   }
   error = SetMetadata(tmp_path, metadata);
   if (error != S3Error::None) {
-    // todo: remove path too
-    fprintf(stderr, "meta error %d\n", (int)error);
-    std::filesystem::remove(tmp_path);
+    XrdPosix_Unlink(tmp_path.c_str());
+    S3Utils::RmPath(final_path.parent_path(), bucket.path);
+    return error;
   }
 
-  std::filesystem::rename(tmp_path, final_path);
+  XrdPosix_Rename(tmp_path.c_str(), final_path.c_str());
 
   return error;
 }
 
 std::tuple<std::vector<DeletedObject>, std::vector<ErrorObject>>
-S3ObjectStore::DeleteObjects(const std::string &bucket,
+S3ObjectStore::DeleteObjects(const S3Auth::Bucket &bucket,
                              const std::vector<SimpleObject> &objects) {
-  auto bucketPath = path / bucket;
-
   std::vector<DeletedObject> deleted;
   std::vector<ErrorObject> error;
 
   for (const auto &o : objects) {
-    fprintf(stderr, "Deleting object %s -> %s\n", bucket.c_str(),
-            o.key.c_str());
     auto err = DeleteObject(bucket, o.key);
     if (err == S3Error::None || err == S3Error::NoSuchKey) {
       deleted.push_back({o.key, o.version_id, false, ""});
@@ -702,22 +792,21 @@ S3ObjectStore::DeleteObjects(const std::string &bucket,
 }
 
 ListObjectsInfo S3ObjectStore::ListObjectsV2(
-    const std::string &bucket, const std::string &prefix,
+    const S3Auth::Bucket &bucket, const std::string &prefix,
     const std::string &continuation_token, const char delimiter, int max_keys,
     bool fetch_owner, const std::string &start_after) {
   auto f = [fetch_owner](const std::filesystem::path &root,
                          const std::string &object) {
     struct stat buf;
 
-    auto owner = "";
+    std::string owner;
     if (fetch_owner) {
-      // todo
-      owner = "abc";
+      owner = S3Utils::GetXattr(root / object, "owner");
     }
 
     if (!stat((root / object).c_str(), &buf)) {
-      return ObjectInfo{object, buf.st_mtim.tv_sec, std::to_string(buf.st_size),
-                        owner};
+      return ObjectInfo{object, S3Utils::GetXattr(root / object, "etag"),
+                        buf.st_mtim.tv_sec, std::to_string(buf.st_size), owner};
     }
     return ObjectInfo{};
   };
@@ -728,7 +817,7 @@ ListObjectsInfo S3ObjectStore::ListObjectsV2(
       max_keys, false, f);
 }
 
-ListObjectsInfo S3ObjectStore::ListObjects(const std::string &bucket,
+ListObjectsInfo S3ObjectStore::ListObjects(const S3Auth::Bucket &bucket,
                                            const std::string &prefix,
                                            const std::string &marker,
                                            const char delimiter, int max_keys) {
@@ -736,8 +825,9 @@ ListObjectsInfo S3ObjectStore::ListObjects(const std::string &bucket,
     struct stat buf;
 
     if (!stat((root / object).c_str(), &buf)) {
-      return ObjectInfo{object, buf.st_mtim.tv_sec, std::to_string(buf.st_size),
-                        ""};
+      return ObjectInfo{object, S3Utils::GetXattr(root / object, "etag"),
+                        buf.st_mtim.tv_sec, std::to_string(buf.st_size),
+                        S3Utils::GetXattr(root / object, "owner")};
     }
     return ObjectInfo{};
   };
@@ -746,8 +836,12 @@ ListObjectsInfo S3ObjectStore::ListObjects(const std::string &bucket,
                            f);
 }
 
+// TODO: Replace with real XrdPosix_Scandir once implemented, or replace with
+//  custom function.
+#define XrdPosix_Scandir scandir
+
 ListObjectsInfo S3ObjectStore::ListObjectsCommon(
-    const std::string &bucket, std::string prefix, const std::string &marker,
+    const S3Auth::Bucket &bucket, std::string prefix, const std::string &marker,
     char delimiter, int max_keys, bool get_versions,
     const std::function<ObjectInfo(const std::filesystem::path &,
                                    const std::string &)> &f) {
@@ -762,7 +856,8 @@ ListObjectsInfo S3ObjectStore::ListObjectsCommon(
   if (!basedir.empty()) {
     basedir += '/';
   }
-  auto fullpath = path / bucket;
+
+  auto fullpath = bucket.path;
 
   struct BasicPath {
     std::string base;
@@ -770,14 +865,12 @@ ListObjectsInfo S3ObjectStore::ListObjectsCommon(
     unsigned char d_type;
   };
 
-  fprintf(stderr, "fp: %s bd: %s, pf: %s\n", fullpath.c_str(), basedir.c_str(),
-          prefix.c_str());
   std::deque<BasicPath> entries;
 
   struct dirent **ent = nullptr;
   int n;
-  if ((n = scandir((fullpath / basedir).c_str(), &ent, nullptr, alphasort)) <
-      0) {
+  if ((n = XrdPosix_Scandir((fullpath / basedir).c_str(), &ent, nullptr,
+                            alphasort)) < 0) {
     return {};
   }
   for (auto i = 0; i < n; i++) {
@@ -821,11 +914,9 @@ ListObjectsInfo S3ObjectStore::ListObjectsCommon(
       return list;
     }
 
-    fprintf(stderr, "Checking entry: %s\n", entry_path.c_str());
     size_t m;
     if ((m = entry_path.find(delimiter, prefix.length() + basedir.length() +
                                             1)) != std::string::npos) {
-      fprintf(stderr, "common prefix: %s %zu\n", entry_path.c_str(), m);
       list.common_prefixes.insert(entry_path.substr(0, m + 1));
       list.key_marker = entry_path.substr(0, m + 1);
       list.vid_marker = "1";
@@ -833,13 +924,11 @@ ListObjectsInfo S3ObjectStore::ListObjectsCommon(
     }
 
     if (entry.d_type == DT_UNKNOWN) {
-      // todo
-      throw std::runtime_error("Unknown entry type");
+      continue;
     }
 
     if (entry.d_type == DT_DIR) {
       if (delimiter == '/') {
-        fprintf(stderr, "common prefix dir: %s\n", entry_path.c_str());
         list.common_prefixes.insert(entry_path + '/');
         list.key_marker = entry_path + '/';
         list.vid_marker = "1";
@@ -868,69 +957,122 @@ ListObjectsInfo S3ObjectStore::ListObjectsCommon(
   return list;
 }
 
-std::string S3ObjectStore::CreateMultipartUpload(XrdS3Req &req,
-                                                 const std::string &bucket,
-                                                 const std::string &key) {
-  // todo: handle metadata
+std::pair<std::string, S3Error> S3ObjectStore::CreateMultipartUpload(
+    const S3Auth::Bucket &bucket, const std::string &key) {
+  // TODO: Metadata uploaded with the create multipart upload operation is not
+  //  saved to the final file.
+
   auto upload_id = S3Utils::HexEncode(
-      S3Crypt::SHA256_OS(bucket + key + std::to_string(std::rand())));
+      S3Crypt::SHA256_OS(bucket.name + key + std::to_string(std::rand())));
 
-  auto p = std::filesystem::path(path) / XRD_MULTIPART_UPLOAD_DIR / bucket /
-           upload_id;
-  if (!std::filesystem::create_directory(p)) {
-    return "";
+  auto final_path = bucket.path / key;
+  auto tmp_path =
+      final_path.parent_path() /
+      ("." + final_path.filename().string() + "." +
+       std::to_string(std::time(nullptr)) + std::to_string(std::rand()));
+
+  auto p = mtpu_path / bucket.name / upload_id;
+  XrdPosix_Mkdir(p.c_str(), S_IRWXU | S_IRWXG);
+
+  auto err = S3Utils::makePath((char *)final_path.parent_path().c_str(),
+                               S_IRWXU | S_IRWXG);
+
+  if (err == ENOTDIR) {
+    return {{}, S3Error::ObjectExistInObjectPath};
+  } else if (err != 0) {
+    return {{}, S3Error::InternalError};
   }
 
-  if (setxattr(p.c_str(), "user.key", key.c_str(), key.size(), XATTR_CREATE)) {
-    std::filesystem::remove(p);
-    return "";
+  auto fd = XrdPosix_Open(tmp_path.c_str(), O_CREAT | O_EXCL | O_WRONLY,
+                          S_IRWXU | S_IRWXG);
+
+  if (fd < 0) {
+    S3Utils::RmPath(final_path.parent_path(), bucket.path);
+    return {{}, S3Error::InternalError};
   }
 
-  auto it = multipartUploads.find(bucket);
-  if (it != multipartUploads.end()) {
-    it->second.insert({upload_id, {key, {}}});
-  } else {
-    multipartUploads.insert({bucket, {{upload_id, {key, {}}}}});
-  }
+  S3Utils::SetXattr(p, "key", key, XATTR_CREATE);
+  S3Utils::SetXattr(p, "optimized", "1", XATTR_CREATE);
+  S3Utils::SetXattr(p, "tmp", tmp_path, XATTR_CREATE);
+  S3Utils::SetXattr(p, "part_size", "0", XATTR_CREATE);
+  S3Utils::SetXattr(p, "last_part_size", "0", XATTR_CREATE);
 
-  return upload_id;
+  return {upload_id, S3Error::None};
 }
 
 std::vector<S3ObjectStore::MultipartUploadInfo>
 S3ObjectStore::ListMultipartUploads(const std::string &bucket) {
-  auto it = multipartUploads.find(bucket);
-  if (it == multipartUploads.end()) {
-    return {};
-  }
+  auto upload_path = mtpu_path / bucket;
 
-  std::vector<MultipartUploadInfo> res;
-  res.reserve(it->second.size());
-  for (const auto &[id, info] : it->second) {
-    res.push_back({info.key, id});
-  }
+  std::vector<MultipartUploadInfo> uploads;
+  auto parse_upload = [upload_path, &uploads](dirent *entry) {
+    if (entry->d_name[0] == '.') {
+      return;
+    }
 
-  return res;
+    auto key = S3Utils::GetXattr(upload_path / entry->d_name, "key");
+
+    uploads.push_back({key, entry->d_name});
+  };
+
+  S3Utils::DirIterator(upload_path, parse_upload);
+
+  return uploads;
 }
 
-S3Error S3ObjectStore::AbortMultipartUpload(const std::string &bucket,
+S3Error S3ObjectStore::AbortMultipartUpload(const S3Auth::Bucket &bucket,
                                             const std::string &key,
                                             const std::string &upload_id) {
-  auto buploads = multipartUploads.find(bucket);
-  if (buploads == multipartUploads.end()) {
-    return S3Error::InternalError;
+  auto upload_path = mtpu_path / bucket.name / upload_id;
+  auto tmp_path = S3Utils::GetXattr(upload_path, "tmp");
+  auto err = DeleteMultipartUpload(bucket, key, upload_id);
+  if (err != S3Error::None) {
+    return err;
   }
 
-  auto upload = buploads->second.find(upload_id);
-  if (upload == buploads->second.end()) {
+  XrdPosix_Unlink(tmp_path.c_str());
+  S3Utils::RmPath(std::filesystem::path(tmp_path), bucket.path);
+
+  return err;
+};
+
+S3Error S3ObjectStore::DeleteMultipartUpload(const S3Auth::Bucket &bucket,
+                                             const std::string &key,
+                                             const std::string &upload_id) {
+  auto upload_path = mtpu_path / bucket.name / upload_id;
+
+  auto err = ValidateMultipartUpload(upload_path, key);
+  if (err != S3Error::None) {
+    return err;
+  }
+
+  auto rm_files = [&upload_path](dirent *entry) {
+    if (entry->d_name[0] == '.') {
+      return;
+    }
+
+    XrdPosix_Unlink((upload_path / entry->d_name).c_str());
+  };
+
+  S3Utils::DirIterator(upload_path, rm_files);
+
+  XrdPosix_Rmdir(upload_path.c_str());
+
+  return S3Error::None;
+}
+
+S3Error S3ObjectStore::ValidateMultipartUpload(const std::string &upload_path,
+                                               const std::string &key) {
+  struct stat buf;
+
+  if (XrdPosix_Stat(upload_path.c_str(), &buf)) {
     return S3Error::NoSuchUpload;
   }
-  if (upload->second.key != key) {
+
+  auto upload_key = S3Utils::GetXattr(upload_path, "key");
+  if (upload_key != key) {
     return S3Error::InvalidRequest;
   }
-
-  buploads->second.erase(upload_id);
-  std::filesystem::remove_all(std::filesystem::path(path) /
-                              XRD_MULTIPART_UPLOAD_DIR / bucket / upload_id);
 
   return S3Error::None;
 }
@@ -938,95 +1080,285 @@ S3Error S3ObjectStore::AbortMultipartUpload(const std::string &bucket,
 std::pair<S3Error, std::vector<S3ObjectStore::PartInfo>>
 S3ObjectStore::ListParts(const std::string &bucket, const std::string &key,
                          const std::string &upload_id) {
-  auto buploads = multipartUploads.find(bucket);
-  if (buploads == multipartUploads.end()) {
-    return {S3Error::InternalError, {}};
-  }
+  auto upload_path = mtpu_path / bucket / upload_id;
 
-  auto upload = buploads->second.find(upload_id);
-  if (upload == buploads->second.end()) {
-    return {S3Error::NoSuchUpload, {}};
-  }
-  if (upload->second.key != key) {
-    return {S3Error::InvalidRequest, {}};
+  auto err = ValidateMultipartUpload(upload_path, key);
+  if (err != S3Error::None) {
+    return {err, {}};
   }
 
   std::vector<PartInfo> parts;
+  auto parse_part = [upload_path, &parts](dirent *entry) {
+    if (entry->d_name[0] == '.') {
+      return;
+    }
 
-  for (const auto &[n, info] : upload->second.parts) {
-    parts.push_back({info.etag, info.last_modified, n, info.size});
-  }
+    auto etag = S3Utils::GetXattr(upload_path / entry->d_name, "etag");
+
+    struct stat buf;
+    XrdPosix_Stat((upload_path / entry->d_name).c_str(), &buf);
+
+    unsigned long n;
+    try {
+      n = std::stoul(entry->d_name);
+    } catch (std::exception &e) {
+      return;
+    }
+    parts.push_back(PartInfo{etag, buf.st_mtim.tv_sec, n,
+                             static_cast<size_t>(buf.st_size)});
+  };
+
+  S3Utils::DirIterator(upload_path, parse_part);
 
   return {S3Error::None, parts};
 }
 
-S3Error S3ObjectStore::CompleteMultipartUpload(
-    XrdS3Req &req, const std::string &bucket, const std::string &key,
-    const std::string &upload_id, const std::vector<PartInfo> &parts) {
-  auto buploads = multipartUploads.find(bucket);
-  if (buploads == multipartUploads.end()) {
-    return S3Error::InternalError;
-  }
-
-  auto upload = buploads->second.find(upload_id);
-  if (upload == buploads->second.end()) {
-    return S3Error::NoSuchUpload;
-  }
-  if (upload->second.key != key) {
-    return S3Error::InvalidRequest;
-  }
-
-  size_t max = 0;
-  auto it = upload->second.parts.end();
+bool S3ObjectStore::CompleteOptimizedMultipartUpload(
+    const std::filesystem::path &final_path,
+    const std::filesystem::path &tmp_path, const std::vector<PartInfo> &parts) {
+  size_t e = 1;
   for (const auto &[etag, _, n, __] : parts) {
-    if ((it = upload->second.parts.find(n)) == upload->second.parts.end()) {
-      return S3Error::InvalidPart;
+    if (e != n) {
+      return false;
     }
-    if (it->second.etag != etag) {
-      return S3Error::InvalidPart;
+
+    e++;
+    auto id = "part" + std::to_string(n);
+    if (S3Utils::GetXattr(tmp_path, id + ".start").empty()) {
+      return false;
     }
+
+    if (S3Utils::GetXattr(tmp_path, id + ".etag") != etag) {
+      return false;
+    }
+  }
+
+  XrdPosix_Rename(tmp_path.c_str(), final_path.c_str());
+  return true;
+}
+
+S3Error S3ObjectStore::CompleteMultipartUpload(
+    XrdS3Req &req, const S3Auth::Bucket &bucket, const std::string &key,
+    const std::string &upload_id, const std::vector<PartInfo> &parts) {
+  auto upload_path = mtpu_path / req.bucket / upload_id;
+
+  auto err = ValidateMultipartUpload(upload_path, req.object);
+  if (err != S3Error::None) {
+    return err;
+  }
+
+  auto final_path = bucket.path / req.object;
+  auto opt_path = S3Utils::GetXattr(upload_path, "tmp");
+
+  auto optimized = S3Utils::GetXattr(upload_path, "optimized");
+  // Check if we are able to complete the multipart upload with only a mv
+  // operation.
+  if (!optimized.empty() &&
+      CompleteOptimizedMultipartUpload(final_path, opt_path, parts)) {
+    return DeleteMultipartUpload(bucket, key, upload_id);
+  }
+  // Otherwise we will need to concatenate parts
+
+  // First check that all the parts are in order.
+  // We first check if a file named partN exists in the multipart upload dir,
+  // then check if it exists in the optimized upload tmp path.
+  size_t max = 0;
+  struct stat buf;
+  for (const auto &[etag, _, n, __] : parts) {
     if (n <= max) {
       return S3Error::InvalidPartOrder;
     }
     max = n;
+
+    auto path = upload_path / std::to_string(n);
+    if (XrdPosix_Stat(path.c_str(), &buf)) {
+      auto id = "part" + std::to_string(n);
+      if (S3Utils::GetXattr(opt_path, id + ".start").empty()) {
+        return S3Error::InvalidPart;
+      }
+      if (S3Utils::GetXattr(opt_path, id + ".etag") != etag) {
+        return S3Error::InvalidPart;
+      }
+    } else {
+      if (S3Utils::GetXattr(path, "etag") != etag) {
+        return S3Error::InvalidPart;
+      }
+    }
   }
 
-  auto p = std::filesystem::path(path) / bucket / key;
-  create_directories(p.parent_path());
+  if (!XrdPosix_Stat(final_path.c_str(), &buf) && S_ISDIR(buf.st_mode)) {
+    return S3Error::ObjectExistAsDir;
+  }
 
-  std::ofstream ofs(p, std::ios_base::binary | std::ios_base::trunc);
+  // Then we copy all the parts into a tmp file, which will be renamed to the
+  // final file.
+  auto tmp_path = bucket.path /
+                  ("." + req.object + "." + std::to_string(std::time(nullptr)) +
+                   std::to_string(std::rand()));
+  auto fd = XrdPosix_Open(tmp_path.c_str(), O_CREAT | O_EXCL | O_WRONLY);
 
-  // todo: send spaces to avoid timing out connection
+  if (fd < 0) {
+    return S3Error::InternalError;
+  }
+
+  XrdCksCalcmd5 xs;
+  xs.Init();
+
+  Object optimized_obj;
+  optimized_obj.Init(opt_path);
+
+  ssize_t opt_len;
+  try {
+    opt_len = std::stol(S3Utils::GetXattr(opt_path, "part_size"));
+  } catch (std::exception &) {
+    return S3Error::InternalError;
+  }
+
+  char *ptr;
+
   for (const auto &part : parts) {
-    std::ifstream ifs(std::filesystem::path(path) / XRD_MULTIPART_UPLOAD_DIR /
-                          bucket / upload_id / std::to_string(part.part_number),
-                      std::ios_base::binary);
+    Object obj;
 
-    ofs << ifs.rdbuf();
-    ifs.close();
+    if (obj.Init(upload_path / std::to_string(part.part_number)) !=
+        S3Error::None) {
+      // use the optimized part
+
+      ssize_t start;
+
+      try {
+        start = std::stol(S3Utils::GetXattr(
+            opt_path, "part" + std::to_string(part.part_number) + ".start"));
+      } catch (std::exception &) {
+        return S3Error::InternalError;
+      }
+
+      optimized_obj.Lseek(start, SEEK_SET);
+
+      ssize_t i = 0;
+      ssize_t len = opt_len;
+      while ((i = optimized_obj.Read(len, &ptr)) > 0) {
+        if (len < i) {
+          XrdPosix_Close(fd);
+          XrdPosix_Unlink(tmp_path.c_str());
+          S3Utils::RmPath(final_path.parent_path(), bucket.path);
+          return S3Error::InternalError;
+        }
+        len -= i;
+        xs.Update(ptr, i);
+        XrdPosix_Write(fd, ptr, i);
+      }
+    } else {
+      ssize_t len = obj.GetSize();
+      ssize_t i = 0;
+
+      while ((i = obj.Read(len, &ptr)) > 0) {
+        if (len < i) {
+          XrdPosix_Close(fd);
+          XrdPosix_Unlink(tmp_path.c_str());
+          S3Utils::RmPath(final_path.parent_path(), bucket.path);
+          return S3Error::InternalError;
+        }
+        len -= i;
+        xs.Update(ptr, i);
+        XrdPosix_Write(fd, ptr, i);
+      }
+    }
   }
 
-  // todo: set metadata
-  ofs.close();
+  XrdPosix_Close(fd);
 
+  char *fxs = xs.Final();
+  std::vector<unsigned char> md5(fxs, fxs + 16);
+  auto md5hex = '"' + S3Utils::HexEncode(md5) + '"';
   std::map<std::string, std::string> metadata;
 
-  metadata.insert({"last-modified", std::to_string(std::time(nullptr))});
-  // todo: calculate etag, add headers from create multipart upload
+  metadata.insert({"etag", md5hex});
 
-  S3Error error = SetMetadata(p, metadata);
+  S3Error error = SetMetadata(tmp_path, metadata);
   if (error != S3Error::None) {
-    // todo: remove path too
-    fprintf(stderr, "meta error %d\n", (int)error);
-    std::filesystem::remove(p);
+    XrdPosix_Unlink(tmp_path.c_str());
+    S3Utils::RmPath(final_path.parent_path(), bucket.path);
     return error;
   }
 
-  std::filesystem::remove_all(std::filesystem::path(path) /
-                              XRD_MULTIPART_UPLOAD_DIR / bucket / upload_id);
-  buploads->second.erase(upload);
+  XrdPosix_Rename(tmp_path.c_str(), final_path.c_str());
+
+  XrdPosix_Unlink(opt_path.c_str());
+  DeleteMultipartUpload(bucket, key, upload_id);
 
   return S3Error::None;
+  //  if (upload->second.optimized) {
+  //    auto it = upload->second.parts.end();
+  //    size_t e = 1;
+  //    for (const auto &[etag, _, n, __] : parts) {
+  //      if (e != n) {
+  //        throw std::runtime_error("Multipart is not continuous, todo!");
+  //      }
+  //      if ((it = upload->second.parts.find(n)) == upload->second.parts.end())
+  //      {
+  //        return S3Error::InvalidPart;
+  //      }
+  //      if (it->second.etag != etag) {
+  //        return S3Error::InvalidPart;
+  //      }
+  //      e++;
+  //    }
+  //    auto p = std::filesystem::path(path) / bucket / key;
+  //    create_directories(p.parent_path());
+  //
+  //    XrdCksCalcmd5 xs;
+  //    xs.Init();
+  //
+  //    auto fname = path / XRD_MULTIPART_UPLOAD_DIR / bucket / upload_id /
+  //    "file"; auto size = file_size(fname); auto fd = open(fname.c_str(),
+  //    O_RDONLY);
+  //
+  //    auto file_buffer = mmap(0, size, PROT_READ, MAP_SHARED, fd, 0);
+  //
+  //    xs.Update((const char *)file_buffer, size);
+  //
+  //    munmap(file_buffer, size);
+  //
+  //    char *fxs = xs.Final();
+  //    std::vector<unsigned char> md5(fxs, fxs + 16);
+  //    auto md5hex = '"' + S3Utils::HexEncode(md5) + '"';
+  //    std::map<std::string, std::string> metadata;
+  //
+  //    metadata.insert({"last-modified", std::to_string(std::time(nullptr))});
+  //    metadata.insert({"etag", md5hex});
+  //    // todo: add headers from create multipart upload
+  //
+  //    S3Error error = SetMetadata(fname, metadata);
+  //    if (error != S3Error::None) {
+  //      return error;
+  //    }
+  //
+  //    std::filesystem::rename(fname, p);
+  //    buploads->second.erase(upload);
+  //
+  //    return S3Error::None;
+  //  } else {
+  //    throw std::runtime_error("Not optimized mtpu not implemented");
+  //  }
+
+  //  auto it = parts.begin();
+  //  auto ret = S3Error::None;
+  //
+  //
+  //
+  //  auto validate_part = [&it, &parts, &ret](dirent *entry) {
+  //    if (ret != S3Error::None || entry->d_name[0] == '.') {
+  //      return;
+  //    }
+  //
+  //    if (it == parts.end()) {
+  //      ret = S3Error::InvalidPart;
+  //      return;
+  //    }
+  //
+  //
+  //
+  //  };
 }
 
 }  // namespace S3

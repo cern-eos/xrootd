@@ -16,21 +16,19 @@ namespace S3 {
 XrdVERSIONINFO(XrdHttpGetExtHandler, HttpS3);
 
 int NotFoundHandler(XrdS3Req &req) {
-  // todo: send error msg
   return req.S3ErrorResponse(S3Error::NoSuchAccessPoint);
 }
 
 S3Handler::S3Handler(XrdSysError *log, const char *config, XrdOucEnv *myEnv)
-    : mLog(log->logger(), "S3_"),
-      mApi(),
-      mRouter(&mLog, NotFoundHandler) {
+    : mLog(log->logger(), "S3_"), mApi(), mRouter(&mLog, NotFoundHandler) {
   if (!ParseConfig(config, *myEnv)) {
     throw std::runtime_error("Failed to configure the HTTP S3 handler.");
   }
 
   ctx.log = &mLog;
 
-  mApi = S3Api(mConfig.data_dir, mConfig.auth_dir);
+  mApi = S3Api(mConfig.config_dir, mConfig.region, mConfig.service,
+               mConfig.multipart_upload_dir);
 
   ConfigureRouter();
 
@@ -38,10 +36,7 @@ S3Handler::S3Handler(XrdSysError *log, const char *config, XrdOucEnv *myEnv)
 }
 
 void S3Handler::ConfigureRouter() {
-#define AC(f) Action::f
-
-#define HANDLER(f) \
-  Action::f, #f, [this](XrdS3Req &req) { return mApi.f##Handler(req); }
+#define HANDLER(f) #f, [this](XrdS3Req &req) { return mApi.f##Handler(req); }
   // The router needs to be initialized in the right order, with the most
   // restrictive matcher first.
 
@@ -460,12 +455,6 @@ void S3Handler::ConfigureRouter() {
                        .Path(PathMatch::MatchBucket)
                        .Queries({{"delete", ""}}));
 
-  // todo:
-  //  mRouter.AddRoute(S3Route(HANDLER(WriteGetObjectResponse))
-  //                       .Method(HttpMethod::Post)
-  //                       .Path(PathMatch::MatchObject)
-  //                       .Queries({{"", ""}}));
-
 #undef HANDLER
 }
 
@@ -483,18 +472,12 @@ bool S3Handler::ParseConfig(const char *config, XrdOucEnv &env) {
   const char *val;
 
   while ((val = Config.GetMyFirstWord())) {
-    if (!strcmp("s3.authdir", val)) {
+    if (!strcmp("s3.config", val)) {
       if (!(val = Config.GetWord())) {
         Config.Close();
         return false;
       }
-      mConfig.auth_dir = val;
-    } else if (!strcmp("s3.datadir", val)) {
-      if (!(val = Config.GetWord())) {
-        Config.Close();
-        return false;
-      }
-      mConfig.data_dir = val;
+      mConfig.config_dir = val;
     } else if (!strcmp("s3.region", val)) {
       if (!(val = Config.GetWord())) {
         Config.Close();
@@ -507,30 +490,32 @@ bool S3Handler::ParseConfig(const char *config, XrdOucEnv &env) {
         return false;
       }
       mConfig.service = val;
+    } else if (!strcmp("s3.multipart", val)) {
+      if (!(val = Config.GetWord())) {
+        Config.Close();
+        return false;
+      }
+      mConfig.multipart_upload_dir = val;
     }
   }
   Config.Close();
 
-  return (!mConfig.data_dir.empty() && !mConfig.auth_dir.empty() &&
-          !mConfig.service.empty() && !mConfig.region.empty());
+  return (!mConfig.config_dir.empty() && !mConfig.service.empty() &&
+          !mConfig.region.empty() && !mConfig.multipart_upload_dir.empty());
 }
 
 S3Handler::~S3Handler() = default;
 
 bool S3Handler::MatchesPath(const char *verb, const char *path) {
-  // match all paths for now
+  // match all paths for now, as we do not have access to request headers here.
   return true;
 }
 
 int S3Handler::ProcessReq(XrdHttpExtReq &req) {
   XrdS3Req s3req(&ctx, req);
 
-  // todo: s3req.Validate() -> S3Error
-  //  ex: return S3ErrorREsponse(err)
-  // todo: include s3errorresponse in s3req class
-  //  ex: s3req.SendError()
   if (!s3req.isValid()) {
-    return 1;
+    return s3req.S3ErrorResponse(S3Error::InvalidRequest);
   }
 
   return mRouter.ProcessReq(s3req);

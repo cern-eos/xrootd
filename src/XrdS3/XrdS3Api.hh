@@ -16,8 +16,9 @@ namespace S3 {
 class S3Api {
  public:
   S3Api() = default;
-  S3Api(const std::string& data_path, const std::string &auth_path)
-      : objectStore(data_path), auth(auth_path) {}
+  S3Api(const std::string &config_path, const std::string &region, const std::string &service,
+        const std::string &mtpu_path)
+      : objectStore(config_path, mtpu_path), auth(config_path, region, service) {}
 
   ~S3Api() = default;
 
@@ -44,14 +45,14 @@ class S3Api {
   int UploadPartHandler(XrdS3Req &req);
   int CompleteMultipartUploadHandler(XrdS3Req &req);
 
+  int GetBucketAclHandler(XrdS3Req &req);
+  int GetObjectAclHandler(XrdS3Req &req);
+
   // Not implemented
 
   int UploadPartCopyHandler(XrdS3Req &req) {
     return req.S3ErrorResponse(S3Error::NotImplemented);
   }
-
-
-
   int DeleteBucketAnalyticsConfigurationHandler(XrdS3Req &req) {
     return req.S3ErrorResponse(S3Error::NotImplemented);
   }
@@ -73,9 +74,6 @@ class S3Api {
   int DeleteBucketMetricsConfigurationHandler(XrdS3Req &req) {
     return req.S3ErrorResponse(S3Error::NotImplemented);
   }
-  int DeleteBucketOwnershipControlsHandler(XrdS3Req &req) {
-    return req.S3ErrorResponse(S3Error::NotImplemented);
-  }
   int DeleteBucketPolicyHandler(XrdS3Req &req) {
     return req.S3ErrorResponse(S3Error::NotImplemented);
   }
@@ -95,9 +93,6 @@ class S3Api {
     return req.S3ErrorResponse(S3Error::NotImplemented);
   }
   int GetBucketAccelerateConfigurationHandler(XrdS3Req &req) {
-    return req.S3ErrorResponse(S3Error::NotImplemented);
-  }
-  int GetBucketAclHandler(XrdS3Req &req) {
     return req.S3ErrorResponse(S3Error::NotImplemented);
   }
   int GetBucketAnalyticsConfigurationHandler(XrdS3Req &req) {
@@ -136,9 +131,6 @@ class S3Api {
   int GetBucketNotificationConfigurationHandler(XrdS3Req &req) {
     return req.S3ErrorResponse(S3Error::NotImplemented);
   }
-  int GetBucketOwnershipControlsHandler(XrdS3Req &req) {
-    return req.S3ErrorResponse(S3Error::NotImplemented);
-  }
   int GetBucketPolicyHandler(XrdS3Req &req) {
     return req.S3ErrorResponse(S3Error::NotImplemented);
   }
@@ -158,9 +150,6 @@ class S3Api {
     return req.S3ErrorResponse(S3Error::NotImplemented);
   }
   int GetBucketWebsiteHandler(XrdS3Req &req) {
-    return req.S3ErrorResponse(S3Error::NotImplemented);
-  }
-  int GetObjectAclHandler(XrdS3Req &req) {
     return req.S3ErrorResponse(S3Error::NotImplemented);
   }
   int GetObjectAttributesHandler(XrdS3Req &req) {
@@ -196,11 +185,7 @@ class S3Api {
   int ListBucketMetricsConfigurationsHandler(XrdS3Req &req) {
     return req.S3ErrorResponse(S3Error::NotImplemented);
   }
-
   int PutBucketAccelerateConfigurationHandler(XrdS3Req &req) {
-    return req.S3ErrorResponse(S3Error::NotImplemented);
-  }
-  int PutBucketAclHandler(XrdS3Req &req) {
     return req.S3ErrorResponse(S3Error::NotImplemented);
   }
   int PutBucketAnalyticsConfigurationHandler(XrdS3Req &req) {
@@ -236,9 +221,6 @@ class S3Api {
   int PutBucketNotificationConfigurationHandler(XrdS3Req &req) {
     return req.S3ErrorResponse(S3Error::NotImplemented);
   }
-  int PutBucketOwnershipControlsHandler(XrdS3Req &req) {
-    return req.S3ErrorResponse(S3Error::NotImplemented);
-  }
   int PutBucketPolicyHandler(XrdS3Req &req) {
     return req.S3ErrorResponse(S3Error::NotImplemented);
   }
@@ -255,9 +237,6 @@ class S3Api {
     return req.S3ErrorResponse(S3Error::NotImplemented);
   }
   int PutBucketWebsiteHandler(XrdS3Req &req) {
-    return req.S3ErrorResponse(S3Error::NotImplemented);
-  }
-  int PutObjectAclHandler(XrdS3Req &req) {
     return req.S3ErrorResponse(S3Error::NotImplemented);
   }
   int PutObjectLegalHoldHandler(XrdS3Req &req) {
@@ -281,8 +260,22 @@ class S3Api {
   int SelectObjectContentHandler(XrdS3Req &req) {
     return req.S3ErrorResponse(S3Error::NotImplemented);
   }
-
   int WriteGetObjectResponseHandler(XrdS3Req &req) {
+    return req.S3ErrorResponse(S3Error::NotImplemented);
+  }
+  int GetBucketOwnershipControlsHandler(XrdS3Req &req) {
+    return req.S3ErrorResponse(S3Error::NotImplemented);
+  }
+  int PutBucketOwnershipControlsHandler(XrdS3Req &req) {
+    return req.S3ErrorResponse(S3Error::NotImplemented);
+  }
+  int DeleteBucketOwnershipControlsHandler(XrdS3Req &req) {
+    return req.S3ErrorResponse(S3Error::NotImplemented);
+  }
+  int PutBucketAclHandler(XrdS3Req &req) {
+    return req.S3ErrorResponse(S3Error::NotImplemented);
+  }
+  int PutObjectAclHandler(XrdS3Req &req) {
     return req.S3ErrorResponse(S3Error::NotImplemented);
   }
 

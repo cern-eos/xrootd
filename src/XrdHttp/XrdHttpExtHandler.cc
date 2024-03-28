@@ -66,7 +66,7 @@ int XrdHttpExtReq::BuffgetData(int blen, char **data, bool wait) {
 
   if (!prot) return -1;
   int nb = prot->BuffgetData(blen, data, wait);
-  
+
   return nb;
 }
 
@@ -96,7 +96,7 @@ verb(req->requestverb), headers(req->allheaders) {
   // Here we fill the request summary with all the fields we can
   resource = req->resource.c_str();
   int envlen = 0;
-  
+
   const char *p = nullptr;
   if (req->opaque)
     p = req->opaque->Env(envlen);
@@ -104,10 +104,10 @@ verb(req->requestverb), headers(req->allheaders) {
   p = req->resourceplusopaque.c_str();
   headers["xrd-http-fullresource"] = p ? p:"";
   headers["xrd-http-prot"] = prot->isHTTPS()?"https":"http";
-  
+
   // These fields usually identify the client that connected
 
-  
+
   if (prot->SecEntity.moninfo) {
     clientdn = prot->SecEntity.moninfo;
     trim(clientdn);

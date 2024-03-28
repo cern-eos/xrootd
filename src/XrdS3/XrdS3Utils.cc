@@ -4,9 +4,13 @@
 
 #include "XrdS3Utils.hh"
 
-#include <format>
+#include <sys/stat.h>
+
+#include <cstring>
 #include <iomanip>
 #include <sstream>
+
+#include "XrdPosix/XrdPosixExtern.hh"
 
 namespace S3 {
 
@@ -19,7 +23,7 @@ std::string S3Utils::UriEncode(const std::bitset<256> &encoder,
       res << c;
     } else {
       res << "%" << std::uppercase << std::hex << std::setw(2)
-          << std::setfill('0') << (int)c;
+          << std::setfill('0') << (unsigned int)(unsigned char)c;
     }
   }
 
@@ -63,6 +67,8 @@ S3Utils::S3Utils() {
   mObjectEncoder['/'] = true;
 }
 
+// AWS uses a different uri encoding for objects during canonical signature
+// calculation.
 std::string S3Utils::UriEncode(const std::string &str) {
   return UriEncode(mEncoder, str);
 }
@@ -104,23 +110,24 @@ void S3Utils::TrimAll(std::string &str) {
   }
 }
 
-bool S3Utils::HasHeader(const std::map<std::string, std::string> &header,
+bool S3Utils::MapHasKey(const std::map<std::string, std::string> &map,
                         const std::string &key) {
-  return (header.find(key) != header.end());
+  return (map.find(key) != map.end());
 }
 
-bool S3Utils::HeaderEq(const std::map<std::string, std::string> &header,
-                       const std::string &key, const std::string &val) {
-  auto it = header.find(key);
+bool S3Utils::MapHasEntry(const std::map<std::string, std::string> &map,
+                          const std::string &key, const std::string &val) {
+  auto it = map.find(key);
 
-  return (it != header.end() && it->second == val);
+  return (it != map.end() && it->second == val);
 }
 
-bool S3Utils::HeaderStartsWith(const std::map<std::string, std::string> &header,
-                               const std::string &key, const std::string &val) {
-  auto it = header.find(key);
+bool S3Utils::MapEntryStartsWith(const std::map<std::string, std::string> &map,
+                                 const std::string &key,
+                                 const std::string &val) {
+  auto it = map.find(key);
 
-  return (it != header.end() && it->second.substr(0, val.length()) == val);
+  return (it != map.end() && it->second.substr(0, val.length()) == val);
 }
 
 std::string S3Utils::timestampToIso8016(const std::string &t) {
@@ -131,12 +138,6 @@ std::string S3Utils::timestampToIso8016(const std::string &t) {
   }
 }
 
-std::string S3Utils::timestampToIso8016(
-    const std::filesystem::file_time_type &t) {
-  fprintf(stderr, "time since epoch: %ld\n", std::chrono::duration_cast<std::chrono::seconds>(t.time_since_epoch()).count());
-  return timestampToIso8016(std::chrono::duration_cast<std::chrono::seconds>(t.time_since_epoch())
-          .count());
-}
 std::string S3Utils::timestampToIso8016(const time_t &t) {
   struct tm *date = gmtime(&t);
   return timestampToIso8016(date);
@@ -148,6 +149,108 @@ std::string S3Utils::timestampToIso8016(const struct tm *t) {
     return "";
   }
   return date_iso8601;
+}
+
+int S3Utils::makePath(char *path, mode_t mode) {
+  char *next_path = path + 1;
+  struct stat buf;
+
+  // Typically, the path exists. So, do a quick check before launching into it
+  //
+  if (!XrdPosix_Stat(path, &buf)) {
+    if (S_ISDIR(buf.st_mode)) {
+      return 0;
+    }
+    return ENOTDIR;
+  }
+
+  // Start creating directories starting with the root
+  //
+  while ((next_path = index(next_path, int('/')))) {
+    *next_path = '\0';
+    if (XrdPosix_Mkdir(path, mode))
+      if (errno != EEXIST) return errno;
+    *next_path = '/';
+    next_path = next_path + 1;
+  }
+  if (XrdPosix_Mkdir(path, mode))
+    if (errno != EEXIST) return errno;
+  // All done
+  //
+  return 0;
+}
+
+void S3Utils::RmPath(std::filesystem::path path,
+                    const std::filesystem::path &stop) {
+  while (path != stop && !XrdPosix_Rmdir(path.c_str())) {
+    path = path.parent_path();
+  }
+}
+
+std::string S3Utils::GetXattr(const std::filesystem::path &path,
+                              const std::string &key) {
+  std::vector<char> res;
+
+  auto ret =
+      XrdPosix_Getxattr(path.c_str(), ("user.s3." + key).c_str(), nullptr, 0);
+
+  if (ret == -1) {
+    return {};
+  }
+
+  // Add a terminating '\0'
+  res.resize(ret + 1);
+  XrdPosix_Getxattr(path.c_str(), ("user.s3." + key).c_str(), res.data(),
+                    res.size() - 1);
+
+  return {res.data()};
+}
+
+#include <sys/xattr.h>
+#define XrdPosix_Setxattr setxattr
+// TODO: Replace by XrdPosix_Setxattr once implemented
+
+int S3Utils::SetXattr(const std::filesystem::path &path, const std::string &key,
+                      const std::string &value, int flags) {
+  return XrdPosix_Setxattr(path.c_str(), ("user.s3." + key).c_str(),
+                           value.c_str(), value.size(), flags);
+}
+
+#undef XrdPosix_Setxattr
+
+bool S3Utils::IsDirEmpty(const std::filesystem::path &path) {
+  auto dir = XrdPosix_Opendir(path.c_str());
+
+  if (dir == nullptr) {
+    return false;
+  }
+
+  int n = 0;
+  while (XrdPosix_Readdir(dir) != nullptr) {
+    if (++n > 2) {
+      break;
+    }
+  }
+
+  XrdPosix_Closedir(dir);
+  return n <= 2;
+}
+
+int S3Utils::DirIterator(const std::filesystem::path &path,
+                         const std::function<void(dirent *)> &f) {
+  auto dir = XrdPosix_Opendir(path.c_str());
+
+  if (dir == nullptr) {
+    return 1;
+  }
+
+  dirent *entry;
+  while ((entry = XrdPosix_Readdir(dir)) != nullptr) {
+    f(entry);
+  }
+
+  XrdPosix_Closedir(dir);
+  return 0;
 }
 
 }  // namespace S3

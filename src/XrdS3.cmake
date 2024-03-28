@@ -8,7 +8,7 @@ set(LIB_XRD_S3 XrdHttpS3-${PLUGIN_VERSION})
 # Shared library version
 #-------------------------------------------------------------------------------
 
-if (BUILD_TPC)
+if (BUILD_S3)
     #-----------------------------------------------------------------------------
     # The XrdHttp library
     #-----------------------------------------------------------------------------
@@ -45,8 +45,8 @@ if (BUILD_TPC)
             XrdS3/XrdS3ErrorResponse.hh
             XrdS3/XrdS3Api.cc
             XrdS3/XrdS3Api.hh
-            XrdS3/S3Response.cc
-            XrdS3/S3Response.hh
+            XrdS3/XrdS3Response.cc
+            XrdS3/XrdS3Response.hh
             XrdS3/XrdS3ObjectStore.cc
             XrdS3/XrdS3ObjectStore.hh
             XrdS3/XrdS3Action.hh
@@ -58,6 +58,7 @@ if (BUILD_TPC)
             XrdServer
             XrdUtils
             XrdHttpUtils
+            XrdPosixPreload
             tinyxml2
             ${CMAKE_DL_LIBS}
             ${CMAKE_THREAD_LIBS_INIT})

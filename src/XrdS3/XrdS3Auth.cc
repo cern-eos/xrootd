@@ -5,58 +5,65 @@
 #include "XrdS3Auth.hh"
 
 #include <fcntl.h>
+#include <sys/xattr.h>
 
 #include <algorithm>
+#include <utility>
 
 #include "XrdOuc/XrdOucStream.hh"
 #include "XrdOuc/XrdOucTUtils.hh"
 #include "XrdOuc/XrdOucUtils.hh"
-#include "XrdS3ObjectStore.hh"
+#include "XrdPosix/XrdPosixExtern.hh"
 
 namespace S3 {
 
 AuthType S3Auth::GetRequestAuthType(const XrdS3Req &req) {
   if (req.method == Put) {
-    if (S3Utils::HeaderEq(req.lowercase_headers, X_AMZ_CONTENT_SHA256,
-                          STREAMING_SHA256_PAYLOAD)) {
+    if (S3Utils::MapHasEntry(req.lowercase_headers, X_AMZ_CONTENT_SHA256,
+                             STREAMING_SHA256_PAYLOAD)) {
       return AuthType::StreamingSigned;
     }
-    if (S3Utils::HeaderEq(req.lowercase_headers, X_AMZ_CONTENT_SHA256,
-                          STREAMING_SHA256_TRAILER)) {
+    if (S3Utils::MapHasEntry(req.lowercase_headers, X_AMZ_CONTENT_SHA256,
+                             STREAMING_SHA256_TRAILER)) {
       return AuthType::StreamingSignedTrailer;
     }
-    if (S3Utils::HeaderEq(req.lowercase_headers, X_AMZ_CONTENT_SHA256,
-                          STREAMING_UNSIGNED_TRAILER)) {
+    if (S3Utils::MapHasEntry(req.lowercase_headers, X_AMZ_CONTENT_SHA256,
+                             STREAMING_UNSIGNED_TRAILER)) {
       return AuthType::StreamingUnsignedTrailer;
     }
   }
 
-  if (S3Utils::HeaderStartsWith(req.lowercase_headers, "authorization",
-                                AWS4_ALGORITHM)) {
+  if (S3Utils::MapEntryStartsWith(req.lowercase_headers, "authorization",
+                                  AWS4_ALGORITHM)) {
     return AuthType::Signed;
   }
-  if (S3Utils::HeaderEq(req.query, "X-Amz-Algorithm", AWS4_ALGORITHM)) {
+  if (S3Utils::MapHasEntry(req.query, "X-Amz-Algorithm", AWS4_ALGORITHM)) {
     return AuthType::Presigned;
   }
-  // todo: parse other auth types
+  // TODO: Detect other authentication types.
   return AuthType::Unknown;
 }
 S3Error S3Auth::AuthenticateRequest(XrdS3Req &req) {
   switch (GetRequestAuthType(req)) {
     case AuthType::Signed: {
-      // todo: not hardcode
-      return VerifySigV4(req, "us-east-1", "s3");
+      return VerifySigV4(req);
     }
-    // todo:  invalidate all other requests for now
+    // TODO: Implement verification of other request type
     default: {
       return S3Error::NotImplemented;
     }
   }
 }
 
-// todo: handle errors
-S3Auth::SigV4 S3Auth::ParseSigV4(const XrdS3Req &req, const std::string &region,
-                                 const std::string &service) {
+/// See
+/// <https://docs.aws.amazon.com/AmazonS3/latest/API/sig-v4-header-based-auth.html>
+/// for documentation on the AWS SigV4 format.
+
+/// Parse the `Credentials`, `SignedHeaders` and `Signature` in the
+/// authorization header.
+/// Header example: `AWS4-HMAC-SHA256
+/// Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request,SignedHeaders=host;x-amz-content-sha256;x-amz-date,Signature=34b48302e7b5fa45bde8084f4b7868a86f0a534bc59db6670ed5711ef69dc6f7`
+S3Auth::SigV4 S3Auth::ParseSigV4(const XrdS3Req &req) {
   SigV4 sig;
 
   auto it = req.lowercase_headers.find("authorization");
@@ -70,6 +77,7 @@ S3Auth::SigV4 S3Auth::ParseSigV4(const XrdS3Req &req, const std::string &region,
     return {};
   }
 
+  // Check that the authorization header starts with `AWS4-HMAC-SHA256`
   if (authorization.substr(0, loc) != AWS4_ALGORITHM) {
     return {};
   }
@@ -83,6 +91,7 @@ S3Auth::SigV4 S3Auth::ParseSigV4(const XrdS3Req &req, const std::string &region,
     return {};
   }
 
+  // Find each component, trimming its value
   for (const auto &component : components) {
     loc = component.find('=');
     if (loc == std::string::npos) {
@@ -109,7 +118,6 @@ S3Auth::SigV4 S3Auth::ParseSigV4(const XrdS3Req &req, const std::string &region,
       if (credentials[credentials.size() - 3] != region) {
         return {};
       }
-      // todo: validate date
 
       sig.credentials.request = "aws4_request";
       sig.credentials.service = service;
@@ -133,8 +141,9 @@ S3Auth::SigV4 S3Auth::ParseSigV4(const XrdS3Req &req, const std::string &region,
 
   return sig;
 }
+
 std::string S3Auth::GetCanonicalRequestHash(
-    Context *ctx, const std::string &method, const std::string &canonical_uri,
+    const std::string &method, const std::string &canonical_uri,
     const std::string &canonical_query_string,
     const std::string &canonical_headers, const std::string &signed_headers,
     const std::string &hashed_payload) {
@@ -142,7 +151,6 @@ std::string S3Auth::GetCanonicalRequestHash(
       S3Utils::stringJoin('\n', method, canonical_uri, canonical_query_string,
                           canonical_headers, signed_headers, hashed_payload);
 
-  fprintf(stderr, "Canonical request:\n%s\n", canonical_request.c_str());
   const auto hashed_request = S3Crypt::SHA256_OS(canonical_request);
 
   return S3Utils::HexEncode(hashed_request);
@@ -165,7 +173,7 @@ std::string S3Auth::GetStringToSign(const std::string &algorithm,
   return string_to_sign;
 }
 
-sha256_digest S3Auth::GetSigningKey(Context *ctx, const std::string &secret_key,
+sha256_digest S3Auth::GetSigningKey(const std::string &secret_key,
                                     const SigV4::Scope &scope) {
   std::string key = "AWS4" + secret_key;
   auto dateKey = S3Crypt::HMAC_SHA256(scope.date, key);
@@ -177,67 +185,60 @@ sha256_digest S3Auth::GetSigningKey(Context *ctx, const std::string &secret_key,
                               dateRegionServiceKey);
 }
 
-std::string S3Auth::GetSignature(Context *ctx, const std::string &secret_key,
+std::string S3Auth::GetSignature(const std::string &secret_key,
                                  const SigV4::Scope &scope,
                                  const std::string &string_to_sign) {
-  const auto signing_key = GetSigningKey(ctx, secret_key, scope);
+  const auto signing_key = GetSigningKey(secret_key, scope);
 
   const auto digest = S3Crypt::HMAC_SHA256(string_to_sign, signing_key);
 
   return S3Utils::HexEncode(digest);
 }
-S3Error S3Auth::VerifySigV4(XrdS3Req &req, const std::string &region,
-                            const std::string &service) {
-  fprintf(stderr, "Verifying sigv4...\n");
-  auto sig = ParseSigV4(req, region, service);
+S3Error S3Auth::VerifySigV4(XrdS3Req &req) {
+  auto sig = ParseSigV4(req);
 
-  req.id = sig.credentials.access_key;
-  if (req.id.empty()) {
-    fprintf(stderr, "REQ ID IS EMPTY!\n");
+  if (sig.credentials.access_key.empty()) {
     return S3Error::InvalidAccessKeyId;
   }
+
   Context *ctx = req.ctx;
 
-  // todo: global store?
-  if (keyMap.find(sig.credentials.access_key) == keyMap.end()) {
-    fprintf(stderr, "KEY NOT IN STORE!\n");
+  auto it = keyMap.find(sig.credentials.access_key);
+  if (it == keyMap.end()) {
     return S3Error::InvalidAccessKeyId;
   }
-  auto key = keyMap.find(sig.credentials.access_key)->second;
+  req.id = it->second.first;
+  auto key = it->second.second;
 
-  // todo: not segfault
-  auto hashed_payload =
-      req.lowercase_headers.find(X_AMZ_CONTENT_SHA256)->second;
+  auto header_it = req.lowercase_headers.find(X_AMZ_CONTENT_SHA256);
+  if (header_it == req.lowercase_headers.end()) {
+    return S3Error::InvalidRequest;
+  }
+
+  // TODO: Compare this hash with the actual hash of the request body once we
+  //  read it.
+  auto hashed_payload = header_it->second;
 
   auto canonical_uri = ctx->utils.ObjectUriEncode(req.uri_path);
-  auto canonical_query_string = GetCanonicalQueryString(ctx, req.query);
+  auto canonical_query_string = GetCanonicalQueryString(&ctx->utils, req.query);
 
   std::string canonical_headers, signed_headers;
   std::tie(canonical_headers, signed_headers) =
       GetCanonicalHeaders(req.lowercase_headers, sig.signed_headers);
 
-  // todo: compare hash on stream close if type == xs and body is not empty
   auto canonical_request_hash = GetCanonicalRequestHash(
-      ctx, HttpMethodMap.find(req.method)->second, canonical_uri,
+      HttpMethodMap.find(req.method)->second, canonical_uri,
       canonical_query_string, canonical_headers, signed_headers,
       hashed_payload);
-  // todo: limit to 7 days
-
-  // todo: sanitize if we log
-
-  // todo: not hardcode algorithm
 
   auto string_to_sign = GetStringToSign(
       AWS4_ALGORITHM, req.date, canonical_request_hash, sig.credentials);
-  fprintf(stderr, "String to sign:\n%s\n", string_to_sign.c_str());
 
-  const auto signature =
-      GetSignature(ctx, key, sig.credentials, string_to_sign);
+  const auto signature = GetSignature(key, sig.credentials, string_to_sign);
   ctx->log->Emsg("VerifySignature", "calculated signature:", signature.c_str());
   ctx->log->Emsg("VerifySignature",
                  "  received signature:", sig.signature.c_str());
 
-  // todo: secure compare?
   if (signature == sig.signature) {
     return S3Error::None;
   }
@@ -245,14 +246,14 @@ S3Error S3Auth::VerifySigV4(XrdS3Req &req, const std::string &region,
 }
 
 std::string S3Auth::GetCanonicalQueryString(
-    Context *ctx, const std::map<std::string, std::string> &query_params) {
+    S3Utils *utils, const std::map<std::string, std::string> &query_params) {
   std::vector<std::pair<std::string, std::string>> query_params_map;
   std::string canonical_query_string;
   query_params_map.reserve(query_params.size());
 
   for (const auto &p : query_params) {
-    query_params_map.emplace_back(ctx->utils.UriEncode(p.first),
-                                  ctx->utils.UriEncode(p.second));
+    query_params_map.emplace_back(utils->UriEncode(p.first),
+                                  utils->UriEncode(p.second));
   }
   std::sort(query_params_map.begin(), query_params_map.end());
 
@@ -275,13 +276,13 @@ std::tuple<std::string, std::string> S3Auth::GetCanonicalHeaders(
     if (signed_headers.count(hd.first)) {
       std::string value(hd.second);
 
-      // todo: separate the values for a multi-value header using commas.
+      // TODO: If a header contains multiple values, separate them using commas.
       S3Utils::TrimAll(value);
       canonical_headers_map.emplace_back(hd.first, value);
     } else if (hd.first.substr(0, 6) == "x-amz-" ||
                hd.first == "content-type" || hd.first == "host") {
-      // signed headers must include all x-amz-* headers, host and content-type
-      // (if present) headers.
+      // signed headers must include all x-amz-* headers, host and, if present,
+      // content-type headers.
       return {};
     }
   }
@@ -298,61 +299,149 @@ std::tuple<std::string, std::string> S3Auth::GetCanonicalHeaders(
   return std::make_tuple(canonical_headers, canonical_signed_headers);
 }
 
-// todo: do we need object here?
-S3Error S3Auth::ValidateRequest(XrdS3Req &req, const S3ObjectStore &objectStore,
-                                const Action &action, const std::string &bucket,
-                                const std::string &object) {
+std::pair<S3Error, S3Auth::Bucket> S3Auth::ValidateRequest(
+    XrdS3Req &req, const Action &action, const std::string &bucket,
+    const std::string &object) {
   auto err = AuthenticateRequest(req);
   if (err != S3Error::None) {
-    return err;
+    return {err, {}};
   }
 
-  return AuthorizeRequest(req, objectStore, action, bucket, object);
+  return AuthorizeRequest(req, action, bucket, object);
 }
 
-S3Error S3Auth::AuthorizeRequest(const XrdS3Req &req,
-                                 const S3ObjectStore &objectStore,
-                                 const Action &action,
-                                 const std::string &bucket,
-                                 const std::string &object) {
-  // todo:
-  if (action == Action::ListBuckets || action == Action::CreateBucket) {
-    return S3Error::None;
-  }
-  // todo: head bucket might not need to be owner
+std::pair<S3Error, S3Auth::Bucket> S3Auth::GetBucket(
+    const std::string &name) const {
+  auto path = bucketInfoPath / name;
 
-  auto owner = objectStore.GetBucketOwner(bucket);
-  if (owner.empty()) {
-    return S3Error::NoSuchBucket;
-  }
-  if (owner == req.id) {
-    return S3Error::None;
-  } else {
-    return S3Error::AccessDenied;
-  }
-  // todo: iam instead of manually
+  Bucket b{};
+  struct stat buf;
+  if (XrdPosix_Stat(path.c_str(), &buf)) return {S3Error::NoSuchBucket, b};
+
+  b.owner.id = S3Utils::GetXattr(path, "owner");
+  if (b.owner.id.empty()) return {S3Error::InternalError, b};
+
+  b.path = S3Utils::GetXattr(path, "path");
+  if (b.path.empty()) return {S3Error::InternalError, b};
+
+  b.name = name;
+
+  return {S3Error::None, b};
 }
-S3Auth::S3Auth(const std::string &path) {
-  XrdOucStream stream;
 
-  auto fd =
-      open((path + "/users").c_str(), O_RDONLY | O_CREAT, S_IREAD | S_IWRITE);
+std::pair<S3Error, S3Auth::Bucket> S3Auth::AuthorizeRequest(
+    const XrdS3Req &req, const Action &action, const std::string &bucket_name,
+    const std::string &object) {
+  if (action == Action::ListBuckets) {
+    return {S3Error::None, {}};
+  }
+  // TODO: head bucket might not need to be owner
 
-  if (fd < 0) {
-    throw std::runtime_error("Unable to open auth file");
+  auto [err, bucket] = GetBucket(bucket_name);
+
+  if (action == Action::CreateBucket) {
+    if (err == S3Error::None) {
+      if (bucket.owner.id == req.id) {
+        return {S3Error::BucketAlreadyOwnedByYou, bucket};
+      }
+      return {S3Error::BucketAlreadyExists, bucket};
+    }
+    if (err == S3Error::NoSuchBucket) {
+      return {S3Error::None, bucket};
+    }
+    return {err, bucket};
   }
 
-  stream.Attach(fd);
-  const char *line;
-  while ((line = stream.GetLine())) {
-    const std::string l(line);
-
-    auto pos = l.find(':');
-    const std::string id = l.substr(0, pos);
-    const std::string key = l.substr(pos + 1);
-
-    keyMap.insert({id, key});
+  if (err != S3Error::None) {
+    return {err, bucket};
   }
+
+  // TODO: At the moment only the bucket owner can execute actions in the
+  //  bucket, delegate this authorization to EOS/XrootD
+  if (bucket.owner.id == req.id) {
+    return {S3Error::None, bucket};
+  }
+  return {S3Error::AccessDenied, bucket};
+}
+
+void S3Auth::DeleteBucketInfo(const S3Auth::Bucket &bucket) {
+  XrdPosix_Unlink((bucketInfoPath / bucket.name).c_str());
+}
+
+S3Error S3Auth::CreateBucketInfo(const S3Auth::Bucket &bucket) {
+  auto path = bucketInfoPath / bucket.name;
+  if (XrdPosix_Mkdir(path.c_str(), S_IRWXU | S_IRWXG)) {
+    return S3Error::InternalError;
+  }
+
+  if (S3Utils::SetXattr(path, "path", bucket.path, XATTR_CREATE)) {
+    XrdPosix_Rmdir(path.c_str());
+    return S3Error::InternalError;
+  }
+  if (S3Utils::SetXattr(path, "owner", bucket.owner.id, XATTR_CREATE)) {
+    XrdPosix_Rmdir(path.c_str());
+    return S3Error::InternalError;
+  }
+
+  return S3Error::None;
+}
+
+/// Parse the auth data on startup, at the moment this data is never updated if
+/// the on disk data changes.
+S3Auth::S3Auth(const std::filesystem::path &path, std::string region,
+               std::string service)
+    : region(std::move(region)), service(std::move(service)) {
+  auto keystore = path / "keystore";
+  bucketInfoPath = path / "buckets";
+
+  XrdPosix_Mkdir(keystore.c_str(), S_IRWXU | S_IRWXG);
+  XrdPosix_Mkdir(bucketInfoPath.c_str(), S_IRWXU | S_IRWXG);
+
+  auto dir = XrdPosix_Opendir(keystore.c_str());
+  if (dir == nullptr) {
+    std::string error = "Unable to open keystore: ";
+    throw std::runtime_error(error + keystore.string());
+  }
+
+  dirent *entry = nullptr;
+  while ((entry = XrdPosix_Readdir(dir)) != nullptr) {
+    if (entry->d_name[0] == '.') {
+      continue;
+    }
+
+    std::string access_key_id = entry->d_name;
+
+    auto filepath = keystore / access_key_id;
+
+    auto user_id = S3Utils::GetXattr(filepath, "user");
+    if (user_id.empty()) {
+      continue;
+    }
+
+    struct stat buff;
+    if (XrdPosix_Stat(filepath.c_str(), &buff)) {
+      continue;
+    }
+
+    auto fd = XrdPosix_Open(filepath.c_str(), O_RDONLY);
+    if (fd <= 0) {
+      continue;
+    }
+
+    std::string access_key_secret;
+    access_key_secret.resize(buff.st_size);
+
+    auto ret =
+        XrdPosix_Read(fd, access_key_secret.data(), access_key_secret.size());
+    if (!ret) {
+      continue;
+    }
+
+    XrdPosix_Close(fd);
+    keyMap.insert({access_key_id, {user_id, access_key_secret}});
+  }
+
+  XrdPosix_Closedir(dir);
 }
 
 }  // namespace S3

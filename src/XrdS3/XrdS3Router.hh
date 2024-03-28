@@ -23,7 +23,7 @@ enum class PathMatch { MatchObject, MatchBucket, MatchNoBucket };
 class S3Route {
  public:
   explicit S3Route(HandlerFunc fn) : handler(std::move(fn)){};
-  S3Route(Action _, std::string name, HandlerFunc fn)
+  S3Route(std::string name, HandlerFunc fn)
       : handler(std::move(fn)), name(std::move(name)){};
 
   ~S3Route() = default;

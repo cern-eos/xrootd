@@ -6,10 +6,10 @@
 #define XROOTD_XRDS3AUTH_HH
 
 #include <set>
+#include <shared_mutex>
 
 #include "XrdS3Action.hh"
 #include "XrdS3Crypt.hh"
-#include "XrdS3ObjectStore.hh"
 #include "XrdS3Req.hh"
 
 namespace S3 {
@@ -25,9 +25,6 @@ enum class AuthType {
   StreamingUnsignedTrailer,
 };
 
-const std::string EMPTY_SHA256 =
-    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-
 const std::string STREAMING_SHA256_PAYLOAD =
     "STREAMING-AWS4-HMAC-SHA256-PAYLOAD";
 const std::string STREAMING_SHA256_TRAILER =
@@ -37,16 +34,15 @@ const std::string SHA256_TRAILER = "AWS4-HMAC-SHA256-TRAILER";
 const std::string UNSIGNED_PAYLOAD = "UNSIGNED-PAYLOAD";
 const std::string STREAMING_UNSIGNED_TRAILER =
     "STREAMING-UNSIGNED-PAYLOAD-TRAILER";
-
 const std::string AWS4_ALGORITHM = "AWS4-HMAC-SHA256";
-
 const std::string X_AMZ_CONTENT_SHA256 = "x-amz-content-sha256";
 
 class S3Auth {
  public:
   S3Auth() = default;
 
-  explicit S3Auth(const std::string &path);
+  explicit S3Auth(const std::filesystem::path &path, std::string region,
+                  std::string service);
 
   ~S3Auth() = default;
 
@@ -54,17 +50,29 @@ class S3Auth {
 
   S3Error AuthenticateRequest(XrdS3Req &req);
 
-  S3Error AuthorizeRequest(const XrdS3Req &req, const S3ObjectStore &objectStore,
-                        const Action &action, const std::string &bucket,
-                        const std::string &object);
+  struct Owner {
+    std::string id;
+    std::string display_name;
+  };
 
-  S3Error ValidateRequest(XrdS3Req &req, const S3ObjectStore &objectStore,
-                       const Action &action, const std::string &bucket,
-                       const std::string &object);
-  S3Error VerifySigV4(XrdS3Req &req, const std::string &region,
-                   const std::string &service);
+  struct Bucket {
+    std::string name;
+    Owner owner;
+    std::filesystem::path path;
+  };
+
+  std::pair<S3Error, Bucket> AuthorizeRequest(const XrdS3Req &req,
+                                              const Action &action,
+                                              const std::string &bucket,
+                                              const std::string &object);
+
+  std::pair<S3Error, Bucket> ValidateRequest(XrdS3Req &req,
+                                             const Action &action,
+                                             const std::string &bucket,
+                                             const std::string &object);
+  S3Error VerifySigV4(XrdS3Req &req);
   static std::string GetCanonicalQueryString(
-      Context *ctx, const std::map<std::string, std::string> &query_params);
+      S3Utils *utils, const std::map<std::string, std::string> &query_params);
   static std::tuple<std::string, std::string> GetCanonicalHeaders(
       const Headers &headers, const std::set<std::string> &signed_headers);
 
@@ -79,10 +87,9 @@ class S3Auth {
       std::string request;
     } credentials;
   };
-  static SigV4 ParseSigV4(const XrdS3Req &req, const std::string &region,
-                          const std::string &service);
+  SigV4 ParseSigV4(const XrdS3Req &req);
   static std::string GetCanonicalRequestHash(
-      Context *ctx, const std::string &method, const std::string &canonical_uri,
+      const std::string &method, const std::string &canonical_uri,
       const std::string &canonical_query_string,
       const std::string &canonical_headers, const std::string &signed_headers,
       const std::string &hashed_payload);
@@ -90,16 +97,26 @@ class S3Auth {
                                      const struct tm &date,
                                      const std::string &canonical_request_hash,
                                      const SigV4::Scope &scope);
-  static std::string GetSignature(Context *ctx, const std::string &secret_key,
+  static std::string GetSignature(const std::string &secret_key,
                                   const SigV4::Scope &scope,
                                   const std::string &string_to_sign);
-  static sha256_digest GetSigningKey(Context *ctx,
-                                     const std::string &secret_key,
+  static sha256_digest GetSigningKey(const std::string &secret_key,
                                      const SigV4::Scope &scope);
 
+  void DeleteBucketInfo(const Bucket &bucket);
+
+  S3Error CreateBucketInfo(const Bucket &bucket);
+
  private:
-  // Map of user id to key
-  std::map<std::string, std::string> keyMap;
+  // Map of user access key id to access key secret and userid
+  std::map<std::string, std::pair<std::string, std::string>> keyMap;
+
+  std::filesystem::path bucketInfoPath;
+
+  std::string region;
+  std::string service;
+
+  std::pair<S3Error, Bucket> GetBucket(const std::string &name) const;
 };
 
 }  // namespace S3
