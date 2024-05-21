@@ -475,30 +475,39 @@ bool S3Handler::ParseConfig(const char *config, XrdOucEnv &env) {
     if (!strcmp("s3.config", val)) {
       if (!(val = Config.GetWord())) {
         Config.Close();
+	std::cerr << "error: s3.config value not defined" << std::endl;
         return false;
       }
       mConfig.config_dir = val;
     } else if (!strcmp("s3.region", val)) {
       if (!(val = Config.GetWord())) {
         Config.Close();
+	std::cerr << "error: s3.region value not defined" << std::endl;
         return false;
       }
       mConfig.region = val;
     } else if (!strcmp("s3.service", val)) {
       if (!(val = Config.GetWord())) {
         Config.Close();
+	std::cerr << "error: s3.service value not defined" << std::endl;
         return false;
       }
       mConfig.service = val;
     } else if (!strcmp("s3.multipart", val)) {
       if (!(val = Config.GetWord())) {
         Config.Close();
+	std::cerr << "error: s3.multipart value not defined" << std::endl;
         return false;
       }
       mConfig.multipart_upload_dir = val;
     }
   }
   Config.Close();
+
+  if (mConfig.config_dir.empty())           { std::cerr << "error: s3.config not defined in configuration file"  << std::endl; }
+  if (mConfig.service.empty())              { std::cerr << "error: s3.service not defined in configuration file" << std::endl; }
+  if (mConfig.region.empty())               { std::cerr << "error: s3.region not defined in configuration file"  << std::endl; }
+  if (mConfig.multipart_upload_dir.empty()) { std::cerr << "error: s3.multipar not defined in configuration file" << std::endl; }
 
   return (!mConfig.config_dir.empty() && !mConfig.service.empty() &&
           !mConfig.region.empty() && !mConfig.multipart_upload_dir.empty());
