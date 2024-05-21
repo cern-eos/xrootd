@@ -164,7 +164,7 @@ int ListObjectsV2Response(XrdS3Req& req, const std::string& bucket,
   printer.AddElement("Prefix", encoder(prefix));
 
   printer.AddElement("KeyCount",
-                     oinfo.objects.size() + oinfo.common_prefixes.size());
+                     (int64_t)(oinfo.objects.size() + oinfo.common_prefixes.size()));
   printer.AddElement("IsTruncated", oinfo.is_truncated);
   if (oinfo.is_truncated) {
     printer.AddElement("NextContinuationToken", encoder(oinfo.key_marker));
@@ -319,8 +319,8 @@ int ListPartsResponse(XrdS3Req& req, const std::string& upload_id,
     printer.AddElement("ETag", etag);
     printer.AddElement("LastModified",
                        S3Utils::timestampToIso8016(last_modified));
-    printer.AddElement("PartNumber", part_number);
-    printer.AddElement("Size", size);
+    printer.AddElement("PartNumber", (int64_t)part_number);
+    printer.AddElement("Size", (int64_t)size);
 
     printer.CloseElement();
   }

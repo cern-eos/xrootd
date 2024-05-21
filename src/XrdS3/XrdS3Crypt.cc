@@ -11,6 +11,32 @@
 
 namespace S3 {
 
+#if OPENSSL_VERSION_NUMBER < 0x30000000L
+S3Crypt::S3SHA256::S3SHA256() {
+  md = (EVP_MD*)EVP_sha256();
+  if (md == nullptr) {
+    throw std::bad_alloc();
+  }
+
+  ctx = EVP_MD_CTX_new();
+  if (ctx == nullptr) {
+    throw std::bad_alloc();
+  }
+
+  if (EVP_DigestInit_ex(ctx, md, NULL) != 1) {
+    EVP_MD_CTX_free(ctx);
+    throw std::runtime_error("Unable to init digest");
+  }
+}
+
+S3Crypt::S3SHA256::~S3SHA256() {
+  EVP_MD_CTX_free(ctx);
+  EVP_cleanup();
+}
+
+void S3Crypt::S3SHA256::Init() { EVP_DigestInit_ex(ctx, nullptr, nullptr); }
+#else
+  
 S3Crypt::S3SHA256::S3SHA256() {
   md = EVP_MD_fetch(nullptr, "SHA256", nullptr);
   if (md == nullptr) {
@@ -36,6 +62,9 @@ S3Crypt::S3SHA256::~S3SHA256() {
 }
 
 void S3Crypt::S3SHA256::Init() { EVP_DigestInit_ex2(ctx, nullptr, nullptr); }
+
+#endif
+  
 
 void S3Crypt::S3SHA256::Update(const char *src, size_t size) {
   EVP_DigestUpdate(ctx, src, size);
