@@ -52,6 +52,12 @@ def main():
     deleteuser_parser = subparsers.add_parser('deleteuser', help='Delete an existing user')
     deleteuser_parser.add_argument('username', help='Username to delete')
 
+    # Add the 'addbucket' subcommand
+    addbucket_parser = subparsers.add_parser('addbucket', help='Add a new bucket')
+    addbucket_parser.add_argument('username', help='Username')
+    addbucket_parser.add_argument('bucketname', help='Bucket name')
+    addbucket_parser.add_argument('bucketpath', help='Bucket path')
+
     # Parse the arguments
     args = parser.parse_args()
 
@@ -62,6 +68,10 @@ def main():
         handle_adduser(args)
     elif args.subcommand == 'deleteuser':
         handle_deleteuser(args)
+    elif args.subcommand == 'addbucket':
+        handle_addbucket(args)
+    else:
+        parser.print_help()
 
 def handle_config(args):
     # Ensure exactly one argument is provided
@@ -319,6 +329,60 @@ def handle_deleteuser(args):
             pass  # File does not have 's3.user' extended attribute
 
     print(f"Info: User '{username}' deleted successfully.")
+
+def handle_addbucket(args):
+    username = args.username
+    bucketname = args.bucketname
+    bucketpath = args.bucketpath
+
+    # Determine the base path from the config file
+    config_dir = os.path.join(os.path.expanduser('~'), '.xs3')
+    config_file = os.path.join(config_dir, 'config')
+
+    if not os.path.exists(config_file):
+        print("Error: Configuration file does not exist. Please run 'config' subcommand first.")
+        return
+
+    try:
+        with open(config_file, 'r') as f:
+            config_data = json.load(f)
+        base_path = config_data.get('base_path')
+        if not base_path:
+            print("Error: Base path is not configured properly.")
+            return
+    except (IOError, json.JSONDecodeError) as e:
+        print(f"Error: Failed to read the config file '{config_file}'. {e}")
+        return
+
+    # Check if the user directory exists
+    users_dir = os.path.join(base_path, 'users')
+    user_dir = os.path.join(users_dir, username)
+    if not os.path.exists(user_dir):
+        print("Error: User does not exist - use 'adduser' first.")
+        return
+
+    # Create the bucket directory
+    buckets_dir = os.path.join(base_path, 'buckets')
+    bucket_file = os.path.join(buckets_dir, bucketname)
+
+    # Create or update the bucket file
+    try:
+        with open(bucket_file, 'w') as f:
+            f.write('')
+        print(f"Info: New bucket file '{bucket_file}' created successfully.")
+    except OSError as e:
+        print(f"Error: Failed to create or update bucket file '{bucket_file}'. {e}")
+        return
+
+    # Set extended attributes on the bucket file
+    try:
+        os.setxattr(bucket_file, 'user.s3.owner', username.encode())
+        os.setxattr(bucket_file, 'user.s3.path', bucketpath.encode())
+        print(f"Info: Extended attributes set on '{bucket_file}': 'user.s3.owner'={username}, 'user.s3.path'={bucketpath}")
+    except AttributeError:
+        print("Info: Extended attributes are not supported on this platform.")
+    except OSError as e:
+        print(f"Error: Failed to set extended attributes on '{bucket_file}'. {e}")
 
 
 if __name__ == '__main__':
