@@ -32,6 +32,7 @@ import string
 import random
 import uuid
 import shutil
+import re
 
 def main():
     # Create the main parser
@@ -63,6 +64,10 @@ def main():
     deletebucket_parser.add_argument('username', help='Username')
     deletebucket_parser.add_argument('bucketname', help='Bucket name')
 
+    # Add the 'ls' subcommand
+    ls_parser = subparsers.add_parser('ls', help='List users/buckets')
+    ls_parser.add_argument('--username', help='Username',  default=None)
+
     # Parse the arguments
     args = parser.parse_args()
 
@@ -77,8 +82,38 @@ def main():
         handle_addbucket(args)
     elif args.subcommand == 'deletebucket':
         handle_deletebucket(args)
+    elif args.subcommand == 'ls':
+        handle_ls(args)
     else:
         parser.print_help()
+
+def print_directory_structure(directory, buckets_dir, indent=''):
+    items = os.listdir(directory)
+    for i, item in enumerate(items):
+        item_path = os.path.join(directory, item)
+        is_last = i == len(items) - 1
+
+        if os.path.isdir(item_path):
+            print(indent + ('└── ' if is_last else '├── ') + f"{item}/")
+            print_directory_structure(item_path, indent + ('    ' if is_last else '│   '))
+        else:
+            bucket_file = os.path.join(buckets_dir, item)
+            bucket_owner_attr = get_bucket_extended_attribute(bucket_file, 'user.s3.owner')
+            bucket_path_attr = get_bucket_extended_attribute(bucket_file, 'user.s3.path')
+            new_bucket_path_attr = get_extended_attribute(directory, 'user.s3.new_bucket_path')
+            print(indent + ('└── ' if is_last else '├── ') + f"{item:20} {bucket_owner_attr:20} {bucket_path_attr:40} new:[{new_bucket_path_attr}]")
+
+def get_extended_attribute(filepath, attribute_name):
+    try:
+        attr = os.getxattr(filepath, attribute_name)
+        return attr.decode()
+    except OSError:
+        return ""
+
+def get_bucket_extended_attribute(filename, attribute_name):
+    base_path = os.path.join(os.path.expanduser('~'), '.xs3', 'buckets')
+    file_path = os.path.join(base_path, filename)
+    return get_extended_attribute(file_path, attribute_name)
 
 def handle_config(args):
     # Ensure exactly one argument is provided
@@ -478,6 +513,44 @@ def handle_deletebucket(args):
         except OSError as e:
             print(f"Error: Failed to delete empty file '{user_bucket_file}' from users directory. {e}")
 
+def handle_ls(args):
+    username = args.username
+
+    # Determine the users directory from the config file
+    config_dir = os.path.join(os.path.expanduser('~'), '.xs3')
+    config_file = os.path.join(config_dir, 'config')
+
+    if not os.path.exists(config_file):
+        print("Error: Configuration file does not exist. Please run 'config' subcommand first.")
+        return
+
+    try:
+        with open(config_file, 'r') as f:
+            config_data = json.load(f)
+        base_path = config_data.get('base_path')
+        users_dir = os.path.join(base_path, 'users')
+        buckets_dir = os.path.join(base_path, 'buckets')
+        if not base_path:
+            print("Error: Base path is not configured properly.")
+            return
+    except (IOError, json.JSONDecodeError) as e:
+        print(f"Error: Failed to read the config file '{config_file}'. {e}")
+        return
+
+    if username:
+        regex = re.compile(username)
+        print("Info: Listing matching user directories:")
+        for dir_name in os.listdir(users_dir):
+            if regex.match(dir_name):
+                user_dir = os.path.join(users_dir, dir_name)
+                print(f"- {dir_name}/")
+                print_directory_structure(user_dir, buckets_dir, '    ')
+    else:
+        print("Info: Listing all user directories:")
+        for dir_name in os.listdir(users_dir):
+            user_dir = os.path.join(users_dir, dir_name)
+            print(f"{dir_name}/")
+            print_directory_structure(user_dir, buckets_dir,  '    ')
 
 if __name__ == '__main__':
     main()
