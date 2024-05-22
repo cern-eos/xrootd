@@ -1,0 +1,112 @@
+##------------------------------------------------------------------------------
+## Copyright (c) 2024 by European Organization for Nuclear Research (CERN)
+## Author: Mano Segransan / CERN EOS Project <andreas.joachim.peters@cern.ch>
+##------------------------------------------------------------------------------
+## This file is part of the XRootD software suite.
+##
+## XRootD is free software: you can redistribute it and/or modify
+## it under the terms of the GNU Lesser General Public License as published by
+## the Free Software Foundation, either version 3 of the License, or
+## (at your option) any later version.
+##
+## XRootD is distributed in the hope that it will be useful,
+## but WITHOUT ANY WARRANTY; without even the implied warranty of
+## MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+## GNU General Public License for more details.
+##
+## You should have received a copy of the GNU Lesser General Public License
+## along with XRootD.  If not, see <http://www.gnu.org/licenses/>.
+##
+## In applying this licence, CERN does not waive the privileges and immunities
+## granted to it by virtue of its status as an Intergovernmental Organization
+## or submit itself to any jurisdiction.
+##------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# S3 Example Configuration file for XRootD
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# Run Http on port 8080
+# ------------------------------------------------------------------------------
+
+xrd.protocol XrdHttp:8080 libXrdHttp.so
+
+# ------------------------------------------------------------------------------
+# Configure certificates and grid map file for the web server
+# ------------------------------------------------------------------------------
+xrd.tls /etc/grid-security/daemon/hostcert.pem /etc/grid-security/daemon/hostkey.pem detail
+xrd.tlsca certdir /etc/grid-security/certificates/
+http.gridmap /etc/grid-security/grid-mapfile
+http.trace all
+
+
+# ------------------------------------------------------------------------------
+# install the S3 plugin
+# ------------------------------------------------------------------------------
+http.exthandler xrds3 /usr/local/lib64/libXrdHttpS3.so
+
+# ------------------------------------------------------------------------------
+# S3 configuration
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# configuration tree defining keys, users, buckets and their locations
+# ------------------------------------------------------------------------------
+# tree /s3/.config/ 
+# /s3/.config/
+# |-- buckets
+# |   `-- bucket
+# |-- keystore
+# |   `-- apeters
+# `-- users
+#     `-- apeters
+#         `-- bucket
+#
+
+## ------------------------------------------------------------------------------
+## The user 'apeters' creates new buckets as directories in his homedirectory under .s3/
+## ------------------------------------------------------------------------------
+
+# getfattr -d /s3/.config/users/apeters/
+# file: s3/.config/users/apeters/
+# user.s3.new_bucket_path="/cern/user/a/apeters/.s3/"
+#
+
+## ------------------------------------------------------------------------------
+## The key ID 'apeters' maps to the user 'apeters'
+## ------------------------------------------------------------------------------
+
+# getfattr -d /s3/.config/keystore/apeters 
+# file: s3/.config/keystore/apeters
+# user.s3.user="apeters"
+#
+
+## ------------------------------------------------------------------------------
+## The bucket 'bucket' is owned by user 'apeters' and located under his homedirectory
+## ------------------------------------------------------------------------------
+
+# getfattr -d /s3/.config/buckets/bucket 
+# file: s3/.config/buckets/bucket
+# user.s3.owner="apeters"
+# user.s3.path="/cern/user/a/apeters/"
+
+s3.config /s3/.config/
+
+# ------------------------------------------------------------------------------
+# default region
+# ------------------------------------------------------------------------------
+
+s3.region us-east-1
+
+# ------------------------------------------------------------------------------
+# s3 service
+# ------------------------------------------------------------------------------
+
+s3.service s3
+
+# ------------------------------------------------------------------------------
+# s3 temporary multipart upload location
+# ------------------------------------------------------------------------------ 
+
+s3.multipart /var/tmp/
