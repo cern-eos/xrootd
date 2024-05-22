@@ -1,28 +1,54 @@
+//------------------------------------------------------------------------------
+// Copyright (c) 2024 by European Organization for Nuclear Research (CERN)
+// Author: Mano Segransan / CERN EOS Project <andreas.joachim.peters@cern.ch>
+//------------------------------------------------------------------------------
+// This file is part of the XRootD software suite.
 //
-// Created by segransm on 11/17/23.
+// XRootD is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
 //
+// XRootD is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with XRootD.  If not, see <http://www.gnu.org/licenses/>.
+//
+// In applying this licence, CERN does not waive the privileges and immunities
+// granted to it by virtue of its status as an Intergovernmental Organization
+// or submit itself to any jurisdiction.
+//------------------------------------------------------------------------------
 
+//------------------------------------------------------------------------------
 #include "XrdS3ObjectStore.hh"
-
+//------------------------------------------------------------------------------
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/xattr.h>
-
-#include <XrdOuc/XrdOucTUtils.hh>
+//------------------------------------------------------------------------------
 #include <algorithm>
 #include <ctime>
 #include <filesystem>
 #include <stack>
 #include <utility>
-
+//------------------------------------------------------------------------------
+#include <XrdOuc/XrdOucTUtils.hh>
 #include "XrdCks/XrdCksCalcmd5.hh"
 #include "XrdPosix/XrdPosixExtern.hh"
 #include "XrdS3Auth.hh"
 #include "XrdS3Req.hh"
+//------------------------------------------------------------------------------
 
 namespace S3 {
-
+//------------------------------------------------------------------------------
+//! \brief S3ObjectStore Constructor
+//! \param config Path to the configuration file
+//! \param mtpu Path to the MTPU directory
+//------------------------------------------------------------------------------
 S3ObjectStore::S3ObjectStore(const std::string &config, const std::string &mtpu)
     : config_path(config), mtpu_path(mtpu) {
   user_map = config_path / "users";
@@ -31,6 +57,11 @@ S3ObjectStore::S3ObjectStore(const std::string &config, const std::string &mtpu)
   XrdPosix_Mkdir(mtpu_path.c_str(), S_IRWXU | S_IRWXG);
 }
 
+//------------------------------------------------------------------------------
+//! \brief ValidateBucketName
+//! \param name Bucket name to validate
+//! \return true if the name is valid, false otherwise
+//------------------------------------------------------------------------------
 bool S3ObjectStore::ValidateBucketName(const std::string &name) {
   if (name.size() < 3 || name.size() > 63) {
     return false;
@@ -45,11 +76,22 @@ bool S3ObjectStore::ValidateBucketName(const std::string &name) {
   });
 }
 
+//------------------------------------------------------------------------------
+//! \brief GetUserDefaultBucketPath Get the default bucket path for a user
+//! \param user_id User ID
+//! \return Default bucket path for the user
+//------------------------------------------------------------------------------
 std::string S3ObjectStore::GetUserDefaultBucketPath(
     const std::string &user_id) const {
   return S3Utils::GetXattr(user_map / user_id, "new_bucket_path");
 }
 
+//------------------------------------------------------------------------------
+//! \brief SetMetadata Set metadata for a file or directory
+//! \param object Object path
+//! \param metadata Metadata to set
+//! \return S3Error::None if successful, S3Error::InternalError otherwise
+//------------------------------------------------------------------------------
 S3Error S3ObjectStore::SetMetadata(
     const std::string &object,
     const std::map<std::string, std::string> &metadata) {
@@ -61,6 +103,11 @@ S3Error S3ObjectStore::SetMetadata(
   return S3Error::None;
 }
 
+//------------------------------------------------------------------------------
+//! \brief GetPartsNumber Get the parts number for a file
+//! \param path Object path
+//! \return Parts number for the file
+//------------------------------------------------------------------------------
 std::vector<std::string> S3ObjectStore::GetPartsNumber(
     const std::string &path) {
   auto p = S3Utils::GetXattr(path, "parts");
@@ -75,7 +122,13 @@ std::vector<std::string> S3ObjectStore::GetPartsNumber(
   return res;
 }
 
-// todo:
+
+//------------------------------------------------------------------------------
+//! SetPartsNumber Set the parts number for a file
+//! \param path Object path
+//! \param parts Parts number to set
+//! \return S3Error::None if successful, S3Error::InternalError otherwise
+//------------------------------------------------------------------------------
 S3Error S3ObjectStore::SetPartsNumbers(const std::string &path,
                                        std::vector<std::string> &parts) {
   auto p = S3Utils::stringJoin(',', parts);
@@ -86,6 +139,12 @@ S3Error S3ObjectStore::SetPartsNumbers(const std::string &path,
 }
 
 // TODO: We need a mutex here as multiple threads can write to the same file
+//------------------------------------------------------------------------------
+//! \brief AddPartAttr Add a part attribute for a file
+//! \param object Object path
+//! \param part_number Part number
+//! \return S3Error::None if successful, S3Error::InternalError otherwise
+//------------------------------------------------------------------------------
 S3Error S3ObjectStore::AddPartAttr(const std::string &object,
                                    size_t part_number) {
   auto parts = GetPartsNumber(object);
@@ -98,6 +157,13 @@ S3Error S3ObjectStore::AddPartAttr(const std::string &object,
   return S3Error::None;
 }
 
+//------------------------------------------------------------------------------
+//! \brief CreateBucket Create a bucket
+//! \param auth Authentication object
+//! \param bucket Bucket to create
+//! \param _location Location to create the bucket in
+//! \return S3Error::None if successful, S3Error::InternalError otherwise
+//------------------------------------------------------------------------------
 S3Error S3ObjectStore::CreateBucket(S3Auth &auth, S3Auth::Bucket bucket,
                                     const std::string &_location) {
   if (!ValidateBucketName(bucket.name)) {
@@ -145,6 +211,11 @@ S3Error S3ObjectStore::CreateBucket(S3Auth &auth, S3Auth::Bucket bucket,
   return S3Error::None;
 }
 
+//------------------------------------------------------------------------------
+//! BaseDir Split a path into a base directory and a file name
+//! \param p Path to split
+//! \return Pair of base directory and file name
+//------------------------------------------------------------------------------
 std::pair<std::string, std::string> BaseDir(std::string p) {
   std::string basedir;
   auto pos = p.rfind('/');
@@ -156,6 +227,12 @@ std::pair<std::string, std::string> BaseDir(std::string p) {
   return {basedir, p};
 }
 
+//------------------------------------------------------------------------------
+//! DeleteBucket - Delete a bucket and all its contents
+//! \param auth Authentication object
+//! \param bucket Bucket to delete
+//! \return S3Error::None if successful, S3Error::InternalError otherwise
+//------------------------------------------------------------------------------
 S3Error S3ObjectStore::DeleteBucket(S3Auth &auth,
                                     const S3Auth::Bucket &bucket) {
   if (!S3Utils::IsDirEmpty(bucket.path)) {
@@ -192,6 +269,9 @@ S3Error S3ObjectStore::DeleteBucket(S3Auth &auth,
   return S3Error::None;
 }
 
+//------------------------------------------------------------------------------
+//! \brief Object destructor - close the file descriptor if open
+//------------------------------------------------------------------------------
 S3ObjectStore::Object::~Object() {
   if (fd != 0) {
     XrdPosix_Close(fd);
@@ -201,6 +281,11 @@ S3ObjectStore::Object::~Object() {
 // TODO: Replace with the real XrdPosix_Listxattr once implemented.
 #define XrdPosix_Listxattr listxattr
 
+//------------------------------------------------------------------------------
+//! \brief Object init 
+//! \param p Path to the object
+//! \return S3Error::None if successful, S3Error::InternalError otherwise
+//------------------------------------------------------------------------------
 S3Error S3ObjectStore::Object::Init(const std::filesystem::path &p) {
   struct stat buf;
 
@@ -234,6 +319,12 @@ S3Error S3ObjectStore::Object::Init(const std::filesystem::path &p) {
   return S3Error::None;
 }
 
+//------------------------------------------------------------------------------
+//! \brief Read a file
+//! \param length Number of bytes to read
+//! \param ptr Pointer to the buffer
+//! \return Number of bytes read
+//------------------------------------------------------------------------------
 ssize_t S3ObjectStore::Object::Read(size_t length, char **ptr) {
   if (!init) {
     return 0;
@@ -253,6 +344,12 @@ ssize_t S3ObjectStore::Object::Read(size_t length, char **ptr) {
   return ret;
 }
 
+//------------------------------------------------------------------------------
+//! \brief lseek a file
+//! \param offset Offset
+//! \param whence Whence
+//! \return Offset
+//------------------------------------------------------------------------------
 off_t S3ObjectStore::Object::Lseek(off_t offset, int whence) {
   if (!init) {
     return -1;
@@ -266,11 +363,24 @@ off_t S3ObjectStore::Object::Lseek(off_t offset, int whence) {
   return XrdPosix_Lseek(fd, offset, whence);
 }
 
+//------------------------------------------------------------------------------
+//! \brief GetObject - Get an object from the store
+//! \param bucket Bucket name
+//! \param object Object name
+//! \param obj Object to fill
+//! \return S3Error::None if successful, S3Error::InternalError otherwise
+//------------------------------------------------------------------------------
 S3Error S3ObjectStore::GetObject(const S3Auth::Bucket &bucket,
                                  const std::string &object, Object &obj) {
   return obj.Init(bucket.path / object);
 }
 
+//------------------------------------------------------------------------------
+//! \brief DeleteObject - Delete an object from the store
+//! \param bucket Bucket name
+//! \param object Object name
+//! \return S3Error::None if successful, S3Error::InternalError otherwise
+//------------------------------------------------------------------------------
 S3Error S3ObjectStore::DeleteObject(const S3Auth::Bucket &bucket,
                                     const std::string &key) {
   std::string base, obj;
@@ -288,6 +398,12 @@ S3Error S3ObjectStore::DeleteObject(const S3Auth::Bucket &bucket,
   return S3Error::None;
 }
 
+//------------------------------------------------------------------------------
+//! \brief ListBuckets - List all buckets in the store for a user
+//! \param id User ID
+//! \param buckets Buckets to fill
+//! \return S3Error::None if successful, S3Error::InternalError otherwise
+//------------------------------------------------------------------------------
 std::vector<S3ObjectStore::BucketInfo> S3ObjectStore::ListBuckets(
     const std::string &id) const {
   std::vector<BucketInfo> buckets;
@@ -309,6 +425,13 @@ std::vector<S3ObjectStore::BucketInfo> S3ObjectStore::ListBuckets(
 
 // TODO: At the moment object versioning is not supported, this returns a
 //  hardcoded object version.
+//------------------------------------------------------------------------------
+//! \brief ListObjectVersions - List all versions of an object in the store
+//! \param bucket Bucket name
+//! \param object Object name
+//! \param versions Versions to fill
+//! \return S3Error::None if successful, S3Error::InternalError otherwise
+//------------------------------------------------------------------------------
 ListObjectsInfo S3ObjectStore::ListObjectVersions(
     const S3Auth::Bucket &bucket, const std::string &prefix,
     const std::string &key_marker, const std::string &version_id_marker,
@@ -328,6 +451,15 @@ ListObjectsInfo S3ObjectStore::ListObjectVersions(
                            true, f);
 }
 
+//------------------------------------------------------------------------------
+//! \brief CopyObject - Copy an object from the store
+//! \param bucket Bucket name
+//! \param key Object name
+//! \param source_obj Object to copy
+//! \param reqheaders Request headers
+//! \param headers Response headers
+//! \return S3Error::None if successful, S3Error::InternalError otherwise
+//------------------------------------------------------------------------------
 S3Error S3ObjectStore::CopyObject(const S3Auth::Bucket &bucket,
                                   const std::string &key, Object &source_obj,
                                   const Headers &reqheaders, Headers &headers) {
@@ -418,6 +550,16 @@ S3Error S3ObjectStore::CopyObject(const S3Auth::Bucket &bucket,
 //! - There must be no gap in the part numbers (this will be checked when
 //! completing the multipart upload)\n
 //! - There cannot be another upload in progress of the same part.\n
+
+//------------------------------------------------------------------------------
+//! \brief KeepOptimize - Optimize the file by keeping only the parts that are needed
+//! \param upload_path - The path to the file to optimize 
+//! \param part_number - The part number of the part to optimize
+//! \param size - The size of the part to optimize
+//! \param tmp_path - The path to the temporary file
+//! \param part_size - The size of the part
+//! \return true if the file can be optimized, false otherwise
+//------------------------------------------------------------------------------
 bool S3ObjectStore::KeepOptimize(const std::filesystem::path &upload_path,
                                  size_t part_number, unsigned long size,
                                  const std::string &tmp_path,
@@ -474,6 +616,16 @@ bool S3ObjectStore::KeepOptimize(const std::filesystem::path &upload_path,
   return true;
 }
 
+//------------------------------------------------------------------------------
+//! \brief ReadBufferAt - Read a buffer from the request
+//! \param req - The request to read from
+//! \param md5XS - The md5 checksum
+//! \param sha256XS - The sha256 checksum
+//! \param fd - The file descriptor to write to
+//! \param length - The length of the buffer to read
+//! \return S3Error::None if successful, S3Error::IncompleteBody otherwise
+//------------------------------------------------------------------------------
+
 S3Error ReadBufferAt(XrdS3Req &req, XrdCksCalcmd5 &md5XS,
                      S3Crypt::S3SHA256 &sha256XS, int fd,
                      unsigned long length) {
@@ -502,6 +654,15 @@ S3Error ReadBufferAt(XrdS3Req &req, XrdCksCalcmd5 &md5XS,
   return S3Error::None;
 }
 
+//------------------------------------------------------------------------------
+//! \brief ReadBufferIntoFile - Read a buffer from the request into a file
+//! \param req - The request to read from
+//! \param md5XS - The md5 checksum
+//! \param sha256XS - The sha256 checksum
+//! \param fd - The file descriptor to write to
+//! \param length - The length of the buffer to read
+//! \return S3Error::None if successful, S3Error::IncompleteBody otherwise
+//------------------------------------------------------------------------------
 std::pair<S3Error, size_t> ReadBufferIntoFile(XrdS3Req &req,
                                               XrdCksCalcmd5 &md5XS,
                                               S3Crypt::S3SHA256 &sha256XS,
@@ -543,6 +704,9 @@ std::pair<S3Error, size_t> ReadBufferIntoFile(XrdS3Req &req,
 #undef PUT_LIMIT
 }
 
+//------------------------------------------------------------------------------
+//! \breif FileUploadResult - Result of uploading a file
+//------------------------------------------------------------------------------
 struct FileUploadResult {
   S3Error result;
   sha256_digest sha256;
@@ -550,6 +714,14 @@ struct FileUploadResult {
   size_t size;
 };
 
+//------------------------------------------------------------------------------
+//! \brief FileUploader - Upload a file
+//! \param req - The request to read from
+//! \param chunked - Whether the file is chunked
+//! \param size - The size of the file
+//! \param path - The path to the file
+//! \return The result of the upload
+//------------------------------------------------------------------------------
 FileUploadResult FileUploader(XrdS3Req &req, bool chunked, size_t size,
                               std::filesystem::path &path) {
   auto fd = XrdPosix_Open(path.c_str(), O_CREAT | O_EXCL | O_WRONLY,
@@ -592,6 +764,16 @@ FileUploadResult FileUploader(XrdS3Req &req, bool chunked, size_t size,
   return FileUploadResult{error, sha256, md5hex, final_size};
 }
 
+//------------------------------------------------------------------------------
+//! \brief UploadPartOptimized - Upload a part of a file
+//! \param req - The request to read from
+//! \param tmp_path - The path to the temporary file
+//! \param part_size - The size of the part
+//! \param part_number - The part number
+//! \param size - The size of the file
+//! \param headers - The headers to set
+//! \return The result of the upload
+//------------------------------------------------------------------------------
 S3Error S3ObjectStore::UploadPartOptimized(XrdS3Req &req,
                                            const std::string &tmp_path,
                                            size_t part_size, size_t part_number,
@@ -646,6 +828,16 @@ S3Error S3ObjectStore::UploadPartOptimized(XrdS3Req &req,
 // TODO: Needs a mutex for some operations
 // TODO: Can be optimized by keeping in memory part information data instead of
 //  using xattr
+
+//------------------------------------------------------------------------------
+//! \brief UploadPart - Upload a part of a file
+//! \param req - The request to read from
+//! \param part_number - The part number
+//! \param size - The size of the file
+//! \param chunked - Whether the file is chunked
+//! \param headers - The headers to set
+//! \return The result of the upload
+//------------------------------------------------------------------------------
 S3Error S3ObjectStore::UploadPart(XrdS3Req &req, const std::string &upload_id,
                                   size_t part_number, unsigned long size,
                                   bool chunked, Headers &headers) {
@@ -705,6 +897,15 @@ S3Error S3ObjectStore::UploadPart(XrdS3Req &req, const std::string &upload_id,
   return error;
 }
 
+//------------------------------------------------------------------------------
+//! \brief PutObject - Put an object
+//! \param req - The request to read from
+//! \param bucket - The bucket to put the object in
+//! \param size - The size of the file
+//! \param chunked - Whether the file is chunked
+//! \param headers - The headers to set
+//! \return The result of the upload
+//------------------------------------------------------------------------------
 S3Error S3ObjectStore::PutObject(XrdS3Req &req, const S3Auth::Bucket &bucket,
                                  unsigned long size, bool chunked,
                                  Headers &headers) {
@@ -774,6 +975,12 @@ S3Error S3ObjectStore::PutObject(XrdS3Req &req, const S3Auth::Bucket &bucket,
   return error;
 }
 
+//------------------------------------------------------------------------------
+//! \brief DeleteObjects - Delete multiple objects
+//! \param bucket - The bucket to delete the objects in
+//! \param objects - The objects to delete
+//! \return The result of the delete
+//------------------------------------------------------------------------------
 std::tuple<std::vector<DeletedObject>, std::vector<ErrorObject>>
 S3ObjectStore::DeleteObjects(const S3Auth::Bucket &bucket,
                              const std::vector<SimpleObject> &objects) {
@@ -791,6 +998,17 @@ S3ObjectStore::DeleteObjects(const S3Auth::Bucket &bucket,
   return {deleted, error};
 }
 
+//------------------------------------------------------------------------------
+//! \brief ListObjectsV2 - List objects in a bucket
+//! \param bucket - The bucket to list the objects in
+//! \param prefix - The prefix to filter the objects by
+//! \param continuation_token - The continuation token to use for pagination
+//! \param delimiter - The delimiter to use for grouping objects
+//! \param max_keys - The maximum number of keys to return
+//! \param fetch_owner - Whether to fetch the owner of the objects
+//! \param start_after - The key to start after
+//! \return The result of the list
+//------------------------------------------------------------------------------
 ListObjectsInfo S3ObjectStore::ListObjectsV2(
     const S3Auth::Bucket &bucket, const std::string &prefix,
     const std::string &continuation_token, const char delimiter, int max_keys,
@@ -817,6 +1035,15 @@ ListObjectsInfo S3ObjectStore::ListObjectsV2(
       max_keys, false, f);
 }
 
+//------------------------------------------------------------------------------
+//! \brief ListObjects - List objects in a bucket
+//! \param bucket - The bucket to list the objects in
+//! \param prefix - The prefix to filter the objects by
+//! \param marker - The marker to use for pagination
+//! \param delimiter - The delimiter to use for grouping objects
+//! \param max_keys - The maximum number of keys to return
+//! \return The result of the list
+//------------------------------------------------------------------------------
 ListObjectsInfo S3ObjectStore::ListObjects(const S3Auth::Bucket &bucket,
                                            const std::string &prefix,
                                            const std::string &marker,
@@ -840,6 +1067,17 @@ ListObjectsInfo S3ObjectStore::ListObjects(const S3Auth::Bucket &bucket,
 //  custom function.
 #define XrdPosix_Scandir scandir
 
+//------------------------------------------------------------------------------
+//! \brief ListObjectsCommon - Common logic for listing objects
+//! \param bucket - The bucket to list the objects in
+//! \param prefix - The prefix to filter the objects by
+//! \param marker - The marker to use for pagination
+//! \param delimiter - The delimiter to use for grouping objects
+//! \param max_keys - The maximum number of keys to return
+//! \param get_versions - Whether to get versions of the objects
+//! \param f - The function to call for each object
+//! \return The result of the list
+//------------------------------------------------------------------------------
 ListObjectsInfo S3ObjectStore::ListObjectsCommon(
     const S3Auth::Bucket &bucket, std::string prefix, const std::string &marker,
     char delimiter, int max_keys, bool get_versions,
@@ -957,6 +1195,12 @@ ListObjectsInfo S3ObjectStore::ListObjectsCommon(
   return list;
 }
 
+//------------------------------------------------------------------------------
+//! \brief CreateMultipartUpload - Create a multipart upload
+//! \param bucket - The bucket to create the upload in
+//! \param key - The key to create the upload for
+//! \return The result of the upload
+//------------------------------------------------------------------------------
 std::pair<std::string, S3Error> S3ObjectStore::CreateMultipartUpload(
     const S3Auth::Bucket &bucket, const std::string &key) {
   // TODO: Metadata uploaded with the create multipart upload operation is not
@@ -1000,6 +1244,11 @@ std::pair<std::string, S3Error> S3ObjectStore::CreateMultipartUpload(
   return {upload_id, S3Error::None};
 }
 
+//------------------------------------------------------------------------------
+//! \brief ListMultipartUploads - List all multipart uploads for a bucket
+//! \param bucket - bucket name
+//! \return vector of multipart upload info
+//------------------------------------------------------------------------------
 std::vector<S3ObjectStore::MultipartUploadInfo>
 S3ObjectStore::ListMultipartUploads(const std::string &bucket) {
   auto upload_path = mtpu_path / bucket;
@@ -1020,6 +1269,13 @@ S3ObjectStore::ListMultipartUploads(const std::string &bucket) {
   return uploads;
 }
 
+//------------------------------------------------------------------------------
+//! \brief AbortMultipartUpload - Abort a multipart upload
+//! \param bucket - The bucket to abort the upload in
+//! \param key - The key to abort the upload for
+//! \param upload_id - The upload id to abort
+//! \return The result of the abort
+//------------------------------------------------------------------------------
 S3Error S3ObjectStore::AbortMultipartUpload(const S3Auth::Bucket &bucket,
                                             const std::string &key,
                                             const std::string &upload_id) {
@@ -1036,6 +1292,13 @@ S3Error S3ObjectStore::AbortMultipartUpload(const S3Auth::Bucket &bucket,
   return err;
 };
 
+//------------------------------------------------------------------------------
+//! \brief DeleteMultipartUpload - Delete a multipart upload
+//! \param bucket - The bucket to delete the upload in
+//! \param key - The key to delete the upload for
+//! \param upload_id - The upload id to delete
+//! \return The result of the delete
+//------------------------------------------------------------------------------
 S3Error S3ObjectStore::DeleteMultipartUpload(const S3Auth::Bucket &bucket,
                                              const std::string &key,
                                              const std::string &upload_id) {
@@ -1061,6 +1324,12 @@ S3Error S3ObjectStore::DeleteMultipartUpload(const S3Auth::Bucket &bucket,
   return S3Error::None;
 }
 
+//------------------------------------------------------------------------------
+//! \brief ValidateMultipartUpload - Validate a multipart upload
+//! \param upload_path - The path to the upload
+//! \param key - The key to validate the upload for
+//! \return The result of the validation
+//------------------------------------------------------------------------------
 S3Error S3ObjectStore::ValidateMultipartUpload(const std::string &upload_path,
                                                const std::string &key) {
   struct stat buf;
@@ -1077,6 +1346,13 @@ S3Error S3ObjectStore::ValidateMultipartUpload(const std::string &upload_path,
   return S3Error::None;
 }
 
+//------------------------------------------------------------------------------
+//! \brief ListParts - List all parts for a multipart upload
+//! \param bucket - The bucket to list the parts in
+//! \param key - The key to list the parts for
+//! \param upload_id - The upload id to list the parts for
+//! \return The result of the list
+//------------------------------------------------------------------------------
 std::pair<S3Error, std::vector<S3ObjectStore::PartInfo>>
 S3ObjectStore::ListParts(const std::string &bucket, const std::string &key,
                          const std::string &upload_id) {
@@ -1113,6 +1389,15 @@ S3ObjectStore::ListParts(const std::string &bucket, const std::string &key,
   return {S3Error::None, parts};
 }
 
+//------------------------------------------------------------------------------
+//! \brief Complete an optimized multipart upload
+//!
+//! \param final_path Path to the final file
+//! \param tmp_path Path to the temporary directory
+//! \param parts Vector of parts to upload
+//!
+//! \return True if the upload was successful, false otherwise
+//------------------------------------------------------------------------------
 bool S3ObjectStore::CompleteOptimizedMultipartUpload(
     const std::filesystem::path &final_path,
     const std::filesystem::path &tmp_path, const std::vector<PartInfo> &parts) {
@@ -1137,6 +1422,15 @@ bool S3ObjectStore::CompleteOptimizedMultipartUpload(
   return true;
 }
 
+//------------------------------------------------------------------------------
+//! \brief CompleteMultipartUpload - Complete a multipart upload
+//! \param req - The request object
+//! \param bucket - The bucket to complete the upload in
+//! \param key - The key to complete the upload for
+//! \param upload_id - The upload id to complete
+//! \param parts - The parts to complete the upload with
+//! \return The result of the complete
+//------------------------------------------------------------------------------
 S3Error S3ObjectStore::CompleteMultipartUpload(
     XrdS3Req &req, const S3Auth::Bucket &bucket, const std::string &key,
     const std::string &upload_id, const std::vector<PartInfo> &parts) {

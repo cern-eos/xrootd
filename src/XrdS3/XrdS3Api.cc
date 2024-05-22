@@ -1,18 +1,41 @@
+//------------------------------------------------------------------------------
+// Copyright (c) 2024 by European Organization for Nuclear Research (CERN)
+// Author: Mano Segransan / CERN EOS Project <andreas.joachim.peters@cern.ch>
+//------------------------------------------------------------------------------
+// This file is part of the XRootD software suite.
 //
-// Created by segransm on 11/16/23.
+// XRootD is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
 //
+// XRootD is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with XRootD.  If not, see <http://www.gnu.org/licenses/>.
+//
+// In applying this licence, CERN does not waive the privileges and immunities
+// granted to it by virtue of its status as an Intergovernmental Organization
+// or submit itself to any jurisdiction.
+//------------------------------------------------------------------------------
 
+//------------------------------------------------------------------------------
 #include "XrdS3Api.hh"
-
+//------------------------------------------------------------------------------
 #include <tinyxml2.h>
-
+//------------------------------------------------------------------------------
 #include "XrdCks/XrdCksCalcmd5.hh"
 #include "XrdS3Auth.hh"
 #include "XrdS3ErrorResponse.hh"
 #include "XrdS3Response.hh"
+//------------------------------------------------------------------------------
 
 namespace S3 {
 
+//------------------------------------------------------------------------------
 #define VALIDATE_REQUEST(action)                                 \
   auto [err, bucket] =                                           \
       auth.ValidateRequest(req, action, req.bucket, req.object); \
@@ -20,12 +43,20 @@ namespace S3 {
     return req.S3ErrorResponse(err);                             \
   }
 
+//------------------------------------------------------------------------------
 #define RET_ON_ERROR(action)         \
   err = action;                      \
   if (err != S3Error::None) {        \
     return req.S3ErrorResponse(err); \
   }
 
+//------------------------------------------------------------------------------
+//! \brief Parse the XML body of a CreateBucket request
+//! \param body The body of the request
+//! \param length The length of the body
+//! \param location The location of the bucket
+//! \return true if the body is valid, false otherwise
+//------------------------------------------------------------------------------
 bool ParseCreateBucketBody(char* body, int length, std::string& location) {
   tinyxml2::XMLDocument doc;
 
@@ -58,6 +89,12 @@ bool ParseCreateBucketBody(char* body, int length, std::string& location) {
   return true;
 }
 
+//------------------------------------------------------------------------------
+//! \brief Parse the XML body of a DeleteBucket request
+//! \param body The body of the request
+//! \param length The length of the body
+//! \return true if the body is valid, false otherwise
+//------------------------------------------------------------------------------
 int S3Api::CreateBucketHandler(XrdS3Req& req) {
   VALIDATE_REQUEST(Action::CreateBucket)
 
@@ -95,6 +132,11 @@ int S3Api::CreateBucketHandler(XrdS3Req& req) {
   return req.S3Response(200, headers, "");
 }
 
+//------------------------------------------------------------------------------
+//! ListBucketsHandler
+//! \param req
+//! \return
+//------------------------------------------------------------------------------
 int S3Api::ListBucketsHandler(S3::XrdS3Req& req) {
   VALIDATE_REQUEST(Action::ListBuckets)
 
@@ -103,6 +145,11 @@ int S3Api::ListBucketsHandler(S3::XrdS3Req& req) {
   return ListBucketsResponse(req, req.id, req.id, buckets);
 }
 
+//------------------------------------------------------------------------------
+//! HeadBucketHandler
+//! \param req
+//! \return
+//------------------------------------------------------------------------------
 int S3Api::HeadBucketHandler(S3::XrdS3Req& req) {
   auto [err, bucket] =
       auth.ValidateRequest(req, Action::HeadBucket, req.bucket, req.object);
@@ -114,6 +161,11 @@ int S3Api::HeadBucketHandler(S3::XrdS3Req& req) {
   return req.Ok();
 }
 
+//------------------------------------------------------------------------------
+//! DeleteBucketHandler
+//! \param req
+//! \return
+//------------------------------------------------------------------------------
 int S3Api::DeleteBucketHandler(S3::XrdS3Req& req) {
   VALIDATE_REQUEST(Action::DeleteBucket)
 
@@ -122,6 +174,11 @@ int S3Api::DeleteBucketHandler(S3::XrdS3Req& req) {
   return req.S3Response(204);
 }
 
+//------------------------------------------------------------------------------
+//! DeleteObjectHandler
+//! \param req
+//! \return
+//------------------------------------------------------------------------------
 int S3Api::DeleteObjectHandler(S3::XrdS3Req& req) {
   VALIDATE_REQUEST(Action::DeleteObject)
 
@@ -130,6 +187,13 @@ int S3Api::DeleteObjectHandler(S3::XrdS3Req& req) {
   return req.S3Response(204);
 }
 
+//------------------------------------------------------------------------------
+//! ValidatePreconditions
+//! \param etag
+//! \param last_modified
+//! \param headers
+//! \return
+//------------------------------------------------------------------------------
 S3Error ValidatePreconditions(const std::string& etag, time_t last_modified,
                               const Headers& headers) {
   // See https://datatracker.ietf.org/doc/html/rfc7232#section-6 for
@@ -172,6 +236,11 @@ S3Error ValidatePreconditions(const std::string& etag, time_t last_modified,
   return S3Error::None;
 }
 
+//------------------------------------------------------------------------------
+//! GetObjectHandler
+//! \param req
+//! \return int
+//------------------------------------------------------------------------------
 int S3Api::GetObjectHandler(S3::XrdS3Req& req) {
   VALIDATE_REQUEST(Action::GetObject)
 
@@ -275,6 +344,15 @@ int S3Api::GetObjectHandler(S3::XrdS3Req& req) {
   }
 }
 
+//------------------------------------------------------------------------------
+//! ParseCommonQueryParams
+//! \param query_params
+//! \param delimiter
+//! \param encode_values
+//! \param max_keys
+//! \param prefix
+//! \return S3Error
+//------------------------------------------------------------------------------
 S3Error ParseCommonQueryParams(
     const std::map<std::string, std::string>& query_params, char& delimiter,
     bool& encode_values, int& max_keys, std::string& prefix) {
@@ -318,6 +396,11 @@ S3Error ParseCommonQueryParams(
   return S3Error::None;
 }
 
+//------------------------------------------------------------------------------
+//! ListObjectVersionsHandler - List object versions
+//! \param req
+//! \return int
+//------------------------------------------------------------------------------
 int S3Api::ListObjectVersionsHandler(S3::XrdS3Req& req) {
   VALIDATE_REQUEST(Action::ListObjectVersions)
 
@@ -349,6 +432,11 @@ int S3Api::ListObjectVersionsHandler(S3::XrdS3Req& req) {
 
 #define PUT_LIMIT 5000000000
 
+//------------------------------------------------------------------------------
+//! CopyObjectHandler
+//! \param req
+//! \return int
+//------------------------------------------------------------------------------
 int S3Api::CopyObjectHandler(XrdS3Req& req) {
   VALIDATE_REQUEST(Action::CopyObject)
 
@@ -405,6 +493,11 @@ int S3Api::CopyObjectHandler(XrdS3Req& req) {
   return req.ChunkResp(nullptr, 0);
 }
 
+//------------------------------------------------------------------------------
+//! PutObjectHandler - Put object
+//! \param req
+//! \return int
+//------------------------------------------------------------------------------
 int S3Api::PutObjectHandler(XrdS3Req& req) {
   VALIDATE_REQUEST(Action::PutObject)
 
@@ -451,6 +544,11 @@ int S3Api::PutObjectHandler(XrdS3Req& req) {
   return req.S3Response(200, headers, "");
 }
 
+//------------------------------------------------------------------------------
+//! HeadObjectHandler - Head object
+//! \param req
+//! \return int
+//------------------------------------------------------------------------------
 int S3Api::HeadObjectHandler(XrdS3Req& req) {
   auto [err, bucket] =
       auth.ValidateRequest(req, Action::HeadObject, req.bucket, req.object);
@@ -481,6 +579,14 @@ struct DeleteObjectsQuery {
   std::vector<SimpleObject> objects;
 };
 
+//------------------------------------------------------------------------------
+//! ParseDeleteObjectsBody - Parse the body of a delete objects request and
+//! populate the query
+//! \param body
+//! \param length
+//! \param query
+//! \return bool
+//------------------------------------------------------------------------------
 bool ParseDeleteObjectsBody(char* body, int length, DeleteObjectsQuery& query) {
   tinyxml2::XMLDocument doc;
 
@@ -530,6 +636,11 @@ bool ParseDeleteObjectsBody(char* body, int length, DeleteObjectsQuery& query) {
   return true;
 }
 
+//------------------------------------------------------------------------------
+//! DeleteObjectHandler - Delete object
+//! \param req
+//! \return int
+//------------------------------------------------------------------------------
 int S3Api::DeleteObjectsHandler(S3::XrdS3Req& req) {
   VALIDATE_REQUEST(Action::DeleteObjects)
 
@@ -569,6 +680,11 @@ int S3Api::DeleteObjectsHandler(S3::XrdS3Req& req) {
   return DeleteObjectsResponse(req, query.quiet, deleted, error);
 }
 
+//------------------------------------------------------------------------------
+//! ListObjectsV2Handler - List objects
+//! \param req
+//! \return int
+//------------------------------------------------------------------------------
 int S3Api::ListObjectsV2Handler(S3::XrdS3Req& req) {
   VALIDATE_REQUEST(Action::ListObjectsV2)
 
@@ -610,6 +726,11 @@ int S3Api::ListObjectsV2Handler(S3::XrdS3Req& req) {
                                encode_values, objectinfo);
 }
 
+//------------------------------------------------------------------------------
+//! ListObjectVersionsHandler - List object versions
+//! \param req
+//! \return int
+//------------------------------------------------------------------------------
 int S3Api::ListObjectsHandler(S3::XrdS3Req& req) {
   VALIDATE_REQUEST(Action::ListObjects)
 
@@ -631,6 +752,12 @@ int S3Api::ListObjectsHandler(S3::XrdS3Req& req) {
   return ListObjectsResponse(req, req.bucket, prefix, delimiter, marker,
                              max_keys, encode_values, objectinfo);
 }
+
+//------------------------------------------------------------------------------
+//! CreateMultipartUploadHandler - Create multipart upload request
+//! \param req
+//! \return int
+//------------------------------------------------------------------------------
 int S3Api::CreateMultipartUploadHandler(XrdS3Req& req) {
   VALIDATE_REQUEST(Action::CreateMultipartUpload)
 
@@ -643,6 +770,11 @@ int S3Api::CreateMultipartUploadHandler(XrdS3Req& req) {
   return CreateMultipartUploadResponse(req, upload_id);
 }
 
+//------------------------------------------------------------------------------
+//! ListMultipartUploadsHandler - List multipart uploads
+//! \param req
+//! \return int
+//------------------------------------------------------------------------------
 int S3Api::ListMultipartUploadsHandler(XrdS3Req& req) {
   VALIDATE_REQUEST(Action::ListMultipartUploads)
 
@@ -651,6 +783,11 @@ int S3Api::ListMultipartUploadsHandler(XrdS3Req& req) {
   return ListMultipartUploadResponse(req, multipart_uploads);
 }
 
+//------------------------------------------------------------------------------
+//! AbortMultipartUploadHandler - Abort multipart upload
+//! \param req
+//! \return int
+//------------------------------------------------------------------------------
 int S3Api::AbortMultipartUploadHandler(XrdS3Req& req) {
   VALIDATE_REQUEST(Action::AbortMultipartUpload)
 
@@ -663,6 +800,11 @@ int S3Api::AbortMultipartUploadHandler(XrdS3Req& req) {
   return req.S3Response(204);
 }
 
+//------------------------------------------------------------------------------
+//! ListPartsHandler - List parts
+//! \param req
+//! \return int
+//------------------------------------------------------------------------------
 int S3Api::ListPartsHandler(XrdS3Req& req) {
   VALIDATE_REQUEST(Action::ListParts)
 
@@ -678,6 +820,12 @@ int S3Api::ListPartsHandler(XrdS3Req& req) {
 
   return ListPartsResponse(req, upload_id, parts);
 }
+
+//------------------------------------------------------------------------------
+//! UploadPartHandler - Upload part
+//! \param req
+//! \return int
+//------------------------------------------------------------------------------
 int S3Api::UploadPartHandler(XrdS3Req& req) {
   VALIDATE_REQUEST(Action::UploadPart)
 
@@ -726,6 +874,13 @@ int S3Api::UploadPartHandler(XrdS3Req& req) {
   return req.S3Response(200, headers, "");
 }
 
+//------------------------------------------------------------------------------
+//! ParseCompleteMultipartUploadBody - Parse complete multipart upload body
+//! \param body
+//! \param length
+//! \param query
+//! \return bool
+//------------------------------------------------------------------------------
 bool ParseCompleteMultipartUploadBody(
     char* body, int length, std::vector<S3ObjectStore::PartInfo>& query) {
   tinyxml2::XMLDocument doc;
@@ -778,6 +933,11 @@ bool ParseCompleteMultipartUploadBody(
   return true;
 }
 
+//------------------------------------------------------------------------------
+//! CompleteMultipartUploadHandler - Complete multipart upload
+//! \param req
+//! \return int
+//------------------------------------------------------------------------------
 int S3Api::CompleteMultipartUploadHandler(XrdS3Req& req) {
   VALIDATE_REQUEST(Action::CompleteMultipartUpload)
 
@@ -817,12 +977,22 @@ int S3Api::CompleteMultipartUploadHandler(XrdS3Req& req) {
   return CompleteMultipartUploadResponse(req);
 }
 
+//------------------------------------------------------------------------------
+//! GetBucketAclHandler - Get bucket acl
+//! \param req
+//! \return int
+//------------------------------------------------------------------------------
 int S3Api::GetBucketAclHandler(XrdS3Req& req) {
   VALIDATE_REQUEST(Action::GetBucketAcl)
 
   return GetAclResponse(req, bucket);
 }
 
+//------------------------------------------------------------------------------
+//! GetObjectAclHandler - Get object acl
+//! \param req
+//! \return int
+//------------------------------------------------------------------------------
 int S3Api::GetObjectAclHandler(XrdS3Req& req) {
   VALIDATE_REQUEST(Action::GetObjectAcl)
 

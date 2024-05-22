@@ -2,18 +2,19 @@
 // Created by segransm on 11/9/23.
 //
 
+//------------------------------------------------------------------------------
 #include "XrdS3Auth.hh"
-
+//------------------------------------------------------------------------------
 #include <fcntl.h>
 #include <sys/xattr.h>
-
 #include <algorithm>
 #include <utility>
-
+//------------------------------------------------------------------------------
 #include "XrdOuc/XrdOucStream.hh"
 #include "XrdOuc/XrdOucTUtils.hh"
 #include "XrdOuc/XrdOucUtils.hh"
 #include "XrdPosix/XrdPosixExtern.hh"
+//------------------------------------------------------------------------------
 
 namespace S3 {
 
@@ -412,7 +413,7 @@ S3Auth::S3Auth(const std::filesystem::path &path, std::string region,
     std::string access_key_id = entry->d_name;
 
     auto filepath = keystore / access_key_id;
-
+    
     auto user_id = S3Utils::GetXattr(filepath, "user");
     if (user_id.empty()) {
       continue;

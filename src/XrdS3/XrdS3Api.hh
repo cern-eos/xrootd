@@ -1,10 +1,33 @@
+//------------------------------------------------------------------------------
+// Copyright (c) 2024 by European Organization for Nuclear Research (CERN)
+// Author: Mano Segransan / CERN EOS Project <andreas.joachim.peters@cern.ch>
+//------------------------------------------------------------------------------
+// This file is part of the XRootD software suite.
 //
-// Created by segransm on 11/16/23.
+// XRootD is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
 //
+// XRootD is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with XRootD.  If not, see <http://www.gnu.org/licenses/>.
+//
+// In applying this licence, CERN does not waive the privileges and immunities
+// granted to it by virtue of its status as an Intergovernmental Organization
+// or submit itself to any jurisdiction.
+//------------------------------------------------------------------------------
 
-#ifndef XROOTD_XRDS3API_HH
-#define XROOTD_XRDS3API_HH
-
+#pragma once
+#include <cstdint>
+#include <string>
+#include <vector>
+#include <map>
+#include <memory>
 #include <utility>
 
 #include "XrdS3Auth.hh"
@@ -13,6 +36,13 @@
 
 namespace S3 {
 
+//------------------------------------------------------------------------------
+//! \brief S3 API class
+//!
+//! This class is the main entry point to the S3 API.
+//! It is responsible for parsing the request and calling the appropriate
+//! handler.
+//------------------------------------------------------------------------------
 class S3Api {
  public:
   S3Api() = default;
@@ -286,4 +316,3 @@ class S3Api {
 
 }  // namespace S3
 
-#endif  // XROOTD_XRDS3API_HH

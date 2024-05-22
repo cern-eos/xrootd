@@ -1,24 +1,65 @@
+//------------------------------------------------------------------------------
+// Copyright (c) 2024 by European Organization for Nuclear Research (CERN)
+// Author: Mano Segransan / CERN EOS Project <andreas.joachim.peters@cern.ch>
+//------------------------------------------------------------------------------
+// This file is part of the XRootD software suite.
+//
+// XRootD is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// XRootD is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with XRootD.  If not, see <http://www.gnu.org/licenses/>.
+//
+// In applying this licence, CERN does not waive the privileges and immunities
+// granted to it by virtue of its status as an Intergovernmental Organization
+// or submit itself to any jurisdiction.
+//------------------------------------------------------------------------------
+
+//------------------------------------------------------------------------------
 #include "XrdS3.hh"
-
+//------------------------------------------------------------------------------
 #include <fcntl.h>
-
 #include <algorithm>
 #include <sstream>
-
+//------------------------------------------------------------------------------
 #include "XrdHttp/XrdHttpExtHandler.hh"
 #include "XrdOuc/XrdOucEnv.hh"
 #include "XrdOuc/XrdOucStream.hh"
 #include "XrdOuc/XrdOucString.hh"
 #include "XrdS3ErrorResponse.hh"
 #include "XrdVersion.hh"
+//------------------------------------------------------------------------------
+
+//------------------------------------------------------------------------------
+//! XRootD S3 plug-in implementation
+//------------------------------------------------------------------------------
 
 namespace S3 {
 XrdVERSIONINFO(XrdHttpGetExtHandler, HttpS3);
 
+//------------------------------------------------------------------------------
+//! This is the default handler for requests that are not handled by the
+//! router. It returns a 404 error.
+//------------------------------------------------------------------------------
 int NotFoundHandler(XrdS3Req &req) {
   return req.S3ErrorResponse(S3Error::NoSuchAccessPoint);
 }
 
+//------------------------------------------------------------------------------
+//! S3Handler constructor.
+//!
+//! \param log The logger to use.
+//! \param config The configuration string.
+//! \param myEnv The environment to use.
+//!
+//------------------------------------------------------------------------------
 S3Handler::S3Handler(XrdSysError *log, const char *config, XrdOucEnv *myEnv)
     : mLog(log->logger(), "S3_"), mApi(), mRouter(&mLog, NotFoundHandler) {
   if (!ParseConfig(config, *myEnv)) {
@@ -35,6 +76,14 @@ S3Handler::S3Handler(XrdSysError *log, const char *config, XrdOucEnv *myEnv)
   mLog.Say("Finished configuring S3 Handler");
 }
 
+//------------------------------------------------------------------------------
+//! S3Handler ConfigureRouter.
+//!
+//! \param log The logger to use.
+//! \param config The configuration string.
+//! \param myEnv The environment to use.
+//!
+//------------------------------------------------------------------------------
 void S3Handler::ConfigureRouter() {
 #define HANDLER(f) #f, [this](XrdS3Req &req) { return mApi.f##Handler(req); }
   // The router needs to be initialized in the right order, with the most
@@ -458,6 +507,15 @@ void S3Handler::ConfigureRouter() {
 #undef HANDLER
 }
 
+//------------------------------------------------------------------------------
+//! Parse the configuration file and populate the environment
+//!
+//! @param config  The configuration file to parse
+//! @param env     The environment to populate
+//!
+//! @return true if the configuration file was parsed successfully
+//!
+//------------------------------------------------------------------------------
 bool S3Handler::ParseConfig(const char *config, XrdOucEnv &env) {
   XrdOucStream Config(&mLog, getenv("XRDINSTANCE"), &env, "=====> ");
 
@@ -515,6 +573,15 @@ bool S3Handler::ParseConfig(const char *config, XrdOucEnv &env) {
 
 S3Handler::~S3Handler() = default;
 
+//------------------------------------------------------------------------------
+//! Match the request against the handler
+//!
+//! @param verb  The HTTP verb
+//! @param path  The HTTP path
+//!
+//! @return true if the request matches the handler
+//!
+//------------------------------------------------------------------------------
 bool S3Handler::MatchesPath(const char *verb, const char *path) {
   // match all paths for now, as we do not have access to request headers here.
   return true;
@@ -532,6 +599,16 @@ int S3Handler::ProcessReq(XrdHttpExtReq &req) {
 
 extern "C" {
 
+//------------------------------------------------------------------------------
+//! Get external handler instance
+//!
+//! @param log    The system log
+//! @param config The configuration file
+//! @param parms  The parameters
+//! @param myEnv  The environment
+//!
+//! @return external handler instance
+//------------------------------------------------------------------------------
 XrdHttpExtHandler *XrdHttpGetExtHandler(XrdSysError *log, const char *config,
                                         const char *parms, XrdOucEnv *myEnv) {
   return new S3Handler(log, config, myEnv);

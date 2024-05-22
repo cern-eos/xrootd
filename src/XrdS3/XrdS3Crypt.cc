@@ -2,16 +2,20 @@
 // Created by segransm on 11/3/23.
 //
 
+//------------------------------------------------------------------------------
 #include "XrdS3Crypt.hh"
-
+//------------------------------------------------------------------------------
 #include <openssl/evp.h>
-
 #include <exception>
 #include <stdexcept>
-
+//------------------------------------------------------------------------------
 namespace S3 {
 
 #if OPENSSL_VERSION_NUMBER < 0x30000000L
+
+//------------------------------------------------------------------------------
+//! \brief SHA256 implementation using OpenSSL
+//------------------------------------------------------------------------------
 S3Crypt::S3SHA256::S3SHA256() {
   md = (EVP_MD*)EVP_sha256();
   if (md == nullptr) {
@@ -34,9 +38,18 @@ S3Crypt::S3SHA256::~S3SHA256() {
   EVP_cleanup();
 }
 
+//------------------------------------------------------------------------------
+//! \brief Initialize the digest
+//! @param ctx The digest context
+//! @param md The digest object
+//! @param digest The digest buffer
+//------------------------------------------------------------------------------
 void S3Crypt::S3SHA256::Init() { EVP_DigestInit_ex(ctx, nullptr, nullptr); }
 #else
-  
+
+//------------------------------------------------------------------------------
+//! \brief SHA256 implementation using OpenSSL
+//------------------------------------------------------------------------------
 S3Crypt::S3SHA256::S3SHA256() {
   md = EVP_MD_fetch(nullptr, "SHA256", nullptr);
   if (md == nullptr) {
@@ -56,19 +69,37 @@ S3Crypt::S3SHA256::S3SHA256() {
   }
 }
 
+//------------------------------------------------------------------------------
+//! \brief destructor
+//------------------------------------------------------------------------------
 S3Crypt::S3SHA256::~S3SHA256() {
   EVP_MD_CTX_free(ctx);
   EVP_MD_free(md);
 }
 
+//------------------------------------------------------------------------------
+//! \brief Initialize the digest
+//! @param ctx The digest context
+//! @param md The digest object
+//! @param digest The digest buffer
+//------------------------------------------------------------------------------
 void S3Crypt::S3SHA256::Init() { EVP_DigestInit_ex2(ctx, nullptr, nullptr); }
 
 #endif
   
-
+//------------------------------------------------------------------------------
+//! \brief Update the digest
+//! @param src The source buffer
+//! @param size The size of the buffer
+//------------------------------------------------------------------------------
 void S3Crypt::S3SHA256::Update(const char *src, size_t size) {
   EVP_DigestUpdate(ctx, src, size);
 }
+
+//------------------------------------------------------------------------------
+//! \brief Finish the digest and return the digest
+//! @return The digest
+//------------------------------------------------------------------------------
 sha256_digest S3Crypt::S3SHA256::Finish() {
   unsigned int outl;
   if (!EVP_DigestFinal_ex(ctx, digest.data(), &outl)) {
