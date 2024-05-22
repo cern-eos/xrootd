@@ -46,7 +46,8 @@ def main():
     adduser_parser = subparsers.add_parser('adduser', help='Add a new user')
     adduser_parser.add_argument('username', help='Username to add')
     adduser_parser.add_argument('bucketpath', help='Filesystem path for the default bucket for the given user') 
-  
+    adduser_parser.add_argument('--newbucketpath', help='New bucket path', default=None)
+
     # Add the 'deleteuser' subcommand
     deleteuser_parser = subparsers.add_parser('deleteuser', help='Delete an existing user')
     deleteuser_parser.add_argument('username', help='Username to delete')
@@ -135,7 +136,8 @@ def generate_unique_random_string(base_path, length=8):
 def handle_adduser(args):
     username = args.username
     bucket_path = args.bucketpath
-     
+    new_bucket_path = args.newbucketpath
+
     # Determine the users directory from the config file
     config_dir = os.path.join(os.path.expanduser('~'), '.xs3')
     config_file = os.path.join(config_dir, 'config')
@@ -169,6 +171,15 @@ def handle_adduser(args):
     try:
         os.makedirs(user_dir)
         print(f"Info: User '{username}' added successfully.")
+
+        if new_bucket_path:
+            try:
+                os.setxattr(user_dir, 'user.s3.new_bucket_path', new_bucket_path.encode())
+                print(f"Info: Extended attribute 'user.s3.new_bucket_path' set on '{user_dir}': {new_bucket_path}")
+            except AttributeError:
+                print("info: Extended attributes are not supported on this platform.")
+            except OSError as e:
+                print(f"Error: Failed to set extended attribute on '{user_dir}'. {e}")
 
         # Create the empty file in the user directory
         user_file = os.path.join(user_dir, f"b_{username}")
