@@ -1,0 +1,225 @@
+#!/usr/bin/env python3
+
+##------------------------------------------------------------------------------
+## Copyright (c) 2024 by European Organization for Nuclear Research (CERN)
+## Author: Andreas-Joachim Peters / CERN EOS Project <andreas.joachim.peters@cern.ch>
+##------------------------------------------------------------------------------
+## This file is part of the XRootD software suite.
+##
+## XRootD is free software: you can redistribute it and/or modify
+## it under the terms of the GNU Lesser General Public License as published by
+## the Free Software Foundation, either version 3 of the License, or
+## (at your option) any later version.
+##
+## XRootD is distributed in the hope that it will be useful,
+## but WITHOUT ANY WARRANTY; without even the implied warranty of
+## MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+## GNU General Public License for more details.
+##
+## You should have received a copy of the GNU Lesser General Public License
+## along with XRootD.  If not, see <http://www.gnu.org/licenses/>.
+##
+## In applying this licence, CERN does not waive the privileges and immunities
+## granted to it by virtue of its status as an Intergovernmental Organization
+## or submit itself to any jurisdiction.
+##------------------------------------------------------------------------------
+
+
+import argparse
+import os
+import json
+import string
+import random
+import uuid
+
+def main():
+    # Create the main parser
+    parser = argparse.ArgumentParser(prog='xs3')
+    subparsers = parser.add_subparsers(dest='subcommand')
+
+    # Add the 'config' subcommand
+    config_parser = subparsers.add_parser('config', help='Configuration subcommand')
+    config_parser.add_argument('path', help='Path for config subcommand')
+
+    # Add the 'adduser' subcommand
+    adduser_parser = subparsers.add_parser('adduser', help='Add a new user')
+    adduser_parser.add_argument('username', help='Username to add')
+    adduser_parser.add_argument('bucketpath', help='Filesystem path for the default bucket for the given user') 
+  
+    # Parse the arguments
+    args = parser.parse_args()
+
+    # Handle the 'config' subcommand
+    if args.subcommand == 'config':
+        handle_config(args)
+    elif args.subcommand == 'adduser':
+        handle_adduser(args)
+
+def handle_config(args):
+    # Ensure exactly one argument is provided
+    if not args.path:
+        print("Error: A path argument is required for the 'config' subcommand.")
+        return
+
+    # Determine the config directory and file path
+    config_dir = os.path.join(os.path.expanduser('~'), '.xs3')
+    config_file = os.path.join(config_dir, 'config')
+
+    # Check if the config file already exists
+    if os.path.exists(config_file):
+        user_input = input(f"Question: Configuration file '{config_file}' already exists. Do you want to proceed and overwrite it? (yes/no): ")
+        if user_input.lower() != 'yes':
+            print("Info: Aborted by the user.")
+            return
+        
+    base_path = args.path
+
+    # Check if the path exists
+    if not os.path.exists(base_path):
+        try:
+            # Create the directory
+            os.makedirs(base_path)
+            print(f"Info: Directory '{base_path}' created successfully.")
+        except OSError as e:
+            print(f"Error: Failed to create the directory '{base_path}'. {e}")
+    else:
+        print(f"Info: Directory '{base_path}' already exists.")
+
+    # Define subdirectories to create
+    subdirs = ['buckets', 'users', 'keystore']
+    for subdir in subdirs:
+        subdir_path = os.path.join(base_path, subdir)
+        if not os.path.exists(subdir_path):
+            try:
+                os.makedirs(subdir_path)
+                print(f"Info: Subdirectory '{subdir_path}' created successfully.")
+            except OSError as e:
+                print(f"Error: Failed to create the subdirectory '{subdir_path}'. {e}")
+        else:
+            print(f"Info: Subdirectory '{subdir_path}' already exists.")
+ 
+
+    # Create the config directory if it doesn't exist
+    if not os.path.exists(config_dir):
+        try:
+            os.makedirs(config_dir)
+            print(f"Info: Config directory '{config_dir}' created successfully.")
+        except OSError as e:
+            print(f"Error: Failed to create the config directory '{config_dir}'. {e}")
+            return
+
+    # Write the base_path to the config file
+    config_data = {'base_path': base_path}
+    try:
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f, indent=4)
+        print(f"Info: Configuration saved to '{config_file}'.")
+    except IOError as e:
+        print(f"Error: Failed to write to the config file '{config_file}'. {e}")
+
+def generate_unique_random_string(base_path, length=8):
+    chars = string.ascii_letters + string.digits
+    while True:
+        random_string = ''.join(random.choice(chars) for _ in range(length))
+        keystore_file = os.path.join(base_path, 'keystore', random_string)
+        if not os.path.exists(keystore_file):
+            return random_string
+        
+def handle_adduser(args):
+    username = args.username
+    bucket_path = args.bucketpath
+     
+    # Determine the users directory from the config file
+    config_dir = os.path.join(os.path.expanduser('~'), '.xs3')
+    config_file = os.path.join(config_dir, 'config')
+
+    if not os.path.exists(config_file):
+        print("Error: Configuration file does not exist. Please run 'config' subcommand first.")
+        return
+
+    try:
+        with open(config_file, 'r') as f:
+            config_data = json.load(f)
+        base_path = config_data.get('base_path')
+        if not base_path:
+            print("Error: Base path is not configured properly.")
+            return
+    except (IOError, json.JSONDecodeError) as e:
+        print(f"Error: Failed to read the config file '{config_file}'. {e}")
+        return
+
+    users_dir = os.path.join(base_path, 'users')
+    if not os.path.exists(users_dir):
+        print(f"Error: Users directory '{users_dir}' does not exist.")
+        return
+
+    # Create a user directory
+    user_dir = os.path.join(users_dir, username)
+    if os.path.exists(user_dir):
+        print(f"Error: User '{username}' already exists.")
+        return
+
+    try:
+        os.makedirs(user_dir)
+        print(f"Info: User '{username}' added successfully.")
+
+        # Create the empty file in the user directory
+        user_file = os.path.join(user_dir, f"b_{username}")
+        open(user_file, 'w').close()
+        print(f"Info: Default bucket '{user_file}' assigned successfully.")
+
+        # Create the same file in the buckets subdirectory
+        buckets_dir = os.path.join(base_path, 'buckets')
+        if not os.path.exists(buckets_dir):
+            print(f"Error: Buckets directory '{buckets_dir}' does not exist.")
+            return
+
+        bucket_file = os.path.join(buckets_dir, f"b_{username}")
+        open(bucket_file, 'w').close()
+        print(f"Info: Default bucket '{bucket_file}' created successfully.")
+
+        # Set the extended attribute 's3.user' on the bucket file
+        try:
+            os.setxattr(bucket_file, 'user.s3.owner', username.encode())
+            print(f"Info: Extended attribute 'user.s3.owner' set on '{bucket_file}'.")
+            os.setxattr(bucket_file, 'user.s3.path', bucket_path.encode())
+            print(f"Info: Extended attribute 'user.s3.path' set on '{bucket_file}'.")
+        except AttributeError:
+            print("Error: Extended attributes are not supported on this platform.")
+        except OSError as e:
+            print(f"Error: Failed to set extended attribute on '{bucket_file}'. {e}")
+
+        # Generate a unique human-friendly random string
+        random_string = generate_unique_random_string(base_path)
+
+        # Create the keystore file with UUID content
+        keystore_file = os.path.join(base_path, 'keystore', random_string)
+        with open(keystore_file, 'w') as f:
+            uuid_value = uuid.uuid4()
+            f.write(str(uuid_value))
+
+        print(f"Info: Keystore file '{keystore_file}' created successfully.")
+
+        # Set the extended attribute 's3.user' on the keystore file
+        try:
+            os.setxattr(keystore_file, 'user.s3.user', username.encode())
+            print(f"Info: Extended attribute 'user.s3.user' set on '{keystore_file}'.")
+      
+        except AttributeError:
+            print("Info: Extended attributes are not supported on this platform.")
+        except OSError as e:
+            print(f"Error: Failed to set extended attribute on '{keystore_file}'. {e}")
+
+        print("User information:")
+        print("-----------------")
+        print(f"Username  : {username}")
+        print(f"S3 Id     : {random_string}")
+        print(f"S3 Secret : {uuid_value}")
+    
+    except OSError as e:
+        print(f"Error: Failed to create the user directory '{user_dir} or bucket file 'b_{username}'. {e}")
+
+
+if __name__ == '__main__':
+    main()
+    
