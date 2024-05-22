@@ -60,6 +60,7 @@ if (BUILD_S3)
             XrdHttpUtils
             XrdPosixPreload
             tinyxml2
+	    stdc++fs
             ${CMAKE_DL_LIBS}
             ${CMAKE_THREAD_LIBS_INIT})
 
