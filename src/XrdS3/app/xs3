@@ -31,6 +31,7 @@ import json
 import string
 import random
 import uuid
+import shutil
 
 def main():
     # Create the main parser
@@ -46,6 +47,10 @@ def main():
     adduser_parser.add_argument('username', help='Username to add')
     adduser_parser.add_argument('bucketpath', help='Filesystem path for the default bucket for the given user') 
   
+    # Add the 'deleteuser' subcommand
+    deleteuser_parser = subparsers.add_parser('deleteuser', help='Delete an existing user')
+    deleteuser_parser.add_argument('username', help='Username to delete')
+
     # Parse the arguments
     args = parser.parse_args()
 
@@ -54,6 +59,8 @@ def main():
         handle_config(args)
     elif args.subcommand == 'adduser':
         handle_adduser(args)
+    elif args.subcommand == 'deleteuser':
+        handle_deleteuser(args)
 
 def handle_config(args):
     # Ensure exactly one argument is provided
@@ -218,6 +225,89 @@ def handle_adduser(args):
     
     except OSError as e:
         print(f"Error: Failed to create the user directory '{user_dir} or bucket file 'b_{username}'. {e}")
+
+def handle_deleteuser(args):
+    username = args.username
+
+    # Determine the users directory from the config file
+    config_dir = os.path.join(os.path.expanduser('~'), '.xs3')
+    config_file = os.path.join(config_dir, 'config')
+
+    if not os.path.exists(config_file):
+        print("Error: Configuration file does not exist. Please run 'config' subcommand first.")
+        return
+
+    try:
+        with open(config_file, 'r') as f:
+            config_data = json.load(f)
+        base_path = config_data.get('base_path')
+        if not base_path:
+            print("Error: Base path is not configured properly.")
+            return
+    except (IOError, json.JSONDecodeError) as e:
+        print(f"Error: Failed to read the config file '{config_file}'. {e}")
+        return
+
+    users_dir = os.path.join(base_path, 'users')
+    user_dir = os.path.join(users_dir, username)
+
+    if not os.path.exists(user_dir):
+        print(f"Error: User '{username}' does not exist.")
+        return
+
+    # Ask for confirmation
+    confirmation = input(f"Question: Are you sure you want to delete user '{username}' and all attached bucket configurations? (yes/no): ")
+    if confirmation.lower() != 'yes':
+        print("Info: Aborted by the user.")
+        return
+
+    # Delete user directory
+    try:
+        shutil.rmtree(user_dir)
+        print(f"Info: User directory '{user_dir}' deleted successfully.")
+    except OSError as e:
+        print(f"Error: Failed to delete user directory '{user_dir}'. {e}")
+
+    # Delete bucket file
+    bucket_file = os.path.join(base_path, 'buckets', f"b_{username}")
+    if os.path.exists(bucket_file):
+        try:
+            os.remove(bucket_file)
+            print(f"Info: Default bucket file '{bucket_file}' deleted successfully.")
+        except OSError as e:
+            print(f"Error: Failed to delete bucket file '{bucket_file}'. {e}")
+
+    # Delete additinoal bucket files with 's3.owner' set to username
+    buckets_dir = os.path.join(base_path, 'buckets')
+    for filename in os.listdir(buckets_dir):
+        filepath = os.path.join(buckets_dir, filename)
+        try:
+            # Check if the file has 's3.owner' extended attribute and matches the username
+            owner_attr = os.getxattr(filepath, 'user.s3.owner')
+            if owner_attr.decode() == username:
+                os.remove(filepath)
+                print(f"info: Bucket file '{filepath}' deleted successfully.")
+        except OSError as e:
+            print(f"Error: Failed to delete bucket file '{filepath}'. {e}")
+        except KeyError:
+            pass  # File does not have 's3.owner' extended attribute
+
+    # Delete keystore file
+    keystore_dir = os.path.join(base_path, 'keystore')
+    for filename in os.listdir(keystore_dir):
+        filepath = os.path.join(keystore_dir, filename)
+        try:
+            # Check if the file has 's3.user' extended attribute and matches the username
+            user_attr = os.getxattr(filepath, 'user.s3.user')
+            if user_attr.decode() == username:
+                os.remove(filepath)
+                print(f"Info: Keystore file '{filepath}' deleted successfully.")
+        except OSError as e:
+            print(f"Error: Failed to delete keystore file '{filepath}'. {e}")
+        except KeyError:
+            pass  # File does not have 's3.user' extended attribute
+
+    print(f"Info: User '{username}' deleted successfully.")
 
 
 if __name__ == '__main__':
