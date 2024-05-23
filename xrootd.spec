@@ -13,7 +13,7 @@
 %endif
 
 %global compat_version 4.12.9
-%global devtoolset devtoolset-7
+%global devtoolset devtoolset-11
 %global llvmtoolset llvm-toolset-7
 
 Name:		xrootd
