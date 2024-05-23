@@ -14,6 +14,7 @@ Build-Depends:
  libkrb5-dev,
  libcurl4-openssl-dev,
  libtinyxml-dev,
+ libtinyxml2-dev,	
  libxml2-dev,
  ncurses-dev,
  libssl-dev,

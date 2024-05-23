@@ -34,6 +34,7 @@
 #include <numeric>
 #include <sstream>
 #include <string>
+#include <sys/types.h>
 //------------------------------------------------------------------------------
 
 namespace S3 {
