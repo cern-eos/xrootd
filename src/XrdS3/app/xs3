@@ -33,6 +33,10 @@ import random
 import uuid
 import shutil
 import re
+import pwd
+import ctypes
+import ctypes.util
+import errno
 
 def main():
     # Create the main parser
@@ -41,7 +45,8 @@ def main():
 
     # Add the 'config' subcommand
     config_parser = subparsers.add_parser('config', help='Configuration subcommand')
-    config_parser.add_argument('path', help='Path for config subcommand')
+    config_parser.add_argument('--path', help='Path for config subcommand', default=None)
+    config_parser.add_argument('--user', help='FS user to use to handle the configuration', default=None)
 
     # Add the 'adduser' subcommand
     adduser_parser = subparsers.add_parser('adduser', help='Add a new user')
@@ -67,7 +72,7 @@ def main():
     # Add the 'ls' subcommand
     ls_parser = subparsers.add_parser('ls', help='List users/buckets')
     ls_parser.add_argument('--username', help='Username',  default=None)
-
+    ls_parser.add_argument('--keys',action='store_true', help='Show keys', default=False)
     # Parse the arguments
     args = parser.parse_args()
 
@@ -87,6 +92,47 @@ def main():
     else:
         parser.print_help()
 
+libc_so = ctypes.util.find_library('c')
+libc = ctypes.CDLL(libc_so, use_errno=True)
+
+# ------------------------------------------------------------------------------
+# Set the group identity used for filesystem checks. See setfsgid(2).
+#
+# Returns the previous group identity.
+# ------------------------------------------------------------------------------
+def setfsuid(fsuid):
+    """Set user identity used for filesystem checks. See setfsuid(2)."""
+    # Per the BUGS section in setfsuid(2), you can't really tell if a
+    # setfsuid call succeeded. As a hack, we can rely on the fact that
+    # setfsuid returns the previous fsuid and call it twice. The result
+    # of the second call should be the desired fsuid.
+    libc.setfsuid(ctypes.c_int(fsuid))
+    new_fsuid = libc.setfsuid(ctypes.c_int(fsuid))
+
+    # Fake an EPERM even if errno was not set when we can detect that
+    # setfsuid failed.
+    err = errno.EPERM if new_fsuid != fsuid else ctypes.get_errno()
+    if err:
+        raise OSError(err, os.strerror(err))
+
+
+def setfsgid(fsgid):
+    """Set grouop identity used for filesystem checks. See setfsgid(2)."""
+    # Per the BUGS section in setfsgid(2), you can't really tell if a
+    # setfsgid call succeeded. As a hack, we can rely on the fact that
+    # setfsgid returns the previous fsuid and call it twice. The result
+    # of the second call should be the desired fsuid.
+    libc.setfsgid(ctypes.c_int(fsgid))
+    new_fsgid = libc.setfsgid(ctypes.c_int(fsgid))
+
+    # Fake an EPERM even if errno was not set when we can detect that
+    # setfsuid failed.
+    err = errno.EPERM if new_fsgid != fsgid else ctypes.get_errno()
+    if err:
+        raise OSError(err, os.strerror(err))
+
+
+# ------------------------------------------------------------------------------
 def print_directory_structure(directory, buckets_dir, indent=''):
     items = os.listdir(directory)
     for i, item in enumerate(items):
@@ -103,6 +149,7 @@ def print_directory_structure(directory, buckets_dir, indent=''):
             new_bucket_path_attr = get_extended_attribute(directory, 'user.s3.new_bucket_path')
             print(indent + ('└── ' if is_last else '├── ') + f"{item:20} {bucket_owner_attr:20} {bucket_path_attr:40} new:[{new_bucket_path_attr}]")
 
+# ------------------------------------------------------------------------------
 def get_extended_attribute(filepath, attribute_name):
     try:
         attr = os.getxattr(filepath, attribute_name)
@@ -110,20 +157,76 @@ def get_extended_attribute(filepath, attribute_name):
     except OSError:
         return ""
 
+# ------------------------------------------------------------------------------
 def get_bucket_extended_attribute(filename, attribute_name):
     base_path = os.path.join(os.path.expanduser('~'), '.xs3', 'buckets')
     file_path = os.path.join(base_path, filename)
     return get_extended_attribute(file_path, attribute_name)
 
+# ------------------------------------------------------------------------------
+def get_ids_from_username(username):
+    try:
+        # Get the user information from the username
+        user_info = pwd.getpwnam(username)
+        # Extract and return the UID,GID
+        return user_info.pw_uid, user_info.pw_gid
+    except KeyError:
+        # Handle the case where the username does not exist
+        print(f"Error: Username '{username}' not found.")
+        return None
+
+# ------------------------------------------------------------------------------
+def change_fsid(new_fsuid, new_fsgid):
+    try:
+        # Check the current effective user ID
+        current_euid = os.geteuid()
+        current_egid = os.getegid()
+        # Don't switch fsuid if we are not root
+        if current_euid:
+            return current_euid,current_egid
+
+        # Set the new file system user ID
+        old_fsuid = setfsuid(new_fsuid)
+        old_fsgid = setfsgid(new_fsgid)
+        return current_euid,current_egid
+
+    except PermissionError as e:
+        print(f"Error: PermissionError: {e}")
+    except Exception as e:
+        print(f"Error: An error occurred: {e}")
+
+    return 0
+
+# ------------------------------------------------------------------------------
 def handle_config(args):
-    # Ensure exactly one argument is provided
-    if not args.path:
-        print("Error: A path argument is required for the 'config' subcommand.")
-        return
 
     # Determine the config directory and file path
     config_dir = os.path.join(os.path.expanduser('~'), '.xs3')
     config_file = os.path.join(config_dir, 'config')
+
+    # If there is no path provided we print the config if existing
+    # and exit
+    if not args.path:
+        if os.path.exists(config_file):
+            with open(config_file, 'r') as f:
+                config_data = json.load(f)
+                print(json.dumps(config_data, indent=4))
+            return
+        else:
+            print("Error: No path provided and no configuration file found.")
+            return
+
+    user = args.user;
+
+    if user:
+        uid,gid = get_ids_from_username(user)
+        if uid is None:
+            print(f"Error: Cannot translate username '{username}'.")
+            return
+    else:
+        uid = 0
+        gid = 0
+
 
     # Check if the config file already exists
     if os.path.exists(config_file):
@@ -133,6 +236,8 @@ def handle_config(args):
             return
         
     base_path = args.path
+
+    old_fsuid,old_fsgid = change_fsid(uid,gid)
 
     # Check if the path exists
     if not os.path.exists(base_path):
@@ -166,10 +271,15 @@ def handle_config(args):
             print(f"Info: Config directory '{config_dir}' created successfully.")
         except OSError as e:
             print(f"Error: Failed to create the config directory '{config_dir}'. {e}")
+            change_fsid(old_fsuid, old_fsgid)
             return
 
+    print(old_fsuid,old_fsgid)
+    change_fsid(old_fsuid,old_fsgid)
+
     # Write the base_path to the config file
-    config_data = {'base_path': base_path}
+    config_data = {'base_path': base_path, 'fsuid': uid, 'fsgid': gid}
+
     try:
         with open(config_file, 'w') as f:
             json.dump(config_data, f, indent=4)
@@ -177,6 +287,7 @@ def handle_config(args):
     except IOError as e:
         print(f"Error: Failed to write to the config file '{config_file}'. {e}")
 
+# ------------------------------------------------------------------------------
 def generate_unique_random_string(base_path, length=8):
     chars = string.ascii_letters + string.digits
     while True:
@@ -184,7 +295,8 @@ def generate_unique_random_string(base_path, length=8):
         keystore_file = os.path.join(base_path, 'keystore', random_string)
         if not os.path.exists(keystore_file):
             return random_string
-        
+
+# ------------------------------------------------------------------------------
 def handle_adduser(args):
     username = args.username
     bucket_path = args.bucketpath
@@ -202,6 +314,8 @@ def handle_adduser(args):
         with open(config_file, 'r') as f:
             config_data = json.load(f)
         base_path = config_data.get('base_path')
+        fsuid = config_data.get('fsuid')
+        fsgid = config_data.get('fsgid')
         if not base_path:
             print("Error: Base path is not configured properly.")
             return
@@ -214,10 +328,13 @@ def handle_adduser(args):
         print(f"Error: Users directory '{users_dir}' does not exist.")
         return
 
+    old_fsuid,old_fsgid = change_fsid(fsuid,fsgid)
+
     # Create a user directory
     user_dir = os.path.join(users_dir, username)
     if os.path.exists(user_dir):
         print(f"Error: User '{username}' already exists.")
+        change_fsid(old_fsuid,old_fsgid)
         return
 
     try:
@@ -242,6 +359,7 @@ def handle_adduser(args):
         buckets_dir = os.path.join(base_path, 'buckets')
         if not os.path.exists(buckets_dir):
             print(f"Error: Buckets directory '{buckets_dir}' does not exist.")
+            change_fsid(old_fsuid,old_fsgid)
             return
 
         bucket_file = os.path.join(buckets_dir, f"b_{username}")
@@ -289,6 +407,9 @@ def handle_adduser(args):
     except OSError as e:
         print(f"Error: Failed to create the user directory '{user_dir} or bucket file 'b_{username}'. {e}")
 
+    change_fsid(old_fsuid,old_fsgid)
+
+# ------------------------------------------------------------------------------
 def handle_deleteuser(args):
     username = args.username
 
@@ -304,6 +425,8 @@ def handle_deleteuser(args):
         with open(config_file, 'r') as f:
             config_data = json.load(f)
         base_path = config_data.get('base_path')
+        fsuid = config_data.get('fsuid')
+        fsgid = config_data.get('fsgid')
         if not base_path:
             print("Error: Base path is not configured properly.")
             return
@@ -323,6 +446,8 @@ def handle_deleteuser(args):
     if confirmation.lower() != 'yes':
         print("Info: Aborted by the user.")
         return
+
+    old_fsuid,old_fsgid = change_fsid(fsuid,fsgid)
 
     # Delete user directory
     try:
@@ -372,6 +497,9 @@ def handle_deleteuser(args):
 
     print(f"Info: User '{username}' deleted successfully.")
 
+    change_fsid(old_fsuid,old_fsgid)
+
+# ------------------------------------------------------------------------------
 def handle_addbucket(args):
     username = args.username
     bucketname = args.bucketname
@@ -389,12 +517,16 @@ def handle_addbucket(args):
         with open(config_file, 'r') as f:
             config_data = json.load(f)
         base_path = config_data.get('base_path')
+        fsuid = config_data.get('fsuid')
+        fsgid = config_data.get('fsgid')
         if not base_path:
             print("Error: Base path is not configured properly.")
             return
     except (IOError, json.JSONDecodeError) as e:
         print(f"Error: Failed to read the config file '{config_file}'. {e}")
         return
+
+    old_fsuid,old_fsgid = change_fsid(fsuid,fsgid)
 
     # Check if the bucket file already exists
     buckets_dir = os.path.join(base_path, 'buckets')
@@ -408,6 +540,7 @@ def handle_addbucket(args):
             print(f"Error: Bucket '{bucketname}' already exists. Owner: {owner}, Path: {path}")
         except OSError as e:
             print(f"Error: Failed to retrieve extended attributes from bucket file '{bucket_file}'. {e}")
+        change_fsid(old_fsuid,old_fsgid)
         return
 
     # Check if the user directory exists
@@ -415,6 +548,7 @@ def handle_addbucket(args):
     user_dir = os.path.join(users_dir, username)
     if not os.path.exists(user_dir):
         print("Error: User does not exist - use 'adduser' first.")
+        change_fsid(old_fsuid,old_fsgid)
         return
 
     # Create an empty file under the users directory with the username
@@ -450,6 +584,9 @@ def handle_addbucket(args):
     except OSError as e:
         print(f"Error: Failed to set extended attributes on '{bucket_file}'. {e}")
 
+    change_fsid(old_fsuid,old_fsgid)
+
+# ------------------------------------------------------------------------------
 def handle_deletebucket(args):
     username = args.username
     bucketname = args.bucketname
@@ -466,6 +603,8 @@ def handle_deletebucket(args):
         with open(config_file, 'r') as f:
             config_data = json.load(f)
         base_path = config_data.get('base_path')
+        fsuid = config_data.get('fsuid')
+        fsgid = config_data.get('fsgid') 
         if not base_path:
             print("Error: Base path is not configured properly.")
             return
@@ -473,11 +612,14 @@ def handle_deletebucket(args):
         print(f"Error: Failed to read the config file '{config_file}'. {e}")
         return
 
+    old_fsuid,old_fsgid = change_fsid(fsuid,fsgid)
+
     # Check if the user directory exists
     users_dir = os.path.join(base_path, 'users')
     user_dir = os.path.join(users_dir, username)
     if not os.path.exists(user_dir):
         print("Error: User does not exist - use adduser first.")
+        change_fsid(old_fsuid,old_fsgid)
         return
 
     # Check if the bucket file exists
@@ -485,6 +627,7 @@ def handle_deletebucket(args):
     bucket_file = os.path.join(buckets_dir, bucketname)
     if not os.path.exists(bucket_file):
         print(f"Error: Bucket '{bucketname}' does not exist.")
+        change_fsid(old_fsuid,old_fsgid)
         return
 
     # Check if the user is the owner of the bucket
@@ -492,9 +635,11 @@ def handle_deletebucket(args):
         owner_attr = os.getxattr(bucket_file, 'user.s3.owner')
         if owner_attr.decode() != username:
             print("Error: User is not the owner of the given bucket.")
+            change_fsid(old_fsuid,old_fsgid)
             return
     except OSError as e:
         print(f"Error: Failed to retrieve extended attribute from bucket file '{bucket_file}'. {e}")
+        change_fsid(old_fsuid,old_fsgid)
         return
 
     # Delete the bucket file
@@ -513,6 +658,9 @@ def handle_deletebucket(args):
         except OSError as e:
             print(f"Error: Failed to delete empty file '{user_bucket_file}' from users directory. {e}")
 
+    change_fsid(old_fsuid,old_fsgid)
+
+# ------------------------------------------------------------------------------
 def handle_ls(args):
     username = args.username
 
@@ -528,8 +676,11 @@ def handle_ls(args):
         with open(config_file, 'r') as f:
             config_data = json.load(f)
         base_path = config_data.get('base_path')
+        fsuid = config_data.get('fsuid')
+        fsgid = config_data.get('fsgid')
         users_dir = os.path.join(base_path, 'users')
         buckets_dir = os.path.join(base_path, 'buckets')
+        keys_dir = os.path.join(base_path, 'keystore')
         if not base_path:
             print("Error: Base path is not configured properly.")
             return
@@ -537,21 +688,43 @@ def handle_ls(args):
         print(f"Error: Failed to read the config file '{config_file}'. {e}")
         return
 
-    if username:
-        regex = re.compile(username)
-        print("Info: Listing matching user directories:")
-        for dir_name in os.listdir(users_dir):
-            if regex.match(dir_name):
-                user_dir = os.path.join(users_dir, dir_name)
-                print(f"- {dir_name}/")
-                print_directory_structure(user_dir, buckets_dir, '    ')
-    else:
-        print("Info: Listing all user directories:")
-        for dir_name in os.listdir(users_dir):
-            user_dir = os.path.join(users_dir, dir_name)
-            print(f"{dir_name}/")
-            print_directory_structure(user_dir, buckets_dir,  '    ')
+    old_fsuid,old_fsgid = change_fsid(fsuid,fsgid)
 
+    if (args.keys):
+        if username:
+            regex = re.compile(username)
+        print("Info: Listing matching keys:")
+
+        print("---------------  --------------------- ------------------------------------")
+        print("USER             ID                    SECRET")
+        print("---------------  --------------------- ------------------------------------")
+        for key_name in os.listdir(keys_dir):
+            key_file = os.path.join(keys_dir, key_name)
+            s3user = get_extended_attribute(key_file, 'user.s3.user')
+            if ( not username ) or (username and regex.match(s3user)):
+                with open(key_file, 'r') as file:
+                # Read the content of the file
+                    secret = file.read()
+                print(f"{s3user:16} {key_name:21} {secret:40}")
+    else:
+        if username:
+            regex = re.compile(username)
+            print("Info: Listing matching user directories:")
+            for dir_name in os.listdir(users_dir):
+                if regex.match(dir_name):
+                    user_dir = os.path.join(users_dir, dir_name)
+                    print(f"- {dir_name}/")
+                    print_directory_structure(user_dir, buckets_dir, '    ')
+        else:
+            print("Info: Listing all user directories:")
+            for dir_name in os.listdir(users_dir):
+                user_dir = os.path.join(users_dir, dir_name)
+                print(f"{dir_name}/")
+                print_directory_structure(user_dir, buckets_dir,  '    ')
+
+    change_fsid(old_fsuid,old_fsgid)
+
+# ------------------------------------------------------------------------------
 if __name__ == '__main__':
     main()
     
