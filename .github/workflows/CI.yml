@@ -284,7 +284,7 @@ jobs:
       run: sudo sed -i -e "s/localhost/localhost $(hostname)/g" /etc/hosts
 
     - name: Install dependencies with Homebrew
-      run: brew install davix googletest isa-l
+      run: brew install davix googletest isa-l tinyxml2
 
     - name: Install Python dependencies with pip
       run: python3 -m pip install --upgrade pip setuptools wheel
