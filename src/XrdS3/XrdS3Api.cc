@@ -90,10 +90,9 @@ bool ParseCreateBucketBody(char* body, int length, std::string& location) {
 }
 
 //------------------------------------------------------------------------------
-//! \brief Parse the XML body of a DeleteBucket request
-//! \param body The body of the request
-//! \param length The length of the body
-//! \return true if the body is valid, false otherwise
+//! \brief create a bucket handler
+//! \param req given request
+//! \return error code
 //------------------------------------------------------------------------------
 int S3Api::CreateBucketHandler(XrdS3Req& req) {
   VALIDATE_REQUEST(Action::CreateBucket)
@@ -124,6 +123,7 @@ int S3Api::CreateBucketHandler(XrdS3Req& req) {
   }
 
   bucket.owner.id = req.id;
+  bucket.owner.resolve();
   bucket.name = req.bucket;
 
   RET_ON_ERROR(objectStore.CreateBucket(auth, bucket, location))

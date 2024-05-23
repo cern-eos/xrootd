@@ -41,6 +41,7 @@
 #include "XrdPosix/XrdPosixExtern.hh"
 #include "XrdS3Auth.hh"
 #include "XrdS3Req.hh"
+#include "XrdS3ScopedFsId.hh"
 //------------------------------------------------------------------------------
 
 namespace S3 {
@@ -201,7 +202,13 @@ S3Error S3ObjectStore::CreateBucket(S3Auth &auth, S3Auth::Bucket bucket,
     return S3Error::InternalError;
   }
 
-  if (XrdPosix_Mkdir(bucket.path.c_str(), S_IRWXU | S_IRWXG)) {
+  int mkdir_retc=0;
+  {
+    // Create the backend directory with the users filesystem id
+    ScopedFsId(bucket.owner.uid,bucket.owner.gid);
+    mkdir_retc = XrdPosix_Mkdir(bucket.path.c_str(), S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
+  }
+  if (mkdir_retc) {
     auth.DeleteBucketInfo(bucket);
     XrdPosix_Unlink(userInfoBucket.c_str());
     XrdPosix_Rmdir((mtpu_path / bucket.name).c_str());
@@ -228,15 +235,22 @@ std::pair<std::string, std::string> BaseDir(std::string p) {
 }
 
 //------------------------------------------------------------------------------
-//! DeleteBucket - Delete a bucket and all its contents
+//! DeleteBucket - Delete a bucket and all its content
+//! - we do this only it is empty and the backend bucket directory is not removed!
 //! \param auth Authentication object
 //! \param bucket Bucket to delete
 //! \return S3Error::None if successful, S3Error::InternalError otherwise
 //------------------------------------------------------------------------------
 S3Error S3ObjectStore::DeleteBucket(S3Auth &auth,
                                     const S3Auth::Bucket &bucket) {
-  if (!S3Utils::IsDirEmpty(bucket.path)) {
-    return S3Error::BucketNotEmpty;
+
+  {
+    // Check the backend directory with the users filesystem id
+    ScopedFsId(bucket.owner.uid,bucket.owner.gid);
+
+    if (!S3Utils::IsDirEmpty(bucket.path)) {
+      return S3Error::BucketNotEmpty;
+    }
   }
 
   auto upload_path = mtpu_path / bucket.name;
@@ -287,9 +301,12 @@ S3ObjectStore::Object::~Object() {
 //! \param p Path to the object
 //! \return S3Error::None if successful, S3Error::InternalError otherwise
 //------------------------------------------------------------------------------
-S3Error S3ObjectStore::Object::Init(const std::filesystem::path &p) {
+S3Error S3ObjectStore::Object::Init(const std::filesystem::path &p,
+uid_t uid, gid_t gid) {
   struct stat buf;
 
+  // Do the backend operations with the users filesystem id
+  ScopedFsId(uid, gid);
   if (XrdPosix_Stat(p.c_str(), &buf) || S_ISDIR(buf.st_mode)) {
     return S3Error::NoSuchKey;
   }
@@ -316,6 +333,10 @@ S3Error S3ObjectStore::Object::Init(const std::filesystem::path &p) {
   this->size = buf.st_size;
   this->buffer_size = std::min(this->size, MAX_BUFFSIZE);
   this->last_modified = buf.st_mtim.tv_sec;
+
+  // store the ownership
+  this->uid = uid;
+  this->gid = gid;
 
   return S3Error::None;
 }
@@ -373,7 +394,7 @@ off_t S3ObjectStore::Object::Lseek(off_t offset, int whence) {
 //------------------------------------------------------------------------------
 S3Error S3ObjectStore::GetObject(const S3Auth::Bucket &bucket,
                                  const std::string &object, Object &obj) {
-  return obj.Init(bucket.path / object);
+  return obj.Init(bucket.path / object, bucket.owner.uid, bucket.owner.gid);
 }
 
 //------------------------------------------------------------------------------
@@ -1481,8 +1502,17 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
     }
   }
 
-  if (!XrdPosix_Stat(final_path.c_str(), &buf) && S_ISDIR(buf.st_mode)) {
-    return S3Error::ObjectExistAsDir;
+  {
+    // Check if the final file exists in the backend and is a directory
+    ScopedFsId(bucket.owner.uid,bucket.owner.gid);
+
+    if (!XrdPosix_Stat(final_path.c_str(), &buf)) {
+      if (S_ISDIR(buf.st_mode)) {
+        return S3Error::ObjectExistAsDir;
+      }
+    } else {
+      return S3Error::AccessDenied;
+    }
   }
 
   // Then we copy all the parts into a tmp file, which will be renamed to the
@@ -1490,7 +1520,13 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
   auto tmp_path = bucket.path /
                   ("." + req.object + "." + std::to_string(std::time(nullptr)) +
                    std::to_string(std::rand()));
-  auto fd = XrdPosix_Open(tmp_path.c_str(), O_CREAT | O_EXCL | O_WRONLY);
+
+  int fd = 0;
+  {
+    // The temp file has to created using the filesystem id of the owner
+    ScopedFsId(bucket.owner.uid,bucket.owner.gid);
+    fd = XrdPosix_Open(tmp_path.c_str(), O_CREAT | O_EXCL | O_WRONLY);
+  }
 
   if (fd < 0) {
     return S3Error::InternalError;
@@ -1500,7 +1536,7 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
   xs.Init();
 
   Object optimized_obj;
-  optimized_obj.Init(opt_path);
+  optimized_obj.Init(opt_path,bucket.owner.uid, bucket.owner.gid);
 
   ssize_t opt_len;
   try {
@@ -1514,7 +1550,7 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
   for (const auto &part : parts) {
     Object obj;
 
-    if (obj.Init(upload_path / std::to_string(part.part_number)) !=
+    if (obj.Init(upload_path / std::to_string(part.part_number),bucket.owner.uid, bucket.owner.gid) !=
         S3Error::None) {
       // use the optimized part
 
@@ -1533,6 +1569,7 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
       ssize_t len = opt_len;
       while ((i = optimized_obj.Read(len, &ptr)) > 0) {
         if (len < i) {
+          ScopedFsId(bucket.owner.uid,bucket.owner.gid);
           XrdPosix_Close(fd);
           XrdPosix_Unlink(tmp_path.c_str());
           S3Utils::RmPath(final_path.parent_path(), bucket.path);
@@ -1548,6 +1585,7 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
 
       while ((i = obj.Read(len, &ptr)) > 0) {
         if (len < i) {
+          ScopedFsId(bucket.owner.uid,bucket.owner.gid);
           XrdPosix_Close(fd);
           XrdPosix_Unlink(tmp_path.c_str());
           S3Utils::RmPath(final_path.parent_path(), bucket.path);
@@ -1576,7 +1614,11 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
     return error;
   }
 
-  XrdPosix_Rename(tmp_path.c_str(), final_path.c_str());
+  {
+    // Rename using the owner filesystem id
+    ScopedFsId(bucket.owner.uid,bucket.owner.gid);
+    XrdPosix_Rename(tmp_path.c_str(), final_path.c_str());
+  }
 
   XrdPosix_Unlink(opt_path.c_str());
   DeleteMultipartUpload(bucket, key, upload_id);

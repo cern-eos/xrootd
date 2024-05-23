@@ -29,7 +29,8 @@
 #include <shared_mutex>
 #include <string>
 #include <vector>
-
+#include <sys/types.h>
+#include <pwd.h>
 //------------------------------------------------------------------------------
 #include "XrdS3ErrorResponse.hh"
 #include "XrdS3Action.hh"
@@ -80,6 +81,20 @@ class S3Auth {
   struct Owner {
     std::string id;
     std::string display_name;
+    uid_t uid;
+    gid_t gid;
+
+    void resolve() {
+      // translate username
+      struct passwd *pwd = getpwnam(id.c_str());
+      if (pwd == nullptr) {
+	uid=99;
+	gid=99;
+      } else {
+	uid = pwd->pw_uid;
+	gid = pwd->pw_gid;
+      }
+    }
   };
 
   struct Bucket {

@@ -322,6 +322,7 @@ std::pair<S3Error, S3Auth::Bucket> S3Auth::GetBucket(
   b.owner.id = S3Utils::GetXattr(path, "owner");
   if (b.owner.id.empty()) return {S3Error::InternalError, b};
 
+  b.owner.resolve();
   b.path = S3Utils::GetXattr(path, "path");
   if (b.path.empty()) return {S3Error::InternalError, b};
 
