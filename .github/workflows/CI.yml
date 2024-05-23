@@ -66,6 +66,7 @@ jobs:
           readline-dev \
           sudo \
           tinyxml-dev \
+          tinyxml2-dev \
           util-linux-dev \
           uuidgen \
           zlib-dev
