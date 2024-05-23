@@ -279,6 +279,7 @@ S3ObjectStore::Object::~Object() {
 }
 
 // TODO: Replace with the real XrdPosix_Listxattr once implemented.
+#include "XrdS3XAttr.hh"
 #define XrdPosix_Listxattr listxattr
 
 //------------------------------------------------------------------------------

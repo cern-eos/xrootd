@@ -322,6 +322,7 @@ std::string S3Utils::GetXattr(const std::filesystem::path &path,
 }
 
 #include <sys/xattr.h>
+#include "XrdS3XAttr.hh"
 #define XrdPosix_Setxattr setxattr
 // TODO: Replace by XrdPosix_Setxattr once implemented
 
