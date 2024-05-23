@@ -499,12 +499,26 @@ def handle_deleteuser(args):
 
     change_fsid(old_fsuid,old_fsgid)
 
+def validate_bucket_name(name):
+    if len(name) < 3 or len(name) > 63:
+        return False
+
+    if not name[0].isalnum() or not name[-1].isalnum():
+        return False
+
+    return all(c.islower() or c.isdigit() or c == '.' or c == '-' for c in name)
+
 # ------------------------------------------------------------------------------
 def handle_addbucket(args):
     username = args.username
     bucketname = args.bucketname
     bucketpath = args.bucketpath
 
+    # Validate the bucket name
+    if not validate_bucket_name(bucketname):
+        print("Error: Invalid bucket name. Bucket names must be 3-63 characters long, start and end with alphanumeric characters, and contain only lowercase letters, digits, dots, and hyphens.")
+        return
+    
     # Determine the base path from the config file
     config_dir = os.path.join(os.path.expanduser('~'), '.xs3')
     config_file = os.path.join(config_dir, 'config')
