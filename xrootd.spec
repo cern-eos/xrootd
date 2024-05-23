@@ -61,6 +61,7 @@ BuildRequires:	fuse-devel
 BuildRequires:	krb5-devel
 BuildRequires:	libcurl-devel
 BuildRequires:	tinyxml-devel
+BuildRequires:	tinyxml2-devel
 BuildRequires:	libxml2-devel
 BuildRequires:	ncurses-devel
 BuildRequires:	perl-generators
