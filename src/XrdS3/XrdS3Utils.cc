@@ -26,6 +26,7 @@
 #include "XrdS3Utils.hh"
 //------------------------------------------------------------------------------
 #include <sys/stat.h>
+#include <sys/xattr.h>
 #include <cstring>
 #include <iomanip>
 #include <sstream>
@@ -306,6 +307,10 @@ std::string S3Utils::GetXattr(const std::filesystem::path &path,
                               const std::string &key) {
   std::vector<char> res;
 
+// TODO: Replace with the real XrdPosix_Getxattr once implemented.
+#include "XrdS3XAttr.hh"
+#define XrdPosix_Getxattr getxattr
+  
   auto ret =
       XrdPosix_Getxattr(path.c_str(), ("user.s3." + key).c_str(), nullptr, 0);
 
