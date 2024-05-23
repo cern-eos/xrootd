@@ -245,8 +245,8 @@ int XrdS3Req::S3ErrorResponse(S3Error err) {
   return S3ErrorResponse(err, "", "", false);
 }
 
-int XrdS3Req::S3ErrorResponse(S3Error err, const string &ressource,
-                              const string &request_id, bool chunked) {
+int XrdS3Req::S3ErrorResponse(S3Error err, const std::string &ressource,
+                              const std::string &request_id, bool chunked) {
   S3Xml printer;
   S3ErrorCode error_code;
 
@@ -288,15 +288,15 @@ std::string MergeHeaders(const std::map<std::string, std::string> &headers) {
   return res.substr(0, res.empty() ? 0 : res.length() - 2);
 }
 
-int XrdS3Req::S3Response(int code, const map<std::string, std::string> &headers,
-                         const string &body) {
+int XrdS3Req::S3Response(int code, const std::map<std::string, std::string> &headers,
+                         const std::string &body) {
   std::string headers_str = MergeHeaders(headers);
 
   return SendSimpleResp(code, nullptr, headers_str.c_str(), body.c_str(),
                         body.size());
 }
 
-int XrdS3Req::S3Response(int code, const map<std::string, std::string> &headers,
+int XrdS3Req::S3Response(int code, const std::map<std::string, std::string> &headers,
                          const char *body, long long size) {
   std::string headers_str = MergeHeaders(headers);
 
