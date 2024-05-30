@@ -526,8 +526,6 @@ int S3Api::PutObjectHandler(XrdS3Req& req) {
     }
   }
 
-  S3::S3Handler::Logger()->Log(S3::DEBUG, "Api", "GetObject");
-
   S3ObjectStore::Object obj;
   err = objectStore.GetObject(bucket, req.object, obj);
   if (err == S3Error::None) {
@@ -542,8 +540,6 @@ int S3Api::PutObjectHandler(XrdS3Req& req) {
     RET_ON_ERROR(
         ValidatePreconditions(etag, last_modified, req.lowercase_headers))
   }
-
-  S3::S3Handler::Logger()->Log(S3::DEBUG, "Api", "ObjectStore::PutObject");
 
   std::map<std::string, std::string> headers;
   RET_ON_ERROR(objectStore.PutObject(req, bucket, length, chunked, headers))

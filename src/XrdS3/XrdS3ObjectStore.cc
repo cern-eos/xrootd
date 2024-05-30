@@ -41,6 +41,7 @@
 #include "XrdPosix/XrdPosixExtern.hh"
 #include "XrdS3Auth.hh"
 #include "XrdS3Req.hh"
+#include "XrdS3.hh"
 #include "XrdS3ScopedFsId.hh"
 //------------------------------------------------------------------------------
 
@@ -937,6 +938,8 @@ S3Error S3ObjectStore::PutObject(XrdS3Req &req, const S3Auth::Bucket &bucket,
                                  Headers &headers) {
   ScopedFsId scope(bucket.owner.uid,bucket.owner.gid);
   auto final_path = bucket.path / req.object;
+
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore", "PutObject: uid=%u gid=%u path=%s chuncked=%d size=%lu", bucket.owner.uid, bucket.owner.gid, bucket.path.c_str(), chunked, size);
 
   struct stat buf;
   if (!XrdPosix_Stat(final_path.c_str(), &buf) && S_ISDIR(buf.st_mode)) {

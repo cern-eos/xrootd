@@ -47,6 +47,10 @@ if( BUILD_XRDEC )
   add_subdirectory( XrdEc )
 endif()
 
+if( BUILD_XRDS3 )
+  add_subdirectory( XrdS3 )
+endif()
+
 if( NOT XRDCL_ONLY )
   include( XrdServer )
   include( XrdDaemons )

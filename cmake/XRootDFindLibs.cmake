@@ -24,6 +24,7 @@ if( ZLIB_FOUND )
 endif()
 
 find_package( TinyXml )
+find_package( TinyXml2 )
 
 find_package( LibXml2 )
 if( LIBXML2_FOUND )
@@ -214,4 +215,8 @@ if( ENABLE_XRDCLHTTP )
   else()
     set( BUILD_XRDCLHTTP FALSE )
   endif()
+endif()
+
+if( ENABLE_XRDS3 )
+  set (BUILD_XRDS3 TRUE )
 endif()
