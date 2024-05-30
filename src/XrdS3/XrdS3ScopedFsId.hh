@@ -94,6 +94,12 @@ public:
     return ok;
   }
 
+  static void Validate() {
+    ScopedFsId scope(geteuid()+1, geteuid()+1);
+    if (!scope.IsOk()) {
+      throw std::runtime_error("XrdS3 misses the capability to set the filesystem IDs on the fly!");
+    }
+  }
 private:
   int fsuid;
   int fsgid;
@@ -126,4 +132,4 @@ public:
 };
 
 } // namespace S3
-#endif 
+#endif

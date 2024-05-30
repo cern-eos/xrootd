@@ -24,6 +24,7 @@
 
 //------------------------------------------------------------------------------
 #include "XrdS3Router.hh"
+#include "XrdS3Log.hh"
 //------------------------------------------------------------------------------
 
 namespace S3 {
@@ -150,7 +151,7 @@ bool S3Route::MatchMap(
 //! \param route the route
 //------------------------------------------------------------------------------
 void S3Router::AddRoute(S3Route &route) {
-  mLog.Say("Registered route:", route.GetName().c_str());
+  mLog->Log(S3::ALL, "Router", "registered route: %s", route.GetName().c_str());
   routes.push_back(route);
 }
 
@@ -162,11 +163,13 @@ void S3Router::AddRoute(S3Route &route) {
 int S3Router::ProcessReq(XrdS3Req &req) {
   for (const auto &route : routes) {
     if (route.Match(req)) {
-      mLog.Say("Found matching route for req:", route.GetName().c_str());
-      return route.Handler()(req);
+      mLog->Log(S3::DEBUG, "Router", "found matching route for req: %s", route.GetName().c_str());
+      int rc = route.Handler()(req);
+      mLog->Log(S3::INFO, "Router", "request returned: %d", rc);
+      return rc;
     }
   }
-  mLog.Say("Unable to find matching route for request...");
+  mLog->Log(S3::ERROR, "Router", "unable to find matching route for req: %s.", req.uri_path.c_str());
   return not_found_handler(req);
 }
 

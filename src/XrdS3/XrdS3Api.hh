@@ -33,6 +33,7 @@
 #include "XrdS3Auth.hh"
 #include "XrdS3ObjectStore.hh"
 #include "XrdS3Req.hh"
+#include "XrdS3Log.hh"
 
 namespace S3 {
 
@@ -46,9 +47,9 @@ namespace S3 {
 class S3Api {
  public:
   S3Api() = default;
-  S3Api(const std::string &config_path, const std::string &region, const std::string &service,
+  S3Api(S3Log& log, const std::string &config_path, const std::string &region, const std::string &service,
         const std::string &mtpu_path)
-      : objectStore(config_path, mtpu_path), auth(config_path, region, service) {}
+    : mLog(&log),objectStore(config_path, mtpu_path), auth(config_path, region, service) {}
 
   ~S3Api() = default;
 
@@ -310,6 +311,7 @@ class S3Api {
   }
 
  private:
+  S3Log* mLog;
   S3ObjectStore objectStore;
   S3Auth auth;
 };

@@ -34,6 +34,7 @@
 //------------------------------------------------------------------------------
 #include "XrdS3Action.hh"
 #include "XrdS3Req.hh"
+#include "XrdS3Log.hh"
 #include "XrdSys/XrdSysError.hh"
 //------------------------------------------------------------------------------
 
@@ -91,8 +92,8 @@ class S3Route {
 //------------------------------------------------------------------------------
 class S3Router {
  public:
-  explicit S3Router(XrdSysError *log, HandlerFunc fn)
-      : mLog(log->logger(), "S3Router_"), not_found_handler(std::move(fn)){};
+  explicit S3Router(S3Log &log, HandlerFunc fn)
+    : mLog(&log), not_found_handler(std::move(fn)){};
 
   ~S3Router() = default;
 
@@ -101,7 +102,7 @@ class S3Router {
   int ProcessReq(XrdS3Req &req);
 
  private:
-  XrdSysError mLog;
+  S3Log* mLog;
   std::vector<S3Route> routes;
 
   HandlerFunc not_found_handler;

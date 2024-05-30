@@ -274,7 +274,6 @@ def handle_config(args):
             change_fsid(old_fsuid, old_fsgid)
             return
 
-    print(old_fsuid,old_fsgid)
     change_fsid(old_fsuid,old_fsgid)
 
     # Write the base_path to the config file

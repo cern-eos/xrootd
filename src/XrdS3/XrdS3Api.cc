@@ -31,6 +31,7 @@
 #include "XrdS3Auth.hh"
 #include "XrdS3ErrorResponse.hh"
 #include "XrdS3Response.hh"
+#include "XrdS3Log.hh"
 //------------------------------------------------------------------------------
 
 namespace S3 {
@@ -501,6 +502,8 @@ int S3Api::CopyObjectHandler(XrdS3Req& req) {
 int S3Api::PutObjectHandler(XrdS3Req& req) {
   VALIDATE_REQUEST(Action::PutObject)
 
+  mLog->Log(S3::DEBUG, "Api", "Action::PutObject");
+
   auto chunked = false;
   unsigned long length = 0;
   auto it = req.lowercase_headers.find("content-length");
@@ -523,6 +526,8 @@ int S3Api::PutObjectHandler(XrdS3Req& req) {
     }
   }
 
+  mLog->Log(S3::DEBUG, "Api", "GetObject");
+
   S3ObjectStore::Object obj;
   err = objectStore.GetObject(bucket, req.object, obj);
   if (err == S3Error::None) {
@@ -537,6 +542,8 @@ int S3Api::PutObjectHandler(XrdS3Req& req) {
     RET_ON_ERROR(
         ValidatePreconditions(etag, last_modified, req.lowercase_headers))
   }
+
+  mLog->Log(S3::DEBUG, "Api", "ObjectStore::PutObject");
 
   std::map<std::string, std::string> headers;
   RET_ON_ERROR(objectStore.PutObject(req, bucket, length, chunked, headers))

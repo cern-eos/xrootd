@@ -35,13 +35,12 @@
 #include "XrdS3Crypt.hh"
 #include "XrdS3Router.hh"
 #include "XrdS3Utils.hh"
+#include "XrdS3Log.hh"
 #include "XrdSys/XrdSysError.hh"
 //------------------------------------------------------------------------------
 
 
 namespace S3 {
-
-
 //------------------------------------------------------------------------------
 //! \brief S3Handler is a class that implements the XRootD HTTP extension
 //! handler for S3.
@@ -70,8 +69,8 @@ class S3Handler : public XrdHttpExtHandler {
     std::string multipart_upload_dir;
   } mConfig;
 
-  XrdSysError mLog;
-
+  XrdSysError mErr;
+  S3Log mLog;
   S3Api mApi;
   S3Router mRouter;
 

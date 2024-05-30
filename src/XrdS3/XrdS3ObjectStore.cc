@@ -50,7 +50,7 @@ namespace S3 {
 //! \param config Path to the configuration file
 //! \param mtpu Path to the MTPU directory
 //------------------------------------------------------------------------------
-S3ObjectStore::S3ObjectStore(const std::string &config, const std::string &mtpu)
+  S3ObjectStore::S3ObjectStore(const std::string &config, const std::string &mtpu)
     : config_path(config), mtpu_path(mtpu) {
   user_map = config_path / "users";
 
@@ -205,7 +205,7 @@ S3Error S3ObjectStore::CreateBucket(S3Auth &auth, S3Auth::Bucket bucket,
   int mkdir_retc=0;
   {
     // Create the backend directory with the users filesystem id
-    ScopedFsId(bucket.owner.uid,bucket.owner.gid);
+    ScopedFsId scop (bucket.owner.uid,bucket.owner.gid);
     mkdir_retc = XrdPosix_Mkdir(bucket.path.c_str(), S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
   }
   if (mkdir_retc) {
@@ -246,7 +246,7 @@ S3Error S3ObjectStore::DeleteBucket(S3Auth &auth,
 
   {
     // Check the backend directory with the users filesystem id
-    ScopedFsId(bucket.owner.uid,bucket.owner.gid);
+    ScopedFsId scope(bucket.owner.uid,bucket.owner.gid);
 
     if (!S3Utils::IsDirEmpty(bucket.path)) {
       return S3Error::BucketNotEmpty;
@@ -306,7 +306,7 @@ uid_t uid, gid_t gid) {
   struct stat buf;
 
   // Do the backend operations with the users filesystem id
-  ScopedFsId(uid, gid);
+  ScopedFsId scope(uid, gid);
   if (XrdPosix_Stat(p.c_str(), &buf) || S_ISDIR(buf.st_mode)) {
     return S3Error::NoSuchKey;
   }
@@ -747,10 +747,14 @@ struct FileUploadResult {
 FileUploadResult FileUploader(XrdS3Req &req, bool chunked, size_t size,
                               std::filesystem::path &path) {
   auto fd = XrdPosix_Open(path.c_str(), O_CREAT | O_EXCL | O_WRONLY,
-                          S_IRWXU | S_IRWXG);
+                          S_IRWXU | S_IRGRP | S_IXGRP);
 
   if (fd < 0) {
-    return FileUploadResult{S3Error::InternalError, {}, {}, {}};
+    if ( errno == 13) {
+      return FileUploadResult{S3Error::AccessDenied, {}, {}, {}};
+    } else {
+      return FileUploadResult{S3Error::InternalError, {}, {}, {}};
+    }
   }
 
   // TODO: Implement handling of different checksum types.
@@ -931,6 +935,7 @@ S3Error S3ObjectStore::UploadPart(XrdS3Req &req, const std::string &upload_id,
 S3Error S3ObjectStore::PutObject(XrdS3Req &req, const S3Auth::Bucket &bucket,
                                  unsigned long size, bool chunked,
                                  Headers &headers) {
+  ScopedFsId scope(bucket.owner.uid,bucket.owner.gid);
   auto final_path = bucket.path / req.object;
 
   struct stat buf;
@@ -945,7 +950,6 @@ S3Error S3ObjectStore::PutObject(XrdS3Req &req, const S3Auth::Bucket &bucket,
 
   auto err = S3Utils::makePath((char *)final_path.parent_path().c_str(),
                                S_IRWXU | S_IRWXG);
-
   if (err == ENOTDIR) {
     return S3Error::ObjectExistInObjectPath;
   } else if (err != 0) {
@@ -1504,7 +1508,7 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
 
   {
     // Check if the final file exists in the backend and is a directory
-    ScopedFsId(bucket.owner.uid,bucket.owner.gid);
+    ScopedFsId scope(bucket.owner.uid,bucket.owner.gid);
 
     if (!XrdPosix_Stat(final_path.c_str(), &buf)) {
       if (S_ISDIR(buf.st_mode)) {
@@ -1524,7 +1528,7 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
   int fd = 0;
   {
     // The temp file has to created using the filesystem id of the owner
-    ScopedFsId(bucket.owner.uid,bucket.owner.gid);
+    ScopedFsId scope(bucket.owner.uid,bucket.owner.gid);
     fd = XrdPosix_Open(tmp_path.c_str(), O_CREAT | O_EXCL | O_WRONLY);
   }
 
@@ -1569,7 +1573,7 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
       ssize_t len = opt_len;
       while ((i = optimized_obj.Read(len, &ptr)) > 0) {
         if (len < i) {
-          ScopedFsId(bucket.owner.uid,bucket.owner.gid);
+          ScopedFsId scope(bucket.owner.uid,bucket.owner.gid);
           XrdPosix_Close(fd);
           XrdPosix_Unlink(tmp_path.c_str());
           S3Utils::RmPath(final_path.parent_path(), bucket.path);
@@ -1585,7 +1589,7 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
 
       while ((i = obj.Read(len, &ptr)) > 0) {
         if (len < i) {
-          ScopedFsId(bucket.owner.uid,bucket.owner.gid);
+          ScopedFsId scope(bucket.owner.uid,bucket.owner.gid);
           XrdPosix_Close(fd);
           XrdPosix_Unlink(tmp_path.c_str());
           S3Utils::RmPath(final_path.parent_path(), bucket.path);
@@ -1616,7 +1620,7 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
 
   {
     // Rename using the owner filesystem id
-    ScopedFsId(bucket.owner.uid,bucket.owner.gid);
+    ScopedFsId scope(bucket.owner.uid,bucket.owner.gid);
     XrdPosix_Rename(tmp_path.c_str(), final_path.c_str());
   }
 

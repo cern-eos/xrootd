@@ -35,6 +35,7 @@
 #include "XrdS3Auth.hh"
 #include "XrdS3ErrorResponse.hh"
 #include "XrdS3Req.hh"
+#include "XrdS3Log.hh"
 
 namespace S3 {
 

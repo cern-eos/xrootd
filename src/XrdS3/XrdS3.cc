@@ -34,6 +34,8 @@
 #include "XrdOuc/XrdOucStream.hh"
 #include "XrdOuc/XrdOucString.hh"
 #include "XrdS3ErrorResponse.hh"
+#include "XrdS3Log.hh"
+#include "XrdS3ScopedFsId.hh"
 #include "XrdVersion.hh"
 //------------------------------------------------------------------------------
 
@@ -61,19 +63,24 @@ int NotFoundHandler(XrdS3Req &req) {
 //!
 //------------------------------------------------------------------------------
 S3Handler::S3Handler(XrdSysError *log, const char *config, XrdOucEnv *myEnv)
-    : mLog(log->logger(), "S3_"), mApi(), mRouter(&mLog, NotFoundHandler) {
+    : mErr(log->logger(), "S3_"), mApi(), mRouter(mLog, NotFoundHandler) {
+
+  mLog.Init(&mErr);
+
+  S3::ScopedFsId::Validate(); // verify we can switch filesystem IDs !
+
   if (!ParseConfig(config, *myEnv)) {
     throw std::runtime_error("Failed to configure the HTTP S3 handler.");
   }
 
-  ctx.log = &mLog;
+  ctx.log = &mErr;
 
-  mApi = S3Api(mConfig.config_dir, mConfig.region, mConfig.service,
+  mApi = S3Api(mLog, mConfig.config_dir, mConfig.region, mConfig.service,
                mConfig.multipart_upload_dir);
 
   ConfigureRouter();
 
-  mLog.Say("Finished configuring S3 Handler");
+  mLog.Log(S3::ALL, "Handler", "finished configuring S3 Handler");
 }
 
 //------------------------------------------------------------------------------
@@ -517,7 +524,7 @@ void S3Handler::ConfigureRouter() {
 //!
 //------------------------------------------------------------------------------
 bool S3Handler::ParseConfig(const char *config, XrdOucEnv &env) {
-  XrdOucStream Config(&mLog, getenv("XRDINSTANCE"), &env, "=====> ");
+  XrdOucStream Config(&mErr, getenv("XRDINSTANCE"), &env, "=====> ");
 
   auto fd = open(config, O_RDONLY);
 
