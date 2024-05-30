@@ -33,8 +33,9 @@
    2) The config file,
    3) The /etc/services file for service corresponding to the program name.
 */
-  
+
 #include <unistd.h>
+#include <sys/fsuid.h>
 #include <cctype>
 #include <fcntl.h>
 #include <pwd.h>
@@ -340,7 +341,7 @@ int XrdConfig::Configure(int argc, char **argv)
    char *argbP = argBuff, *argbE = argbP+sizeof(argBuff)-4;
    char *ifList = 0;
    int   myArgc = 1, urArgc = argc, i;
-   bool noV6, ipV4 = false, ipV6 = false, rootChk = true, optbg = false;
+   bool noV6, ipV4 = false, ipV6 = false, rootChk = true, optbg = false, nfsmode = false;
 
 // Reconstruct the command line so we can put it in the log
 //
@@ -401,10 +402,12 @@ int XrdConfig::Configure(int argc, char **argv)
 //
    opterr = 0;
    if (argc > 1 && '-' == *argv[1]) 
-      while ((c = getopt(urArgc,argv,":a:A:bc:dhHI:k:l:L:n:p:P:R:s:S:vw:W:z"))
+      while ((c = getopt(urArgc,argv,":a:A:bc:dhHI:k:l:L:n:p:P:R:s:S:vw:W:z0"))
              && ((unsigned char)c != 0xff))
      { switch(c)
        {
+       case '0': nfsmode = true;
+	         break;
        case 'a': if (AdminPath) free(AdminPath);
                  AdminPath = strdup(optarg);
                  AdminMode = ProtInfo.AdmMode = S_IRWXU;
@@ -531,20 +534,31 @@ int XrdConfig::Configure(int argc, char **argv)
 //
    if (mySitName) mySitName = XrdOucSiteName::Set(mySitName, 63);
 
-// Drop into non-privileged state if so requested
-//
-   if (myGid && setegid(myGid))
-      {Log.Emsg("Config", errno, "set effective gid"); exit(17);}
-   if (myUid && seteuid(myUid))
-      {Log.Emsg("Config", errno, "set effective uid"); exit(17);}
+   if (nfsmode)
+     {
+       // If we need to use setfsuid/setfsgid 'somewhere' we have to run with '-0' option
+       if (myGid && setfsgid(myGid))
+	 {Log.Emsg("Config", errno, "set filesystem gid"); exit(17);}
+       if (myUid && setfsuid(myUid))
+	 {Log.Emsg("Config", errno, "set filesystem uid"); exit(17);}
+     }
+   else
+     {
+       // Drop into non-privileged state if so requested
+       //
+       if (myGid && setegid(myGid))
+	 {Log.Emsg("Config", errno, "set effective gid"); exit(17);}
+       if (myUid && seteuid(myUid))
+	 {Log.Emsg("Config", errno, "set effective uid"); exit(17);}
 
-// Prohibit this program from executing as superuser unless -R was specified.
-//
-   if (rootChk && geteuid() == 0)
-      {Log.Emsg("Config", "Security reasons prohibit running as "
-                "superuser; program is terminating.");
-       _exit(8);
-      }
+       // Prohibit this program from executing as superuser unless -R was specified.
+       //
+       if (rootChk && geteuid() == 0)
+	 {Log.Emsg("Config", "Security reasons prohibit running as "
+		   "superuser; program is terminating.");
+	   _exit(8);
+	 }
+     }
 
 // Pass over any parameters
 //
