@@ -24,7 +24,7 @@
 
 //------------------------------------------------------------------------------
 #include "XrdS3Router.hh"
-#include "XrdS3Log.hh"
+#include "XrdS3.hh"
 //------------------------------------------------------------------------------
 
 namespace S3 {
@@ -151,7 +151,7 @@ bool S3Route::MatchMap(
 //! \param route the route
 //------------------------------------------------------------------------------
 void S3Router::AddRoute(S3Route &route) {
-  mLog->Log(S3::ALL, "Router", "registered route: %s", route.GetName().c_str());
+  S3::S3Handler::Logger()->Log(S3::ALL, "Router", "registered route: %s", route.GetName().c_str());
   routes.push_back(route);
 }
 
@@ -163,13 +163,13 @@ void S3Router::AddRoute(S3Route &route) {
 int S3Router::ProcessReq(XrdS3Req &req) {
   for (const auto &route : routes) {
     if (route.Match(req)) {
-      mLog->Log(S3::DEBUG, "Router", "found matching route for req: %s", route.GetName().c_str());
+      S3::S3Handler::Logger()->Log(S3::DEBUG, "Router", "found matching route for req: %s", route.GetName().c_str());
       int rc = route.Handler()(req);
-      mLog->Log(S3::INFO, "Router", "request returned: %d", rc);
+      S3::S3Handler::Logger()->Log(S3::INFO, "Router", "request returned: %d", rc);
       return rc;
     }
   }
-  mLog->Log(S3::ERROR, "Router", "unable to find matching route for req: %s.", req.uri_path.c_str());
+  S3::S3Handler::Logger()->Log(S3::ERROR, "Router", "unable to find matching route for req: %s.", req.uri_path.c_str());
   return not_found_handler(req);
 }
 

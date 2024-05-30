@@ -58,7 +58,11 @@ class S3Handler : public XrdHttpExtHandler {
   // Abstract method in the base class, but does not seem to be used
   int Init(const char *cfgfile) override { return 0; }
 
- public:
+  static S3Handler* sInstance;
+  static S3Log* Logger() { return sInstance->GetLogger(); }
+
+  S3Log* GetLogger() { return &mLog; }
+
   Context ctx;
 
  private:
@@ -67,6 +71,7 @@ class S3Handler : public XrdHttpExtHandler {
     std::string region;
     std::string service;
     std::string multipart_upload_dir;
+    std::string trace;
   } mConfig;
 
   XrdSysError mErr;

@@ -43,9 +43,10 @@
 //! XRootD S3 plug-in implementation
 //------------------------------------------------------------------------------
 
+
 namespace S3 {
 XrdVERSIONINFO(XrdHttpGetExtHandler, HttpS3);
-
+S3Handler* S3Handler::sInstance = nullptr; // for convenience to get access to our logger
 //------------------------------------------------------------------------------
 //! This is the default handler for requests that are not handled by the
 //! router. It returns a 404 error.
@@ -63,8 +64,8 @@ int NotFoundHandler(XrdS3Req &req) {
 //!
 //------------------------------------------------------------------------------
 S3Handler::S3Handler(XrdSysError *log, const char *config, XrdOucEnv *myEnv)
-    : mErr(log->logger(), "S3_"), mApi(), mRouter(mLog, NotFoundHandler) {
-
+    : mErr(log->logger(), "S3_"), mApi(), mRouter(NotFoundHandler) {
+  S3Handler::sInstance = this;
   mLog.Init(&mErr);
 
   S3::ScopedFsId::Validate(); // verify we can switch filesystem IDs !
@@ -75,7 +76,7 @@ S3Handler::S3Handler(XrdSysError *log, const char *config, XrdOucEnv *myEnv)
 
   ctx.log = &mErr;
 
-  mApi = S3Api(mLog, mConfig.config_dir, mConfig.region, mConfig.service,
+  mApi = S3Api(mConfig.config_dir, mConfig.region, mConfig.service,
                mConfig.multipart_upload_dir);
 
   ConfigureRouter();
@@ -536,36 +537,55 @@ bool S3Handler::ParseConfig(const char *config, XrdOucEnv &env) {
 
   const char *val;
 
+  mErr.setMsgMask(LogMask::ERROR | LogMask::WARN); // by default don't log so much
+
   while ((val = Config.GetMyFirstWord())) {
     if (!strcmp("s3.config", val)) {
       if (!(val = Config.GetWord())) {
         Config.Close();
-	std::cerr << "error: s3.config value not defined" << std::endl;
+	      std::cerr << "error: s3.config value not defined" << std::endl;
         return false;
       }
       mConfig.config_dir = val;
     } else if (!strcmp("s3.region", val)) {
       if (!(val = Config.GetWord())) {
         Config.Close();
-	std::cerr << "error: s3.region value not defined" << std::endl;
+	      std::cerr << "error: s3.region value not defined" << std::endl;
         return false;
       }
       mConfig.region = val;
     } else if (!strcmp("s3.service", val)) {
       if (!(val = Config.GetWord())) {
         Config.Close();
-	std::cerr << "error: s3.service value not defined" << std::endl;
+	      std::cerr << "error: s3.service value not defined" << std::endl;
         return false;
       }
       mConfig.service = val;
     } else if (!strcmp("s3.multipart", val)) {
       if (!(val = Config.GetWord())) {
         Config.Close();
-	std::cerr << "error: s3.multipart value not defined" << std::endl;
+	      std::cerr << "error: s3.multipart value not defined" << std::endl;
         return false;
       }
       mConfig.multipart_upload_dir = val;
-    }
+    } else if (!strcmp("s3.trace", val)) {
+      if (!(val = Config.GetWord())) {
+        Config.Close();
+	      std::cerr << "error: s3.trace value not defined" << std::endl;
+        return false;
+      }
+      mConfig.trace = val;
+      mErr.setMsgMask(0);
+      if (!strcmp(val, "all"))          {mErr.setMsgMask(mErr.getMsgMask() | LogMask::ALL);}
+      else if (!strcmp(val, "error"))   {mErr.setMsgMask(mErr.getMsgMask() | LogMask::ERROR);}
+      else if (!strcmp(val, "warning")) {mErr.setMsgMask(mErr.getMsgMask() | LogMask::WARN);}
+      else if (!strcmp(val, "info"))    {mErr.setMsgMask(mErr.getMsgMask() | LogMask::INFO);}
+      else if (!strcmp(val, "debug"))   {mErr.setMsgMask(mErr.getMsgMask() | LogMask::DEBUG);}
+      else if (!strcmp(val, "none"))    {mErr.setMsgMask(0);}
+      else {
+        std::cerr << "error: s3.trace encountered an unknown directive: " << val << std::endl;
+        return false;
+      }    }
   }
   Config.Close();
 
