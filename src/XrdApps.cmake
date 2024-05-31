@@ -5,6 +5,7 @@
 #-------------------------------------------------------------------------------
 set( LIB_XRDCL_PROXY_PLUGIN XrdClProxyPlugin-${PLUGIN_VERSION} )
 set( LIB_XRDCL_RECORDER_PLUGIN XrdClRecorder-${PLUGIN_VERSION} )
+set( LIB_XRDCL_JCACHE_PLUGIN XrdClJCachePlugin-${PLUGIN_VERSION} )
 
 #-------------------------------------------------------------------------------
 # Shared library version
@@ -203,10 +204,22 @@ target_link_libraries(
   XrdUtils )
 
 #-------------------------------------------------------------------------------
+# XrdClJCachePlugin library
+#-------------------------------------------------------------------------------
+add_library(
+  ${LIB_XRDCL_JCACHE_PLUGIN}
+  MODULE
+  XrdApps/XrdClJCachePlugin/XrdClJCachePlugin.cc
+  XrdApps/XrdClJCachePlugin/XrdClJCacheFile.cc)
+
+target_link_libraries(${LIB_XRDCL_JCACHE_PLUGIN} PRIVATE XrdCl)
+
+
+#-------------------------------------------------------------------------------
 # Install
 #-------------------------------------------------------------------------------
 install(
-  TARGETS XrdAppUtils ${LIB_XRDCL_PROXY_PLUGIN} ${LIB_XRDCL_RECORDER_PLUGIN}
+  TARGETS XrdAppUtils ${LIB_XRDCL_PROXY_PLUGIN} ${LIB_XRDCL_RECORDER_PLUGIN} ${LIB_XRDCL_JCACHE_PLUGIN}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} )
 
