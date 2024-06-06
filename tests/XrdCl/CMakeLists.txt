@@ -3,6 +3,8 @@ add_executable(xrdcl-unit-tests
   XrdClPoller.cc
   XrdClSocket.cc
   XrdClUtilsTest.cc
+  XrdClVectorCache.cc
+  ../../src/XrdApps/XrdClJCachePlugin/XrdClVectorCache.cc
   ../common/Server.cc
   ../common/Utils.cc
   ../common/TestEnv.cc
@@ -12,9 +14,11 @@ target_link_libraries(xrdcl-unit-tests
   XrdCl
   XrdXml
   XrdUtils
+  stdc++fs
   ZLIB::ZLIB
   GTest::GTest
   GTest::Main
+  OpenSSL::Crypto
 )
 
 target_include_directories(xrdcl-unit-tests
