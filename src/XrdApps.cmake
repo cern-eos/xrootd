@@ -202,6 +202,18 @@ target_link_libraries(
   ${CMAKE_THREAD_LIBS_INIT}
   XrdCl
   XrdUtils )
+#-----------------------------------------------------------------------------
+# xrdclcacheclean
+#-----------------------------------------------------------------------------
+
+add_executable(
+  xrdclcacheclean
+  XrdApps/XrdClJCachePlugin/XrdClCacheCleaner.cc )
+
+target_link_libraries(
+  xrdclcacheclean
+  stdc++fs
+)
 
 #-------------------------------------------------------------------------------
 # XrdClJCachePlugin library
@@ -210,9 +222,16 @@ add_library(
   ${LIB_XRDCL_JCACHE_PLUGIN}
   MODULE
   XrdApps/XrdClJCachePlugin/XrdClJCachePlugin.cc
-  XrdApps/XrdClJCachePlugin/XrdClJCacheFile.cc)
+  XrdApps/XrdClJCachePlugin/XrdClJCacheFile.cc
+  XrdApps/XrdClJCachePlugin/XrdClVectorCache.cc
+  XrdApps/XrdClJCachePlugin/XrdClVectorCache.hh
+  XrdApps/XrdClJCachePlugin/cache/Journal.cc
+  XrdApps/XrdClJCachePlugin/cache/Journal.hh
+  XrdApps/XrdClJCachePlugin/cache/IntervalTree.hh
+  XrdApps/XrdClJCachePlugin/cache/RbTree.hh
+)
 
-target_link_libraries(${LIB_XRDCL_JCACHE_PLUGIN} PRIVATE XrdCl)
+target_link_libraries(${LIB_XRDCL_JCACHE_PLUGIN} PRIVATE XrdCl stdc++fs)
 
 
 #-------------------------------------------------------------------------------
@@ -231,6 +250,6 @@ if( NOT XRDCL_ONLY )
 endif()
 
 install(
-  TARGETS xrdreplay
+  TARGETS xrdreplay xrdclcacheclean
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
