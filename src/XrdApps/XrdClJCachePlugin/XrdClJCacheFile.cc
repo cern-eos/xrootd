@@ -165,14 +165,23 @@ JCacheFile::Read(uint64_t offset,
         obj->Set(chunkInfo);
         handler->HandleResponse(ret_st, obj);
         st = XRootDStatus(stOK, 0);
-          return st;
+        return st;
       }
     }
-    st = pFile->Read(offset, size, buffer, handler, timeout);
+
+    // run a synchronous read
+    uint32_t bytesRead = 0;
+    st = pFile->Read(offset, size, buffer, bytesRead, timeout);
     if (st.IsOK()) {
       if (sEnableJournalCache) {
         pJournal.pwrite(buffer, size, offset);
       }
+      // emit a chunk
+      XRootDStatus* ret_st = new XRootDStatus(st);
+      ChunkInfo* chunkInfo = new ChunkInfo(offset, bytesRead, buffer);
+      AnyObject* obj = new AnyObject();
+      obj->Set(chunkInfo);
+      handler->HandleResponse(ret_st, obj);
     }
   } else {
     st = XRootDStatus(stError, errInvalidOp);
@@ -247,7 +256,6 @@ JCacheFile::PgRead( uint64_t         offset,
       AnyObject* obj = new AnyObject();
       obj->Set(chunkInfo);
       handler->HandleResponse(ret_st, obj);
-      st = XRootDStatus(stOK, 0);
     }
   } else {
     st = XRootDStatus(stError, errInvalidOp);
@@ -332,15 +340,50 @@ JCacheFile::VectorRead(const ChunkList& chunks,
     VectorCache cache(chunks, pUrl, (const char*)buffer, sCachePath);
     if (sEnableVectorCache) {
       if (cache.retrieve()) {
-        handler->HandleResponse(&st, 0);
+        // Compute total length of readv request
+        uint32_t len = 0;
+        for (auto it = chunks.begin(); it != chunks.end(); ++it) {
+          len += it->length;
+        }
+
+        XRootDStatus* ret_st = new XRootDStatus(st);
+        AnyObject* obj = new AnyObject();
+        VectorReadInfo* vReadInfo = new VectorReadInfo();
+        vReadInfo->SetSize(len);
+        ChunkList vResp = vReadInfo->GetChunks();
+        vResp = chunks;
+        obj->Set(vReadInfo);
+        handler->HandleResponse(ret_st, obj);
         return st;
       }
     }
     
-    st = pFile->VectorRead(chunks, buffer, handler, timeout);
+    // run a synchronous vector read
 
-    if (st.IsOK() && sEnableVectorCache) {
-      cache.store();
+    VectorReadInfo* vReadInfo;
+    st = pFile->VectorRead(chunks, buffer, vReadInfo, timeout);
+
+    if (st.IsOK()) {
+      if (sEnableVectorCache) {
+        // store into cache
+        cache.store();
+      }
+      // emit a chunk
+      XRootDStatus* ret_st = new XRootDStatus(st);
+      AnyObject* obj = new AnyObject();
+      ChunkList vResp = vReadInfo->GetChunks();
+      vResp = chunks;
+      obj->Set(vReadInfo);
+
+      if (sEnableJournalCache && !sEnableVectorCache) {
+        // if we run with journal cache but don't cache vectors, we need to
+        // copy the vector data into the journal cache
+        for (auto it = chunks.begin(); it != chunks.end(); ++it) {
+          pJournal.pwrite(it->buffer, it->GetLength(), it->GetOffset());
+        }
+      }
+      handler->HandleResponse(ret_st, obj);
+      return st;
     }
   } else {
     st = XRootDStatus(stError, errInvalidOp);
