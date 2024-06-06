@@ -24,8 +24,12 @@
 /*----------------------------------------------------------------------------*/
 #include "XrdClJCacheFile.hh"
 /*----------------------------------------------------------------------------*/
+#include "XrdCl/XrdClMessageUtils.hh"
+/*----------------------------------------------------------------------------*/
 
 std::string JCacheFile::sCachePath="";
+bool JCacheFile::sEnableJournalCache = true;
+bool JCacheFile::sEnableVectorCache = true;
 
 //------------------------------------------------------------------------------
 // Constructor
@@ -34,6 +38,7 @@ JCacheFile::JCacheFile():
   mIsOpen(false),
   pFile(0)
 {
+  mAttachedForRead = false;
 }
 
 
@@ -60,24 +65,31 @@ JCacheFile::Open(const std::string& url,
 		 uint16_t timeout)
 {
   XRootDStatus st;
+  mFlags = flags;
 
   if (mIsOpen) {
     st = XRootDStatus(stError, errInvalidOp);
+    std::cerr << "error: file is already opened: " << pUrl << std::endl; 
     return st;
   }
 
   pFile = new XrdCl::File(false);
+  pUrl = url;
   st = pFile->Open(url, flags, mode, handler, timeout);
   
   if (st.IsOK()) {
     mIsOpen = true;
+    if ((flags & OpenFlags::Flags::Read) == OpenFlags::Flags::Read) {
+      std::string JournalDir = sCachePath + "/" + VectorCache::computeSHA256(pUrl);
+      pJournalPath = JournalDir + "/journal";
+      // it can be that we cannot write the journal directory
+      if (!VectorCache::ensureLastSubdirectoryExists(JournalDir)) {
+        st = XRootDStatus(stError, errOSError);
+        std::cerr << "error: unable to create cache directory: " << JournalDir << std::endl; 
+        return st;  
+      }
+    }
   }
-
-  
-  if ((flags & OpenFlags::Flags::Read) == OpenFlags::Flags::Read) {
-    // attach to a cache
-  }
-  
   return st;
 }
 
@@ -93,15 +105,17 @@ JCacheFile::Close(ResponseHandler* handler,
 
   if (mIsOpen) {
     mIsOpen = false;
-
+    pUrl = "";
     if (pFile) {
       st = pFile->Close(handler, timeout);
+    } else {
+      st = XRootDStatus(stOK, 0);
+    }
+    if (sEnableJournalCache) {
+      pJournal.detach();
     }
   } else {
-    // File already closed
-    st = XRootDStatus(stError, errInvalidOp);
-    XRootDStatus* ret_st = new XRootDStatus(st);
-    handler->HandleResponse(ret_st, 0);
+    st = XRootDStatus(stOK, 0);
   }
 
   return st;
@@ -141,9 +155,27 @@ JCacheFile::Read(uint64_t offset,
   XRootDStatus st;
 
   if (pFile) {
+    if (sEnableJournalCache && AttachForRead()) {
+      auto rb = pJournal.pread(buffer, size, offset);
+      if (rb == size)  {
+        // we can only serve success full reads from the cache for now
+        XRootDStatus* ret_st = new XRootDStatus(st);
+        ChunkInfo* chunkInfo = new ChunkInfo(offset, rb, buffer);
+        AnyObject* obj = new AnyObject();
+        obj->Set(chunkInfo);
+        handler->HandleResponse(ret_st, obj);
+        st = XRootDStatus(stOK, 0);
+          return st;
+      }
+    }
     st = pFile->Read(offset, size, buffer, handler, timeout);
+    if (st.IsOK()) {
+      if (sEnableJournalCache) {
+        pJournal.pwrite(buffer, size, offset);
+      }
+    }
   } else {
-        st = XRootDStatus(stError, errInvalidOp);
+    st = XRootDStatus(stError, errInvalidOp);
   }
   return st;
 }
@@ -170,6 +202,81 @@ JCacheFile::Write(uint64_t offset,
   return st;
 }
 
+//------------------------------------------------------------------------
+//! PgRead
+//------------------------------------------------------------------------
+XRootDStatus 
+JCacheFile::PgRead( uint64_t         offset,
+                    uint32_t         size,
+                    void            *buffer,
+                    ResponseHandler *handler,
+                    uint16_t         timeout ) 
+{
+  XRootDStatus st;
+
+  if (pFile) {
+    if (sEnableJournalCache && AttachForRead()) {
+      auto rb = pJournal.pread(buffer, size, offset);
+      if (rb == size)  {
+        // we can only serve success full reads from the cache for now
+        XRootDStatus* ret_st = new XRootDStatus(st);
+        ChunkInfo* chunkInfo = new ChunkInfo(offset, rb, buffer);
+        AnyObject* obj = new AnyObject();
+        obj->Set(chunkInfo);
+        handler->HandleResponse(ret_st, obj);
+        st = XRootDStatus(stOK, 0);
+        return st;
+      }
+    }
+
+    std::vector<uint32_t> cksums;
+    uint32_t bytesRead = 0;
+
+    // run a synchronous read
+    st = pFile->PgRead(offset, size, buffer, cksums, bytesRead, timeout);
+    if (st.IsOK()) {
+      if (sEnableJournalCache) {
+        if (bytesRead) {
+          // store into journal
+          pJournal.pwrite(buffer, size, offset);
+        }
+      }
+      // emit a chunk
+      XRootDStatus* ret_st = new XRootDStatus(st);
+      ChunkInfo* chunkInfo = new ChunkInfo(offset, bytesRead, buffer);
+      AnyObject* obj = new AnyObject();
+      obj->Set(chunkInfo);
+      handler->HandleResponse(ret_st, obj);
+      st = XRootDStatus(stOK, 0);
+    }
+  } else {
+    st = XRootDStatus(stError, errInvalidOp);
+  }
+  return st;
+}
+
+
+//------------------------------------------------------------------------
+//! PgWrite
+//------------------------------------------------------------------------
+XRootDStatus 
+JCacheFile::PgWrite(  uint64_t               offset,
+                      uint32_t               nbpgs,
+                      const void            *buffer,
+                      std::vector<uint32_t> &cksums,
+                      ResponseHandler       *handler,
+                      uint16_t               timeout ) 
+{
+  XRootDStatus st;
+
+  if (pFile) {
+    st = pFile->PgWrite(offset, nbpgs, buffer, cksums, handler, timeout);
+  } else {
+    st = XRootDStatus(stError, errInvalidOp);
+  }
+
+  return st;
+}
 
 //------------------------------------------------------------------------------
 // Sync
@@ -222,7 +329,19 @@ JCacheFile::VectorRead(const ChunkList& chunks,
   XRootDStatus st;
 
   if (pFile) {
+    VectorCache cache(chunks, pUrl, (const char*)buffer, sCachePath);
+    if (sEnableVectorCache) {
+      if (cache.retrieve()) {
+        handler->HandleResponse(&st, 0);
+        return st;
+      }
+    }
+    
     st = pFile->VectorRead(chunks, buffer, handler, timeout);
+
+    if (st.IsOK() && sEnableVectorCache) {
+      cache.store();
+    }
   } else {
     st = XRootDStatus(stError, errInvalidOp);
   }
@@ -307,5 +426,30 @@ JCacheFile::GetProperty(const std::string& name,
   } else {
     return false;
   }
+}
+
+bool 
+JCacheFile::AttachForRead()
+{
+  std::lock_guard guard(mAttachMutex);
+  if (mAttachedForRead) {
+    return true;
+  }
+  if ((mFlags & OpenFlags::Flags::Read) == OpenFlags::Flags::Read) {
+    // attach to a cache
+    if (sEnableJournalCache && pFile) {
+      StatInfo* sinfo = 0;
+      auto st = pFile->Stat(false, sinfo);
+      if (sinfo) {
+        if (pJournal.attach(pJournalPath,sinfo->GetSize(),sinfo->GetModTime(),0)) {
+          std::cerr << "error: unable to attach to journal: " << pJournalPath << std::endl;
+          mAttachedForRead = true;
+          return false;
+        }  
+      }
+    }
+  }
+  mAttachedForRead = true;
+  return true;
 }
 

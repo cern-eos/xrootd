@@ -44,8 +44,16 @@ class JCacheFactory : public PlugInFactory
     {
       if( config )
       {
-	auto itr = config->find( "cache" );
-	JCacheFile::SetCache( itr != config->end() ? itr->second : "" );
+	      auto itc = config->find( "cache" );
+	      JCacheFile::SetCache( itc != config->end() ? itc->second : "" );
+        auto itv = config->find( "vector" );
+        JCacheFile::SetVector( itv != config->end() ? itv->second == "true": false );
+        auto itj = config->find( "journal" );
+        JCacheFile::SetJournal( itj != config->end() ? itj->second == "true": false );
+        Log* log = DefaultEnv::GetLog();
+        log->Info(1, "JCache : cache directory: %s", JCacheFile::sCachePath.c_str());
+        log->Info(1, "JCache : caching readv in vector cache : %s", JCacheFile::sEnableVectorCache ? "true" : "false");
+        log->Info(1, "JCache : caching reads in journal cache: %s", JCacheFile::sEnableJournalCache ? "true" : "false");
       }
     }
 

@@ -25,8 +25,11 @@
 
 /*----------------------------------------------------------------------------*/
 #include "XrdCl/XrdClPlugInInterface.hh"
+#include "cache/Journal.hh"
+#include "XrdClVectorCache.hh"
 /*----------------------------------------------------------------------------*/
-
+#include <atomic>
+/*----------------------------------------------------------------------------*/
 using namespace XrdCl;
 
 //----------------------------------------------------------------------------
@@ -116,6 +119,25 @@ public:
                                   ResponseHandler* handler,
                                   uint16_t timeout);
 
+  //------------------------------------------------------------------------
+  //! PgRead
+  //------------------------------------------------------------------------
+  virtual XRootDStatus PgRead( uint64_t         offset,
+                               uint32_t         size,
+                               void            *buffer,
+                               ResponseHandler *handler,
+                               uint16_t         timeout ) override;
+
+  //------------------------------------------------------------------------
+  //! PgWrite
+  //------------------------------------------------------------------------
+  virtual XRootDStatus PgWrite( uint64_t               offset,
+                                uint32_t               nbpgs,
+                                const void            *buffer,
+                                std::vector<uint32_t> &cksums,
+                                ResponseHandler       *handler,
+                                uint16_t               timeout ) override;
+
 
   //------------------------------------------------------------------------
   //! Fcntl
@@ -165,10 +187,26 @@ public:
   //----------------------------------------------------------------------------
   
   static void SetCache(const std::string& path) { sCachePath = path; }
-  
+  static void SetJournal(const bool& value) { sEnableJournalCache = value; }
+  static void SetVector(const bool& value) { sEnableVectorCache = value; }
+
+  //----------------------------------------------------------------------------
+  //! get the local cache path
+  //----------------------------------------------------------------------------
   static std::string sCachePath;
+  static bool sEnableVectorCache;
+  static bool sEnableJournalCache;
 private:
+
+  bool AttachForRead();
+  
+  std::atomic<bool> mAttachedForRead;
+  std::mutex mAttachMutex;
+  OpenFlags::Flags mFlags;
   bool mIsOpen;
   XrdCl::File* pFile;
+  std::string pUrl;
+  Journal pJournal;
+  std::string pJournalPath;
 };
 
