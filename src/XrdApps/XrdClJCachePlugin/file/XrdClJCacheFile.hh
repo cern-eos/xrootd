@@ -261,8 +261,6 @@ private:
   Log* mLog;
 
   CacheStats pStats;
-
-  std::vector<XrdCl::JCacheReadHandler> mReadHandlers;
 };
 
 } // namespace XrdCl
