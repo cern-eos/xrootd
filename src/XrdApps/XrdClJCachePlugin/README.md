@@ -109,6 +109,7 @@ Usage: xrdclcacheclean <directory> <highwatermark> <lowwatermark> <interval>
 - Add optional dynamic read-ahead with window scaling
 - Add cache-cleaning as option to client plug-in
 - Make xrdclcacheclean a daemon with systemd support
+- Add automatix connection de-multi-plexing if contention to storage servers is detected
 
 
 
