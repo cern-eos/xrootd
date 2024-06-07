@@ -96,9 +96,19 @@ When running in INFO logging mode, the plug-in provides some informative message
 ```cached-bytes-read/readv```
 - bytes read from the cache for simple read or vector read requests
 
-# 5 To-Do List
+# 5 Cache-Cleaning
+
+For the time being the levelling of the cache directory is not part of the Client plug-in. A simple cleaner executable is provides:
+```
+xrdclcacheclean 
+Usage: xrdclcacheclean <directory> <highwatermark> <lowwatermark> <interval> 
+```
+
+# 6 To-Do List
 - Add async response handler to allow fully asynchronous open through the cache
 - Add optional dynamic read-ahead with window scaling
+- Add cache-cleaning as option to client plug-in
+- Make xrdclcacheclean a daemon with systemd support
 
 
 
