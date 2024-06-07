@@ -22,12 +22,14 @@
 // or submit itself to any jurisdiction.
 
 /*----------------------------------------------------------------------------*/
-#include "XrdClVectorCache.hh"
+#include "vector/XrdClVectorCache.hh"
 #include <filesystem>
 /*----------------------------------------------------------------------------*/
 
 namespace fs = std::filesystem;
-    
+
+namespace XrdCl {
+
 //----------------------------------------------------------------------------
 //! serialize a vector into a buffer
 //----------------------------------------------------------------------------
@@ -224,3 +226,5 @@ bool VectorCache::retrieve() const {
         return false;
     }
 }
+
+} // namespace XrdCl

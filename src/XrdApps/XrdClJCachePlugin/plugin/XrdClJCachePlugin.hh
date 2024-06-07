@@ -22,10 +22,17 @@
 // or submit itself to any jurisdiction.
 
 #pragma once
+/*----------------------------------------------------------------------------*/
 #include "XrdCl/XrdClPlugInInterface.hh"
-#include "XrdClJCacheFile.hh"
 #include "XrdCl/XrdClDefaultEnv.hh"
 #include "XrdCl/XrdClLog.hh"
+/*----------------------------------------------------------------------------*/
+#include "../file/XrdClJCacheFile.hh"
+/*----------------------------------------------------------------------------*/
+#include <memory>
+#include <map>
+#include <string>
+/*----------------------------------------------------------------------------*/
 
 namespace XrdCl
 {

@@ -27,10 +27,23 @@
 #include "XrdCl/XrdClMessageUtils.hh"
 /*----------------------------------------------------------------------------*/
 
-std::string JCacheFile::sCachePath="";
-bool JCacheFile::sEnableJournalCache = true;
-bool JCacheFile::sEnableVectorCache = true;
+std::string XrdCl::JCacheFile::sCachePath="";
+bool XrdCl::JCacheFile::sEnableJournalCache = true;
+bool XrdCl::JCacheFile::sEnableVectorCache = true;
 
+namespace XrdCl 
+{
+
+//------------------------------------------------------------------------------
+// Constructor
+//------------------------------------------------------------------------------
+JCacheFile::JCacheFile(const std::string& url):
+  mIsOpen(false),
+  pFile(0)
+{
+  mAttachedForRead = false;
+  mLog = DefaultEnv::GetLog();
+}
 //------------------------------------------------------------------------------
 // Constructor
 //------------------------------------------------------------------------------
@@ -39,6 +52,7 @@ JCacheFile::JCacheFile():
   pFile(0)
 {
   mAttachedForRead = false;
+  mLog = DefaultEnv::GetLog();
 }
 
 
@@ -47,7 +61,7 @@ JCacheFile::JCacheFile():
 //------------------------------------------------------------------------------
 JCacheFile::~JCacheFile()
 {
-
+  LogStats();
   if (pFile) {
     delete pFile;
   }
@@ -158,6 +172,8 @@ JCacheFile::Read(uint64_t offset,
     if (sEnableJournalCache && AttachForRead()) {
       auto rb = pJournal.pread(buffer, size, offset);
       if (rb == size)  {
+        pStats.bytesCached += rb;
+        pStats.readOps++; 
         // we can only serve success full reads from the cache for now
         XRootDStatus* ret_st = new XRootDStatus(st);
         ChunkInfo* chunkInfo = new ChunkInfo(offset, rb, buffer);
@@ -169,20 +185,9 @@ JCacheFile::Read(uint64_t offset,
       }
     }
 
-    // run a synchronous read
-    uint32_t bytesRead = 0;
-    st = pFile->Read(offset, size, buffer, bytesRead, timeout);
-    if (st.IsOK()) {
-      if (sEnableJournalCache) {
-        pJournal.pwrite(buffer, size, offset);
-      }
-      // emit a chunk
-      XRootDStatus* ret_st = new XRootDStatus(st);
-      ChunkInfo* chunkInfo = new ChunkInfo(offset, bytesRead, buffer);
-      AnyObject* obj = new AnyObject();
-      obj->Set(chunkInfo);
-      handler->HandleResponse(ret_st, obj);
-    }
+    auto jhandler = new JCacheReadHandler(handler, &pStats.bytesRead,sEnableJournalCache?&pJournal:nullptr);
+    pStats.readOps++; 
+    st = pFile->PgRead(offset, size, buffer, jhandler, timeout); 
   } else {
     st = XRootDStatus(stError, errInvalidOp);
   }
@@ -227,6 +232,8 @@ JCacheFile::PgRead( uint64_t         offset,
     if (sEnableJournalCache && AttachForRead()) {
       auto rb = pJournal.pread(buffer, size, offset);
       if (rb == size)  {
+        pStats.bytesCached += rb;
+        pStats.readOps++; 
         // we can only serve success full reads from the cache for now
         XRootDStatus* ret_st = new XRootDStatus(st);
         ChunkInfo* chunkInfo = new ChunkInfo(offset, rb, buffer);
@@ -238,25 +245,9 @@ JCacheFile::PgRead( uint64_t         offset,
       }
     }
 
-    std::vector<uint32_t> cksums;
-    uint32_t bytesRead = 0;
-
-    // run a synchronous read
-    st = pFile->PgRead(offset, size, buffer, cksums, bytesRead, timeout);
-    if (st.IsOK()) {
-      if (sEnableJournalCache) {
-        if (bytesRead) {
-          // store into journal
-          pJournal.pwrite(buffer, size, offset);
-        }
-      }
-      // emit a chunk
-      XRootDStatus* ret_st = new XRootDStatus(st);
-      ChunkInfo* chunkInfo = new ChunkInfo(offset, bytesRead, buffer);
-      AnyObject* obj = new AnyObject();
-      obj->Set(chunkInfo);
-      handler->HandleResponse(ret_st, obj);
-    }
+    auto jhandler = new JCacheReadHandler(handler, &pStats.bytesRead,sEnableJournalCache?&pJournal:nullptr);
+    pStats.readOps++; 
+    st = pFile->PgRead(offset, size, buffer, jhandler, timeout);  
   } else {
     st = XRootDStatus(stError, errInvalidOp);
   }
@@ -358,33 +349,12 @@ JCacheFile::VectorRead(const ChunkList& chunks,
       }
     }
     
-    // run a synchronous vector read
+    auto jhandler = new JCacheReadVHandler(handler, &pStats.bytesReadV,sEnableJournalCache?&pJournal:nullptr, buffer, sEnableVectorCache?sCachePath:"", pUrl);
+    pStats.readVOps++; 
+    pStats.readVreadOps += chunks.size();
 
-    VectorReadInfo* vReadInfo;
-    st = pFile->VectorRead(chunks, buffer, vReadInfo, timeout);
+    st = pFile->VectorRead(chunks, buffer, jhandler, timeout);  
 
-    if (st.IsOK()) {
-      if (sEnableVectorCache) {
-        // store into cache
-        cache.store();
-      }
-      // emit a chunk
-      XRootDStatus* ret_st = new XRootDStatus(st);
-      AnyObject* obj = new AnyObject();
-      ChunkList vResp = vReadInfo->GetChunks();
-      vResp = chunks;
-      obj->Set(vReadInfo);
-
-      if (sEnableJournalCache && !sEnableVectorCache) {
-        // if we run with journal cache but don't cache vectors, we need to
-        // copy the vector data into the journal cache
-        for (auto it = chunks.begin(); it != chunks.end(); ++it) {
-          pJournal.pwrite(it->buffer, it->GetLength(), it->GetOffset());
-        }
-      }
-      handler->HandleResponse(ret_st, obj);
-      return st;
-    }
   } else {
     st = XRootDStatus(stError, errInvalidOp);
   }
@@ -485,14 +455,18 @@ JCacheFile::AttachForRead()
       auto st = pFile->Stat(false, sinfo);
       if (sinfo) {
         if (pJournal.attach(pJournalPath,sinfo->GetSize(),sinfo->GetModTime(),0)) {
-          std::cerr << "error: unable to attach to journal: " << pJournalPath << std::endl;
+          mLog->Error(1, "JCache : failed to attach to cache directory: %s", pJournalPath.c_str());
           mAttachedForRead = true;
           return false;
-        }  
+        } else {
+          mLog->Info(1, "JCache : attached to cache directory: %s", pJournalPath.c_str());
+        } 
       }
     }
   }
   mAttachedForRead = true;
   return true;
 }
+
+} // namespace XrdCl 
 

@@ -208,7 +208,7 @@ target_link_libraries(
 
 add_executable(
   xrdclcacheclean
-  XrdApps/XrdClJCachePlugin/XrdClCacheCleaner.cc )
+  XrdApps/XrdClJCachePlugin/app/XrdClCacheCleaner.cc )
 
 target_link_libraries(
   xrdclcacheclean
@@ -221,16 +221,18 @@ target_link_libraries(
 add_library(
   ${LIB_XRDCL_JCACHE_PLUGIN}
   MODULE
-  XrdApps/XrdClJCachePlugin/XrdClJCachePlugin.cc
-  XrdApps/XrdClJCachePlugin/XrdClJCacheFile.cc
-  XrdApps/XrdClJCachePlugin/XrdClVectorCache.cc
-  XrdApps/XrdClJCachePlugin/XrdClVectorCache.hh
+  XrdApps/XrdClJCachePlugin/plugin/XrdClJCachePlugin.cc
+  XrdApps/XrdClJCachePlugin/file/XrdClJCacheFile.cc
+  XrdApps/XrdClJCachePlugin/vector/XrdClVectorCache.cc
+  XrdApps/XrdClJCachePlugin/vector/XrdClVectorCache.hh
   XrdApps/XrdClJCachePlugin/cache/Journal.cc
   XrdApps/XrdClJCachePlugin/cache/Journal.hh
   XrdApps/XrdClJCachePlugin/cache/IntervalTree.hh
   XrdApps/XrdClJCachePlugin/cache/RbTree.hh
 )
 
+target_include_directories( ${LIB_XRDCL_JCACHE_PLUGIN} PRIVATE "${CMAKE_SOURCE_DIR}/src/XrdApps/XrdClJCachePlugin/" )
+  
 target_link_libraries(${LIB_XRDCL_JCACHE_PLUGIN} PRIVATE XrdCl stdc++fs)
 
 

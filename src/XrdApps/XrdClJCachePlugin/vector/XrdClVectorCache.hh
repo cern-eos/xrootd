@@ -40,6 +40,8 @@
 //! VectorCache class caching readv buffers on a filesystem
 //----------------------------------------------------------------------------
 
+namespace XrdCl {
+
 class VectorCache {
 public:
     VectorCache(const XrdCl::ChunkList chunks, const std::string& name, const char* data, const std::string& prefix, bool verbose=false)
@@ -62,3 +64,5 @@ private:
 
     std::vector<unsigned char> serializeVector() const;
 };
+
+} // namespace XrdCl

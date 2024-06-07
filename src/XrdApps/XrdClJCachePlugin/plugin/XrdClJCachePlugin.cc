@@ -22,7 +22,7 @@
 // or submit itself to any jurisdiction.
 //------------------------------------------------------------------------------
 
-#include "XrdClJCachePlugin.hh"
+#include "plugin/XrdClJCachePlugin.hh"
 
 XrdVERSIONINFO(XrdClGetPlugIn, XrdClGetPlugIn)
 

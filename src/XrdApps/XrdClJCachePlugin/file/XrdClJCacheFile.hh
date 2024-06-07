@@ -25,13 +25,19 @@
 
 /*----------------------------------------------------------------------------*/
 #include "XrdCl/XrdClPlugInInterface.hh"
+#include "XrdCl/XrdClDefaultEnv.hh"
+#include "XrdCl/XrdClLog.hh"
+/*----------------------------------------------------------------------------*/
 #include "cache/Journal.hh"
-#include "XrdClVectorCache.hh"
+#include "vector/XrdClVectorCache.hh"
+#include "handler/XrdClJCacheReadHandler.hh"
+#include "handler/XrdClJCacheReadVHandler.hh"
 /*----------------------------------------------------------------------------*/
 #include <atomic>
 /*----------------------------------------------------------------------------*/
-using namespace XrdCl;
 
+namespace XrdCl
+{
 //----------------------------------------------------------------------------
 //! RAIN file plugin
 //----------------------------------------------------------------------------
@@ -43,7 +49,7 @@ public:
   //! Constructor
   //----------------------------------------------------------------------------
   JCacheFile();
-
+  JCacheFile(const std::string& url);
 
   //----------------------------------------------------------------------------
   //! Destructor
@@ -196,10 +202,54 @@ public:
   static std::string sCachePath;
   static bool sEnableVectorCache;
   static bool sEnableJournalCache;
+
+  void LogStats() {
+    mLog->Info(1, "JCache : read:readv-ops:readv-read-ops: %lu:%lu:%lus hit-rate: total [read/readv]=%.02f%% [%.02f%%/%.02f%%] remote-bytes-read/readv: %lu / %lu cached-bytes-read/readv: %lu / %lu",
+                pStats.readOps.load(),
+                pStats.readVOps.load(),
+                pStats.readVreadOps.load(),
+                pStats.CombinedHitRate(),
+                pStats.HitRate(),
+                pStats.HitRateV(),
+                pStats.bytesRead.load(), 
+                pStats.bytesReadV.load(), 
+                pStats.bytesCached.load(),
+                pStats.bytesCachedV.load());
+  }
+  //! structure about cache hit statistics 
+  struct CacheStats {
+    CacheStats() :
+      bytesRead(0),
+      bytesReadV(0),
+      bytesCached(0),
+      bytesCachedV(0),
+      readOps(0),
+      readVOps(0),
+      readVreadOps(0)
+    {}
+
+    double HitRate() {
+      return 100.0*(this->bytesCached.load()+1) /(this->bytesCached.load()+this->bytesRead.load()+1);
+    }
+    double HitRateV() {
+      return 100.0*(this->bytesCachedV.load()+1) /(this->bytesCachedV.load()+this->bytesReadV.load()+1);
+    }
+    double CombinedHitRate() {
+      return 100.0*(this->bytesCached.load()+this->bytesCachedV.load()+1) /(this->bytesCached.load()+this->bytesRead.load()+this->bytesCachedV.load()+this->bytesReadV.load()+1);
+    }
+
+    std::atomic<uint64_t> bytesRead;
+    std::atomic<uint64_t> bytesReadV;
+    std::atomic<uint64_t> bytesCached;
+    std::atomic<uint64_t> bytesCachedV;
+    std::atomic<uint64_t> readOps;
+    std::atomic<uint64_t> readVOps;
+    std::atomic<uint64_t> readVreadOps;
+  };
 private:
 
   bool AttachForRead();
-  
+
   std::atomic<bool> mAttachedForRead;
   std::mutex mAttachMutex;
   OpenFlags::Flags mFlags;
@@ -208,5 +258,11 @@ private:
   std::string pUrl;
   Journal pJournal;
   std::string pJournalPath;
+  Log* mLog;
+
+  CacheStats pStats;
+
+  std::vector<XrdCl::JCacheReadHandler> mReadHandlers;
 };
 
+} // namespace XrdCl
