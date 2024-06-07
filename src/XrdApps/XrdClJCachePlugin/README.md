@@ -105,6 +105,7 @@ Usage: xrdclcacheclean <directory> <highwatermark> <lowwatermark> <interval>
 ```
 
 # 6 To-Do List
+- Pre-shard cache directory structure not to have all cached files in a flat directory listing
 - Add async response handler to allow fully asynchronous open through the cache
 - Add optional dynamic read-ahead with window scaling
 - Add cache-cleaning as option to client plug-in
