@@ -39,7 +39,11 @@
 namespace XrdCl
 {
 //----------------------------------------------------------------------------
-//! RAIN file plugin
+//! JCache file plugin
+//! This XRootD Client Plugin provides a client side read cache.
+//! There are two ways of caching, which can be configured individually:
+//! - Read Journal Cache (journalling)
+//! - Vector Read Cache (vector read responses are stored in binary blobs)
 //----------------------------------------------------------------------------
 class JCacheFile: public XrdCl::FilePlugIn
 {
@@ -58,7 +62,12 @@ public:
 
 
   //----------------------------------------------------------------------------
-  //! Open
+  //! @brief Open a file by URL
+  //! @param url URL of the file
+  //! @param flags Open flags
+  //! @param mode Access mode
+  //! @param handler Response handler
+  //! @param timeout Timeout in seconds
   //----------------------------------------------------------------------------
   virtual XRootDStatus Open(const std::string& url,
                             OpenFlags::Flags flags,
@@ -68,14 +77,19 @@ public:
 
 
   //----------------------------------------------------------------------------
-  //! Close
+  //! @brief Close a file
+  //! @param handler Response handler
+  //! @param timeout Timeout in seconds
   //----------------------------------------------------------------------------
   virtual XRootDStatus Close(ResponseHandler* handler,
                              uint16_t timeout);
 
 
   //----------------------------------------------------------------------------
-  //! Stat
+  //! @brief Stat a file
+  //! @param force Force stat
+  //! @param handler Response handler
+  //! @param timeout Timeout in seconds
   //----------------------------------------------------------------------------
   virtual XRootDStatus Stat(bool force,
                             ResponseHandler* handler,
@@ -83,7 +97,12 @@ public:
 
 
   //----------------------------------------------------------------------------
-  //! Read
+  //! @brief Read
+  //! @param offset Offset in bytes
+  //! @param size Size in bytes
+  //! @param buffer Buffer to read into
+  //! @param handler Response handler
+  //! @param timeout Timeout in seconds
   //----------------------------------------------------------------------------
   virtual XRootDStatus Read(uint64_t offset,
                             uint32_t size,
@@ -93,7 +112,12 @@ public:
 
 
   //----------------------------------------------------------------------------
-  //! Write
+  //! @brief Write
+  //! @param offset Offset in bytes
+  //! @param size Size in bytes
+  //! @param buffer Buffer to write from
+  //! @param handler Response handler
+  //! @param timeout Timeout in seconds
   //----------------------------------------------------------------------------
   virtual XRootDStatus Write(uint64_t offset,
                              uint32_t size,
@@ -103,14 +127,19 @@ public:
 
 
   //----------------------------------------------------------------------------
-  //! Sync
+  //! @brief Sync
+  //! @param handler Response handler
+  //! @param timeout Timeout in seconds
   //----------------------------------------------------------------------------
   virtual XRootDStatus Sync(ResponseHandler* handler,
                             uint16_t timeout);
 
 
   //----------------------------------------------------------------------------
-  //! Truncate
+  //! @brief Truncate
+  //! @param size Size in bytes
+  //! @param handler Response handler
+  //! @param timeout Timeout in seconds
   //----------------------------------------------------------------------------
   virtual XRootDStatus Truncate(uint64_t size,
                                 ResponseHandler* handler,
@@ -118,7 +147,11 @@ public:
 
 
   //----------------------------------------------------------------------------
-  //! VectorRead
+  //! @brief VectorRead
+  //! @param chunks Chunks to read
+  //! @param buffer Buffer to read into
+  //! @param handler Response handler
+  //! @param timeout Timeout in seconds
   //----------------------------------------------------------------------------
   virtual XRootDStatus VectorRead(const ChunkList& chunks,
                                   void* buffer,
@@ -126,7 +159,12 @@ public:
                                   uint16_t timeout);
 
   //------------------------------------------------------------------------
-  //! PgRead
+  //! @brief PgRead
+  //! @param offset Offset in bytes
+  //! @param size Size in bytes
+  //! @param buffer Buffer to read into
+  //! @param handler Response handler
+  //! @param timeout Timeout in seconds
   //------------------------------------------------------------------------
   virtual XRootDStatus PgRead( uint64_t         offset,
                                uint32_t         size,
@@ -135,7 +173,12 @@ public:
                                uint16_t         timeout ) override;
 
   //------------------------------------------------------------------------
-  //! PgWrite
+  //! @brief PgWrite
+  //! @param offset Offset in bytes
+  //! @param nbpgs Number of pages
+  //! @param buffer Buffer to write from
+  //! @param handler Response handler
+  //! @param timeout Timeout in seconds
   //------------------------------------------------------------------------
   virtual XRootDStatus PgWrite( uint64_t               offset,
                                 uint32_t               nbpgs,
@@ -146,7 +189,10 @@ public:
 
 
   //------------------------------------------------------------------------
-  //! Fcntl
+  //! @brief Fcntl
+  //! @param arg Argument
+  //! @param handler Response handler
+  //! @param timeout Timeout in seconds
   //------------------------------------------------------------------------
   virtual XRootDStatus Fcntl(const Buffer& arg,
                              ResponseHandler* handler,
@@ -154,14 +200,16 @@ public:
 
 
   //----------------------------------------------------------------------------
-  //! Visa
+  //! @brief Visa
+  //! @param handler Response handler
+  //! @param timeout Timeout in seconds
   //----------------------------------------------------------------------------
   virtual XRootDStatus Visa(ResponseHandler* handler,
                             uint16_t timeout);
 
 
   //----------------------------------------------------------------------------
-  //! IsOpen
+  //! @brief check if file is open
   //----------------------------------------------------------------------------
   virtual bool IsOpen() const;
 
@@ -181,7 +229,7 @@ public:
 
 
   //----------------------------------------------------------------------------
-  //! validate the local cache
+  //! @brief validate the local cache
   //----------------------------------------------------------------------------
   inline bool IsValid()
   {
@@ -189,7 +237,10 @@ public:
   }
 
   //----------------------------------------------------------------------------
-  //! set the local cache path
+  //! @brief set the local cache path and enable/disable journal/vector caches
+  //! @param path Local cache path
+  //! @param journal Enable/disable journal cache
+  //! @param vector Enable/disable vector cache
   //----------------------------------------------------------------------------
   
   static void SetCache(const std::string& path) { sCachePath = path; }
@@ -197,12 +248,15 @@ public:
   static void SetVector(const bool& value) { sEnableVectorCache = value; }
 
   //----------------------------------------------------------------------------
-  //! get the local cache path
+  //! @brief static members pointing to cache settings
   //----------------------------------------------------------------------------
   static std::string sCachePath;
   static bool sEnableVectorCache;
   static bool sEnableJournalCache;
 
+  //----------------------------------------------------------------------------
+  //! @brief log cache hit statistics
+  //----------------------------------------------------------------------------
   void LogStats() {
     mLog->Info(1, "JCache : read:readv-ops:readv-read-ops: %lu:%lu:%lus hit-rate: total [read/readv]=%.02f%% [%.02f%%/%.02f%%] remote-bytes-read/readv: %lu / %lu cached-bytes-read/readv: %lu / %lu",
                 pStats.readOps.load(),
@@ -216,6 +270,8 @@ public:
                 pStats.bytesCached.load(),
                 pStats.bytesCachedV.load());
   }
+
+
   //! structure about cache hit statistics 
   struct CacheStats {
     CacheStats() :
@@ -248,18 +304,29 @@ public:
   };
 private:
 
+  //! @brief attach for read
   bool AttachForRead();
 
+  //! @brief atomic variable to track if file is attached for read
   std::atomic<bool> mAttachedForRead;
+  //! @brief mutex protecting cache attach procedure
   std::mutex mAttachMutex;
+  //! @brief open flags used in Open
   OpenFlags::Flags mFlags;
+  //! @brief boolean to track if file is open
   bool mIsOpen;
+  //! @brief pointer to the remote file
   XrdCl::File* pFile;
+  //! @brief URL of the remote file
   std::string pUrl;
+  //! @brief instance of a local journal for this file
   Journal pJournal;
+  //! @brief path to the journal of this file
   std::string pJournalPath;
+  //! @brief pointer to logging object
   Log* mLog;
 
+  //! @brief cache hit statistics
   CacheStats pStats;
 };
 
