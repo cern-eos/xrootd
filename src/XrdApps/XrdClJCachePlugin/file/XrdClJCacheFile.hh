@@ -273,18 +273,55 @@ public:
                 pStats.bytesCachedV.load());
   }
 
+  void AddToGlobalStats() {
+    sStats.readOps += pStats.readOps.load();
+    sStats.readVOps += pStats.readVOps.load();
+    sStats.readVreadOps += pStats.readVreadOps.load();
+    sStats.bytesRead += pStats.bytesRead.load();
+    sStats.bytesReadV += pStats.bytesReadV.load();
+    sStats.bytesCached += pStats.bytesCached.load();
+    sStats.bytesCachedV += pStats.bytesCachedV.load();
+    sStats.nreadfiles += 1;
+  }
 
+  static std::string GlobalStats() {
+    std::ostringstream oss;
+    oss << "# ----------------------------------------------------------- #" << std::endl;
+    oss << "# JCache : cache combined hit rate  : " << std::fixed << std::setprecision(2) << sStats.CombinedHitRate() << " %%" << std::endl;
+    oss << "# JCache : cache read     hit rate  : " << std::fixed << std::setprecision(2) << sStats.HitRate() << " %%" << std::endl;
+    oss << "# JCache : cache readv    hit rate  : " << std::fixed << std::setprecision(2) << sStats.HitRateV() << " %%" << std::endl;
+    oss << "# ----------------------------------------------------------- #" << std::endl;
+    oss << "# JCache : total bytes    read      : " << sStats.bytesRead.load()+sStats.bytesCached.load() << std::endl;
+    oss << "# JCache : total bytes    readv     : " << sStats.bytesReadV.load()+sStats.bytesCachedV.load() << std::endl;
+    oss << "# ----------------------------------------------------------- #" << std::endl;
+    oss << "# JCache : total iops     read      : " << sStats.readOps.load() << std::endl;
+    oss << "# JCache : total iops     readv     : " << sStats.readVOps.load() << std::endl;
+    oss << "# JCache : total iops     readvread : " << sStats.readVreadOps.load() << std::endl;
+    oss << "# ----------------------------------------------------------- #" << std::endl;
+    oss << "# JCache : open files     read      : " << sStats.nreadfiles.load() << std::endl;
+    oss << "# JCache : open unique    read      : " << sStats.UniqueUrls() << std::endl;
+    oss << "# ----------------------------------------------------------- #" << std::endl;
+    return oss.str();
+  }
   //! structure about cache hit statistics 
   struct CacheStats {
-    CacheStats() :
+    CacheStats(bool doe=false) :
       bytesRead(0),
       bytesReadV(0),
       bytesCached(0),
       bytesCachedV(0),
       readOps(0),
       readVOps(0),
-      readVreadOps(0)
+      readVreadOps(0),
+      nreadfiles(0),
+      dumponexit(doe)
     {}
+
+    ~CacheStats() {
+      if (dumponexit.load()) {
+	std::cerr << GlobalStats();
+      }
+    }
 
     double HitRate() {
       auto n = this->bytesCached.load()+this->bytesRead.load();
@@ -301,6 +338,15 @@ public:
       if (!n) return 100.0;
       return 100.0*(this->bytesCached.load()+this->bytesCachedV.load()) / n;
     }
+    void AddUrl(const std::string& url) {
+      std::lock_guard<std::mutex> guard(urlMutex);
+      urls.insert(url);
+    }
+
+    size_t UniqueUrls() {
+      std::lock_guard<std::mutex> guard(urlMutex);
+      return urls.size();
+    }
 
     std::atomic<uint64_t> bytesRead;
     std::atomic<uint64_t> bytesReadV;
@@ -309,6 +355,10 @@ public:
     std::atomic<uint64_t> readOps;
     std::atomic<uint64_t> readVOps;
     std::atomic<uint64_t> readVreadOps;
+    std::atomic<uint64_t> nreadfiles;
+    std::atomic<bool>     dumponexit;
+    std::set<std::string> urls;
+    std::mutex            urlMutex;
   };
 private:
 
@@ -336,6 +386,9 @@ private:
 
   //! @brief cache hit statistics
   CacheStats pStats;
+
+  //! @brief global plugin cache hit statistics
+  static CacheStats sStats;
 };
 
 } // namespace XrdCl

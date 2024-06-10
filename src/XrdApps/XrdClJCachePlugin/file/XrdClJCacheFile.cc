@@ -30,6 +30,8 @@
 std::string XrdCl::JCacheFile::sCachePath="";
 bool XrdCl::JCacheFile::sEnableJournalCache = true;
 bool XrdCl::JCacheFile::sEnableVectorCache = true;
+XrdCl::JCacheFile::CacheStats XrdCl::JCacheFile::sStats(true);
+
 JournalManager XrdCl::JCacheFile::sJournalManager;
 
 namespace XrdCl 
@@ -63,6 +65,7 @@ JCacheFile::JCacheFile():
 JCacheFile::~JCacheFile()
 {
   LogStats();
+  AddToGlobalStats();
   if (pFile) {
     delete pFile;
   }
@@ -89,7 +92,15 @@ JCacheFile::Open(const std::string& url,
   }
 
   pFile = new XrdCl::File(false);
-  pUrl = url;
+
+  // sanitize named connections and CGI for the URL to cache
+  XrdCl::URL cleanUrl;
+  XrdCl::URL origUrl(url);
+  cleanUrl.SetProtocol(origUrl.GetProtocol());
+  cleanUrl.SetHostName(origUrl.GetHostName());
+  cleanUrl.SetPort(origUrl.GetPort());
+  cleanUrl.SetPath(origUrl.GetPath());
+  pUrl = cleanUrl.GetURL();
   st = pFile->Open(url, flags, mode, handler, timeout);
   
   if (st.IsOK()) {
@@ -173,8 +184,9 @@ JCacheFile::Read(uint64_t offset,
 
   if (pFile) {
     if (sEnableJournalCache && AttachForRead()) {
-      auto rb = pJournal->pread(buffer, size, offset);
-      if (rb == size)  {
+      bool eof = false;
+      auto rb = pJournal->pread(buffer, size, offset, eof);
+      if ((rb == size) || (eof && rb))  {
         pStats.bytesCached += rb;
         pStats.readOps++; 
         // we can only serve success full reads from the cache for now
@@ -186,6 +198,7 @@ JCacheFile::Read(uint64_t offset,
         st = XRootDStatus(stOK, 0);
         return st;
       }
+      fprintf(stderr,"%s : %lu %u %lu %d\n", pUrl.c_str(), offset, size, rb, eof);
     }
 
     auto jhandler = new JCacheReadHandler(handler, &pStats.bytesRead,sEnableJournalCache?pJournal.get():nullptr);
@@ -232,8 +245,9 @@ JCacheFile::PgRead( uint64_t         offset,
   XRootDStatus st;
   if (pFile) {
     if (sEnableJournalCache && AttachForRead()) {
-      auto rb = pJournal->pread(buffer, size, offset);
-      if (rb == size)  {
+      bool eof = false;
+      auto rb = pJournal->pread(buffer, size, offset, eof);
+      if ((rb == size) || (eof && rb))  {
         pStats.bytesCached += rb;
         pStats.readOps++; 
         // we can only serve success full reads from the cache for now
@@ -359,7 +373,8 @@ JCacheFile::VectorRead(const ChunkList& chunks,
 	size_t len = 0;
 	// try to get chunks from journal cache
 	for (auto it = chunks.begin(); it != chunks.end(); ++it) {
-	  auto rb = pJournal->pread(it->buffer, it->length, it->offset);
+	  bool eof = false;
+	  auto rb = pJournal->pread(it->buffer, it->length, it->offset, eof);
 	  if (rb != it->length)  {
 	    // interrupt if we miss a piece and go remote
 	    inJournal = false;
