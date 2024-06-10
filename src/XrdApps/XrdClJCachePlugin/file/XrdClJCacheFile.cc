@@ -30,6 +30,7 @@
 std::string XrdCl::JCacheFile::sCachePath="";
 bool XrdCl::JCacheFile::sEnableJournalCache = true;
 bool XrdCl::JCacheFile::sEnableVectorCache = true;
+JournalManager XrdCl::JCacheFile::sJournalManager;
 
 namespace XrdCl 
 {
@@ -128,7 +129,7 @@ JCacheFile::Close(ResponseHandler* handler,
       st = XRootDStatus(stOK, 0);
     }
     if (sEnableJournalCache) {
-      pJournal.detach();
+      pJournal->detach();
     }
   } else {
     st = XRootDStatus(stOK, 0);
@@ -172,7 +173,7 @@ JCacheFile::Read(uint64_t offset,
 
   if (pFile) {
     if (sEnableJournalCache && AttachForRead()) {
-      auto rb = pJournal.pread(buffer, size, offset);
+      auto rb = pJournal->pread(buffer, size, offset);
       if (rb == size)  {
         pStats.bytesCached += rb;
         pStats.readOps++; 
@@ -187,7 +188,7 @@ JCacheFile::Read(uint64_t offset,
       }
     }
 
-    auto jhandler = new JCacheReadHandler(handler, &pStats.bytesRead,sEnableJournalCache?&pJournal:nullptr);
+    auto jhandler = new JCacheReadHandler(handler, &pStats.bytesRead,sEnableJournalCache?pJournal.get():nullptr);
     pStats.readOps++;
     st = pFile->Read(offset, size, buffer, jhandler, timeout); 
   } else {
@@ -231,7 +232,7 @@ JCacheFile::PgRead( uint64_t         offset,
   XRootDStatus st;
   if (pFile) {
     if (sEnableJournalCache && AttachForRead()) {
-      auto rb = pJournal.pread(buffer, size, offset);
+      auto rb = pJournal->pread(buffer, size, offset);
       if (rb == size)  {
         pStats.bytesCached += rb;
         pStats.readOps++; 
@@ -246,7 +247,7 @@ JCacheFile::PgRead( uint64_t         offset,
       }
     }
 
-    auto jhandler = new JCachePgReadHandler(handler, &pStats.bytesRead,sEnableJournalCache?&pJournal:nullptr);
+    auto jhandler = new JCachePgReadHandler(handler, &pStats.bytesRead,sEnableJournalCache?pJournal.get():nullptr);
     pStats.readOps++;
     st = pFile->PgRead(offset, size, buffer, jhandler, timeout);  
   } else {
@@ -347,11 +348,50 @@ JCacheFile::VectorRead(const ChunkList& chunks,
         vResp = chunks;
         obj->Set(vReadInfo);
         handler->HandleResponse(ret_st, obj);
+	pStats.readVOps++;
+	pStats.readVreadOps += chunks.size();
+	pStats.bytesCachedV += len;
         return st;
       }
+    } else {
+      if (sEnableJournalCache) {
+	bool inJournal = true;
+	size_t len = 0;
+	// try to get chunks from journal cache
+	for (auto it = chunks.begin(); it != chunks.end(); ++it) {
+	  auto rb = pJournal->pread(it->buffer, it->length, it->offset);
+	  if (rb != it->length)  {
+	    // interrupt if we miss a piece and go remote
+	    inJournal = false;
+	    break;
+	  } else {
+	    len += it->length;
+	  }
+	}
+	if (inJournal) {
+	  // we found everything in the journal
+	  pStats.readVOps++;
+	  pStats.readVreadOps += chunks.size();
+	  pStats.bytesCachedV += len;
+	  XRootDStatus* ret_st = new XRootDStatus(st);
+	  *ret_st = XRootDStatus(stOK, 0);
+	  AnyObject* obj = new AnyObject();
+	  VectorReadInfo* vReadInfo = new VectorReadInfo();
+	  vReadInfo->SetSize(len);
+	  ChunkList& vResp = vReadInfo->GetChunks();
+	  vResp = chunks;
+	  obj->Set(vReadInfo);
+	  handler->HandleResponse(ret_st, obj);
+	  pStats.readVOps++;
+	  pStats.readVreadOps += chunks.size();
+	  pStats.bytesCachedV += len;
+	  return st;
+	}
+      }
     }
+      
     
-    auto jhandler = new JCacheReadVHandler(handler, &pStats.bytesReadV,sEnableJournalCache?&pJournal:nullptr, buffer?(char*)buffer:(char*)(chunks.begin()->buffer), sEnableVectorCache?sCachePath:"", pUrl);
+    auto jhandler = new JCacheReadVHandler(handler, &pStats.bytesReadV,sEnableJournalCache?pJournal.get():nullptr, buffer?(char*)buffer:(char*)(chunks.begin()->buffer), sEnableVectorCache?sCachePath:"", pUrl);
     pStats.readVOps++; 
     pStats.readVreadOps += chunks.size();
 
@@ -453,10 +493,12 @@ JCacheFile::AttachForRead()
   if ((mFlags & OpenFlags::Flags::Read) == OpenFlags::Flags::Read) {
     // attach to a cache
     if (sEnableJournalCache && pFile) {
+      mLog->Info(1, "JCache : attaching via journalmanager to '%s'", pUrl.c_str());
+      pJournal = sJournalManager.attach(pUrl);
       StatInfo* sinfo = 0;
       auto st = pFile->Stat(false, sinfo);
       if (sinfo) {
-        if (pJournal.attach(pJournalPath,sinfo->GetSize(),sinfo->GetModTime(),0)) {
+        if (pJournal->attach(pJournalPath,sinfo->GetSize(),sinfo->GetModTime(),0)) {
           mLog->Error(1, "JCache : failed to attach to cache directory: %s", pJournalPath.c_str());
           mAttachedForRead = true;
           return false;

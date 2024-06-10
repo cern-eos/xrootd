@@ -29,8 +29,8 @@
 #include <stdint.h>
 #include <string>
 #include <mutex>
+#include <map>
 /*----------------------------------------------------------------------------*/
-
 class Journal
 {
   static constexpr uint64_t JOURNAL_MAGIC = 0xcafecafecafecafe;
@@ -128,3 +128,40 @@ private:
 
 };
 
+class JournalManager {
+private:
+    std::map<std::string, std::shared_ptr<Journal>> journals;
+    std::mutex jMutex;
+
+public:
+  JournalManager() {}
+  virtual ~JournalManager() {}
+  
+    // Attach method: creates or retrieves a Journal object by key
+    std::shared_ptr<Journal> attach(const std::string &key) {
+        std::lock_guard<std::mutex> guard(jMutex);
+        auto it = journals.find(key);
+        if (it == journals.end()) {
+            // Create a new Journal object if it doesn't exist
+            auto journal = std::make_shared<Journal>();
+            journals[key] = journal;
+            return journal;
+        } else {
+            // Return the existing Journal object
+            return it->second;
+        }
+    }
+
+    // Detach method: checks reference count and removes Journal object if necessary
+    void detach(const std::string &key) {
+        std::lock_guard<std::mutex> guard(jMutex);
+        auto it = journals.find(key);
+        if (it != journals.end()) {
+            if (it->second.use_count() == 1) {
+                // Only one reference exists, so erase the entry from the map
+                journals.erase(it);
+            }
+            // If more than one reference exists, do nothing
+        }
+    }
+};

@@ -254,7 +254,8 @@ public:
   static std::string sCachePath;
   static bool sEnableVectorCache;
   static bool sEnableJournalCache;
-
+  static JournalManager sJournalManager;
+  
   //----------------------------------------------------------------------------
   //! @brief log cache hit statistics
   //----------------------------------------------------------------------------
@@ -286,13 +287,19 @@ public:
     {}
 
     double HitRate() {
-      return 100.0*(this->bytesCached.load()+1) /(this->bytesCached.load()+this->bytesRead.load()+1);
+      auto n = this->bytesCached.load()+this->bytesRead.load();
+      if (!n) return 100.0;      
+      return 100.0*(this->bytesCached.load()) / n;
     }
     double HitRateV() {
-      return 100.0*(this->bytesCachedV.load()+1) /(this->bytesCachedV.load()+this->bytesReadV.load()+1);
+      auto n = this->bytesCachedV.load()+this->bytesReadV.load();
+      if (!n) return 100.0;      
+      return 100.0*(this->bytesCachedV.load()) / n;
     }
     double CombinedHitRate() {
-      return 100.0*(this->bytesCached.load()+this->bytesCachedV.load()+1) /(this->bytesCached.load()+this->bytesRead.load()+this->bytesCachedV.load()+this->bytesReadV.load()+1);
+      auto n = (this->bytesCached.load()+this->bytesRead.load()+this->bytesCachedV.load()+this->bytesReadV.load());
+      if (!n) return 100.0;
+      return 100.0*(this->bytesCached.load()+this->bytesCachedV.load()) / n;
     }
 
     std::atomic<uint64_t> bytesRead;
@@ -321,7 +328,7 @@ private:
   //! @brief URL of the remote file
   std::string pUrl;
   //! @brief instance of a local journal for this file
-  Journal pJournal;
+  std::shared_ptr<Journal> pJournal;
   //! @brief path to the journal of this file
   std::string pJournalPath;
   //! @brief pointer to logging object
