@@ -349,7 +349,7 @@ public:
 	using namespace std::chrono;
 	std::vector<uint64_t> bins = sStats.bench.GetBins();
 	Art art;
-	art.drawCurve(bins, sStats.bench.GetTimePerBin().count() / 1000000.0);
+	art.drawCurve(bins, sStats.bench.GetTimePerBin().count() / 1000000.0, realTime);
       }
     }
 

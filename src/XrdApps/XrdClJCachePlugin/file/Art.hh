@@ -37,7 +37,7 @@ public:
   Art() {}
   virtual ~Art() {}
 
-  void drawCurve(const std::vector<double>& dataPoints) {
+  void drawCurve(const std::vector<double>& dataPoints, double runtime) {
     if (dataPoints.size() != 10) {
       std::cerr << "Error: Exactly 10 data points are required." << std::endl;
       return;
@@ -78,15 +78,15 @@ public:
 
     // Print the X axis
     std::cout << std::string(yLegendWidth + 7, ' ') << std::string(plotWidth, '-') << std::endl;
-    std::cout << std::string(yLegendWidth + 7, ' ') << " 0   1   2   3   4   5   6   7   8   9" << std::endl;
+    std::cout << std::string(yLegendWidth + 7, ' ') << " 0   1   2   3   4   5   6   7   8   9 [ 10 :=" << std::fixed << std::setprecision(2) << runtime << "s ]"<< std::endl;
   }
 
-  void drawCurve(const std::vector<long unsigned int>& data, double interval) {
+  void drawCurve(const std::vector<long unsigned int>& data, double interval, double runtime) {
     std::vector<double> newdata;
     for ( auto i:data ) {
       newdata.push_back(i/1000000.0 / interval);
     }
-    return drawCurve(newdata);
+    return drawCurve(newdata, runtime);
   }
 };
 
