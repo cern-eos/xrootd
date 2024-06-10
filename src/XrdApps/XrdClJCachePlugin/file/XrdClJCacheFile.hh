@@ -322,7 +322,7 @@ public:
     oss << "# JCache : app real time            : " << std::fixed << std::setprecision(2) << sStats.realTime << " s" << std::endl;
     oss << "# JCache : app sys  time            : " << std::fixed << std::setprecision(2) << sStats.sysTime  << " s" << std::endl;
     oss << "# JCache : app acceleration         : " << std::fixed << std::setprecision(2) << sStats.userTime / sStats.realTime  << "x" << std::endl;
-    oss << "# JCache : app readrate             : " << std::fixed << std::setprecision(2) << sStats.bytesToHumanReadable((sStats.ReadBytes()/sStats.realTime))  << "/s" << " [ peak " << sStats.bytesToHumanReadable(sStats.peakrate) << "/s" << std::endl;
+    oss << "# JCache : app readrate             : " << std::fixed << std::setprecision(2) << sStats.bytesToHumanReadable((sStats.ReadBytes()/sStats.realTime))  << "/s" << " [ peak " << sStats.bytesToHumanReadable(sStats.peakrate) << "/s ]" << std::endl;
     oss << "# ----------------------------------------------------------- #" << std::endl;
 
     return oss.str();
