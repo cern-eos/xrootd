@@ -19,8 +19,13 @@ enable = true
 cache = /var/tmp/jcache/
 vector = false
 journal = true
+summary = true
+json = ./
 ```
 **cache** points to a local or shared directory where accessed files are stored. 
+
+By default JCache prints a summary at application exit. If you don't want the summary **summary = false**. 
+By default JCache writes a json summary file in to the current working directory. If you want to change the directory where json summaries are stored change **json = /tmp/". If you don't want any json summary file set it to an empty string.
 
 # 2 Read Journal Cache
 
@@ -119,29 +124,33 @@ When an application exits, the globally collected JCache statistics for this app
 # JCache : total unique files size  : 1.05 TB
 # JCache : percentage dataset read  : 6.48 %
 # ----------------------------------------------------------- #
-# JCache : app user time            : 1883.94 s
-# JCache : app real time            : 87.82 s
-# JCache : app sys  time            : 73.13 s
-# JCache : app acceleration         : 21.45x
-# JCache : app readrate             : 777.55 MB/s
+# JCache : app user time            : 1930.11 s
+# JCache : app real time            : 86.56 s
+# JCache : app sys  time            : 54.17 s
+# JCache : app acceleration         : 22.30x
+# JCache : app readrate             : 788.90 MB/s [ peak 1.91 GB/s ]
 # ----------------------------------------------------------- #
- 1478.73 MB/s |         *                               
- 1314.53      |                                         
- 1150.33      |                                         
-  986.13      |             *                           
-  821.93      |     *                   *   *           
-  657.72      |                 *   *           *       
-  493.52      |                                     *   
-  329.32      |                                         
-  165.12      |                                         
-    0.92      | *                                       
+ 1928.52 MB/s |        *                                
+ 1714.24      |                                         
+ 1499.96      |         *                               
+ 1285.68      |          ***                            
+ 1071.40      |             *  **  **  * *  *  *        
+  857.12      |       *       *  *    *         * *     
+  642.84      |                   *  *  * ** *   *      
+  428.56      |                               *    * * *
+  214.28      |              *                      *   
+    0.00      | ******                                * 
                ----------------------------------------
-                0   1   2   3   4   5   6   7   8   9 [ 10 :=87.82s ]
+               0   10  20  30  40  50  60  70  80  90  [ 100 % = 86.56s ]
 ```
 
 Most of these fields are self explanatory. The field *readvread* are the number of individual read requests which are contained inside all *readv* IO operations. The statistics shows the total number of files opened for read (only!) and the unique files. To distinguish unique files the CGI information and named connections are removed. The percentage of a dataset read is computed by adding all read bytes from *read/pgread* + *readv* normalized to the total filesize of all unique files opened for reading. The application acceleration is simply the ratio of CPU time over REAL time. The application IO rate is computed from total read bytes over the REAL time in MB/s.
 
 The ASCII plot shows the IO request rate over time. The total runtime (REAL time) is divided into 10 equal bins and in each bin the data requested is plotted. 
+
+# 6 JSON Summary File
+
+JCache writes a summary file under the current working directory
 
 # 6 Cache-Cleaning
 
