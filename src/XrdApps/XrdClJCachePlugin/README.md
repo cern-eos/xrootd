@@ -150,7 +150,7 @@ The ASCII plot shows the IO request rate over time. The total runtime (REAL time
 
 # 6 JSON Summary File
 
-JCache writes a summary file under the current working directory
+As mentioned in the configuration section JCache writes by default a summary file under the current working directory. The prefix can be changed in the plug-in configuration. If the prefix is empty, the JSON summary is disabled.
 
 # 6 Cache-Cleaning
 
