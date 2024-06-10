@@ -27,6 +27,17 @@ json = ./
 By default JCache prints a summary at application exit. If you don't want the summary set ```summary = false```. 
 By default JCache writes a json summary file into the current working directory. If you want to change the directory where json summaries are stored change ```json = /tmp/```. If you don't want any json summary file set it to an empty string. The name of the json summary file is ```jcache.env{"XRD_APPNAME"}:"none".{pid}.json```
 
+It is possible to overwrite defaults or settings in the configuration file using the following environment variables:
+```
+XRD_JCACHE_SUMMARY=true|false
+XRD_JCACHE_JOURNAL=true|false
+XRD_JCACHE_VECTOR=true|false
+XRD_JCACHE_CACHE=directory-path-to-cache
+XRD_JCACHE_JSON=directory-path-for-json|""
+XRD_APPNAME=application-name-used-in-json-file
+```
+
+
 # 2 Read Journal Cache
 
 Each URL accessed for reading creates a journal file under the following path:
