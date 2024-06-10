@@ -93,14 +93,16 @@ JCacheFile::Open(const std::string& url,
   
   if (st.IsOK()) {
     mIsOpen = true;
-    if ((flags & OpenFlags::Flags::Read) == OpenFlags::Flags::Read) {
-      std::string JournalDir = sCachePath + "/" + VectorCache::computeSHA256(pUrl);
-      pJournalPath = JournalDir + "/journal";
-      // it can be that we cannot write the journal directory
-      if (!VectorCache::ensureLastSubdirectoryExists(JournalDir)) {
-        st = XRootDStatus(stError, errOSError);
-        std::cerr << "error: unable to create cache directory: " << JournalDir << std::endl; 
+    if (sEnableVectorCache || sEnableJournalCache) {
+      if ((flags & OpenFlags::Flags::Read) == OpenFlags::Flags::Read) {
+	std::string JournalDir = sCachePath + "/" + VectorCache::computeSHA256(pUrl);
+	pJournalPath = JournalDir + "/journal";
+	// it can be that we cannot write the journal directory
+	if (!VectorCache::ensureLastSubdirectoryExists(JournalDir)) {
+	  st = XRootDStatus(stError, errOSError);
+	  std::cerr << "error: unable to create cache directory: " << JournalDir << std::endl;
         return st;  
+	}
       }
     }
   }
@@ -327,20 +329,21 @@ JCacheFile::VectorRead(const ChunkList& chunks,
   XRootDStatus st;
 
   if (pFile) {
-    VectorCache cache(chunks, pUrl, (const char*)buffer, sCachePath);
     if (sEnableVectorCache) {
-      if (cache.retrieve()) {
-        // Compute total length of readv request
-        uint32_t len = 0;
-        for (auto it = chunks.begin(); it != chunks.end(); ++it) {
-          len += it->length;
-        }
+      uint32_t len = 0;
+      for (auto it = chunks.begin(); it != chunks.end(); ++it) {
+	len += it->length;
+      }
 
+      VectorCache cache(chunks, pUrl, buffer?(char*)buffer:(char*)(chunks.begin()->buffer), sCachePath);
+
+      if (cache.retrieve()) {
         XRootDStatus* ret_st = new XRootDStatus(st);
+	*ret_st = XRootDStatus(stOK, 0);
         AnyObject* obj = new AnyObject();
         VectorReadInfo* vReadInfo = new VectorReadInfo();
         vReadInfo->SetSize(len);
-        ChunkList vResp = vReadInfo->GetChunks();
+        ChunkList& vResp = vReadInfo->GetChunks();
         vResp = chunks;
         obj->Set(vReadInfo);
         handler->HandleResponse(ret_st, obj);
@@ -348,7 +351,7 @@ JCacheFile::VectorRead(const ChunkList& chunks,
       }
     }
     
-    auto jhandler = new JCacheReadVHandler(handler, &pStats.bytesReadV,sEnableJournalCache?&pJournal:nullptr, buffer, sEnableVectorCache?sCachePath:"", pUrl);
+    auto jhandler = new JCacheReadVHandler(handler, &pStats.bytesReadV,sEnableJournalCache?&pJournal:nullptr, buffer?(char*)buffer:(char*)(chunks.begin()->buffer), sEnableVectorCache?sCachePath:"", pUrl);
     pStats.readVOps++; 
     pStats.readVreadOps += chunks.size();
 
