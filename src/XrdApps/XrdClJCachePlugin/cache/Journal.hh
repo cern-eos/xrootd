@@ -36,6 +36,9 @@ class Journal
   static constexpr uint64_t JOURNAL_MAGIC = 0xcafecafecafecafe;
 
   struct jheader_t {
+    jheader_t() {
+      mtime = mtime_nsec = filesize = placeholder1 = placeholder2 = placeholder3 = placeholder4 = magic = 0;
+    }
     uint64_t magic;
     uint64_t mtime;
     uint64_t mtime_nsec; // XRootD does not support this though
