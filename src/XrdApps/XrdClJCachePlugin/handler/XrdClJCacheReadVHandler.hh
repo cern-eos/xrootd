@@ -64,15 +64,15 @@ public:
                                       pResponse->Get(vReadInfo);
 				      ChunkList* chunks = &(vReadInfo->GetChunks());
                                       // store successfull reads in the journal if there is no vector cache
-                                      if (journal) {
-                                        if (vcachepath.empty()) {
-                                          for (auto it = chunks->begin(); it != chunks->end(); ++it) {
-                                            journal->pwrite(it->GetBuffer(), it->GetLength(), it->GetOffset());
-                                          }
-                                        } else {
-                                          VectorCache cache(*chunks, url, (const char*)buffer, vcachepath);
-                                          cache.store();
-                                        }
+				      if (vcachepath.empty()) {
+					if (journal) {
+					  for (auto it = chunks->begin(); it != chunks->end(); ++it) {
+					    journal->pwrite(it->GetBuffer(), it->GetLength(), it->GetOffset());
+					  }
+					}
+				      } else {
+					VectorCache cache(*chunks, url, (const char*)buffer, vcachepath);
+					cache.store();
                                       }  
                                       for (auto it = chunks->begin(); it != chunks->end(); ++it) {
                                         *rvbytes += it->GetLength();
