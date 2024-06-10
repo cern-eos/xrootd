@@ -80,8 +80,9 @@ void Journal::read_jheader()
     std::cerr << "warning: inconsistent journal header found (I) - purging path:" << path << std::endl;
     reset();
     return;
-  }  
-  if ( (fheader.mtime != jheader.mtime) 
+  }
+  // TODO: understand why the mtime is +-1s
+  if ( ( abs(fheader.mtime - jheader.mtime) > 1 )
        || (fheader.mtime_nsec != jheader.mtime_nsec)
        || (fheader.filesize != jheader.filesize) ) {
     std::cerr << "warning: remote file change detected - purging path:" << path << std::endl;
@@ -209,10 +210,20 @@ int Journal::unlink()
 //------------------------------------------------------------------------------
 //! Journal pread
 //------------------------------------------------------------------------------
-ssize_t Journal::pread(void* buf, size_t count, off_t offset)
+ssize_t Journal::pread(void* buf, size_t count, off_t offset, bool& eof)
 {
   if (fd<0) {
     return 0;
+  }
+
+  // rewrite reads to not go over EOF!
+  if ( (off_t)(offset + count) > (off_t) jheader.filesize ) {
+    if ((off_t)jheader.filesize > offset) {
+      count = (off_t)jheader.filesize - offset;
+    } else {
+      count = 0;
+    }
+    eof = true;
   }
 
   std::lock_guard<std::mutex> guard(mtx);
@@ -249,6 +260,12 @@ ssize_t Journal::pread(void* buf, size_t count, off_t offset)
       }
     }
   }
+
+  if (eof && (bytesRead != count)) {
+    // if we have EOF and missing part, we return 0
+    return 0;
+  }
+
   return bytesRead;
 }
 

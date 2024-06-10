@@ -85,7 +85,7 @@ public:
   int detach();
   int unlink();
 
-  ssize_t pread(void* buf, size_t count, off_t offset);
+  ssize_t pread(void* buf, size_t count, off_t offset, bool& eof);
   ssize_t pwrite(const void* buf, size_t count, off_t offset);
 
   int sync();
