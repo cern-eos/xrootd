@@ -28,6 +28,8 @@
 #include "XrdCl/XrdClDefaultEnv.hh"
 #include "XrdCl/XrdClLog.hh"
 /*----------------------------------------------------------------------------*/
+#include "file/Art.hh"
+#include "file/TimeBench.hh"
 #include "cache/Journal.hh"
 #include "vector/XrdClVectorCache.hh"
 #include "handler/XrdClJCacheReadHandler.hh"
@@ -38,6 +40,10 @@
 #include <sys/resource.h>
 #include <sys/time.h>
 #include <chrono>
+#include <iostream>
+#include <string>
+#include <iomanip>
+#include <cmath>
 /*----------------------------------------------------------------------------*/
 
 namespace XrdCl
@@ -291,9 +297,9 @@ public:
     sStats.GetTimes();
     std::ostringstream oss;
     oss << "# ----------------------------------------------------------- #" << std::endl;
-    oss << "# JCache : cache combined hit rate  : " << std::fixed << std::setprecision(2) << sStats.CombinedHitRate() << " %%" << std::endl;
-    oss << "# JCache : cache read     hit rate  : " << std::fixed << std::setprecision(2) << sStats.HitRate() << " %%" << std::endl;
-    oss << "# JCache : cache readv    hit rate  : " << std::fixed << std::setprecision(2) << sStats.HitRateV() << " %%" << std::endl;
+    oss << "# JCache : cache combined hit rate  : " << std::fixed << std::setprecision(2) << sStats.CombinedHitRate() << " %" << std::endl;
+    oss << "# JCache : cache read     hit rate  : " << std::fixed << std::setprecision(2) << sStats.HitRate() << " %" << std::endl;
+    oss << "# JCache : cache readv    hit rate  : " << std::fixed << std::setprecision(2) << sStats.HitRateV() << " %" << std::endl;
     oss << "# ----------------------------------------------------------- #" << std::endl;
     oss << "# JCache : total bytes    read      : " << sStats.bytesRead.load()+sStats.bytesCached.load() << std::endl;
     oss << "# JCache : total bytes    readv     : " << sStats.bytesReadV.load()+sStats.bytesCachedV.load() << std::endl;
@@ -305,13 +311,26 @@ public:
     oss << "# JCache : open files     read      : " << sStats.nreadfiles.load() << std::endl;
     oss << "# JCache : open unique f. read      : " << sStats.UniqueUrls() << std::endl;
     oss << "# ----------------------------------------------------------- #" << std::endl;
-    oss << "# JCache : total dataset size       : " << sStats.totaldatasize << std::endl;
-    oss << "# JCache : percentage dataset read  : " << std::fixed << std::setprecision(2) << sStats.Used() << " %%" << std::endl;
+    oss << "# JCache : total unique files bytes : " << sStats.totaldatasize << std::endl;
+    oss << "# JCache : total unique files size  : " << sStats.bytesToHumanReadable((double)sStats.totaldatasize) << std::endl;
+    oss << "# JCache : percentage dataset read  : " << std::fixed << std::setprecision(2) << sStats.Used() << " %" << std::endl;
     oss << "# ----------------------------------------------------------- #" << std::endl;
     oss << "# JCache : app user time            : " << std::fixed << std::setprecision(2) << sStats.userTime << " s" << std::endl;
     oss << "# JCache : app real time            : " << std::fixed << std::setprecision(2) << sStats.realTime << " s" << std::endl;
     oss << "# JCache : app sys  time            : " << std::fixed << std::setprecision(2) << sStats.sysTime  << " s" << std::endl;
+    oss << "# JCache : app acceleration         : " << std::fixed << std::setprecision(2) << sStats.userTime / sStats.realTime  << "x" << std::endl;
+    oss << "# JCache : app readrate             : " << std::fixed << std::setprecision(2) << sStats.bytesToHumanReadable((sStats.ReadBytes()/sStats.realTime))  << "/s" << std::endl;
     oss << "# ----------------------------------------------------------- #" << std::endl;
+
+    using namespace std::chrono;
+    
+    std::vector<uint64_t> bins = sStats.bench.GetBins();
+
+    for (size_t i = 0; i < bins.size(); ++i) {
+        std::cout << "Bin " << i + 1 << ": " << bins[i] << " bytes" << std::endl;
+    }
+    Art art;
+    art.drawCurve(bins, sStats.bench.GetTimePerBin().count() / 1000000.0);
     return oss.str();
   }
   //! structure about cache hit statistics 
@@ -339,6 +358,19 @@ public:
       }
     }
 
+    static std::string bytesToHumanReadable(double bytes) {
+      const char* suffixes[] = {"B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"};
+      const int numSuffixes = sizeof(suffixes) / sizeof(suffixes[0]);
+      
+      if (bytes == 0) return "0 B";
+      
+      int exp = std::min((int)(std::log(bytes) / std::log(1000)), numSuffixes - 1);
+      double val = bytes / std::pow(1000, exp);
+      std::ostringstream oss;
+      oss << std::fixed << std::setprecision(2) << val << " " << suffixes[exp];
+      return oss.str();
+    }
+    
     double HitRate() {
       auto n = this->bytesCached.load()+this->bytesRead.load();
       if (!n) return 100.0;      
@@ -362,7 +394,10 @@ public:
       std::lock_guard<std::mutex> guard(urlMutex);
       return urls.count(url);
     }
-
+    double ReadBytes() {
+      return (sStats.bytesRead.load()+sStats.bytesReadV.load() + sStats.bytesCached.load() + sStats.bytesCachedV.load());
+    }
+    
     double Used() {
       if (sStats.totaldatasize) {
 	return 100.0*(sStats.bytesRead.load()+sStats.bytesReadV.load() + sStats.bytesCached.load() + sStats.bytesCachedV.load()) / sStats.totaldatasize;
@@ -408,6 +443,7 @@ public:
     std::atomic<double>   realTime;
     std::atomic<double>   sysTime;
     std::atomic<double>   startTime;
+    TimeBench             bench;
   };
 private:
 

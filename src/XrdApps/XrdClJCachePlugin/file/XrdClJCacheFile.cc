@@ -102,7 +102,6 @@ JCacheFile::Open(const std::string& url,
   cleanUrl.SetPath(origUrl.GetPath());
   pUrl = cleanUrl.GetURL();
   st = pFile->Open(url, flags, mode, handler, timeout);
-  
   if (st.IsOK()) {
     mIsOpen = true;
     if (sEnableVectorCache || sEnableJournalCache) {
@@ -133,8 +132,7 @@ JCacheFile::Close(ResponseHandler* handler,
 
   if (mIsOpen) {
     mIsOpen = false;
-    sStats.AddUrl(pUrl);
-    pUrl = "";
+    pUrl = "";    
     if (pFile) {
       st = pFile->Close(handler, timeout);
     } else {
@@ -184,6 +182,7 @@ JCacheFile::Read(uint64_t offset,
   XRootDStatus st;
 
   if (pFile) {
+    sStats.bench.AddMeasurement(size);
     if (sEnableJournalCache && AttachForRead()) {
       bool eof = false;
       auto rb = pJournal->pread(buffer, size, offset, eof);
@@ -244,6 +243,7 @@ JCacheFile::PgRead( uint64_t         offset,
 {
   XRootDStatus st;
   if (pFile) {
+    sStats.bench.AddMeasurement(size);
     if (sEnableJournalCache && AttachForRead()) {
       bool eof = false;
       auto rb = pJournal->pread(buffer, size, offset, eof);
@@ -344,12 +344,14 @@ JCacheFile::VectorRead(const ChunkList& chunks,
   XRootDStatus st;
 
   if (pFile) {
-    if (sEnableVectorCache) {
-      uint32_t len = 0;
-      for (auto it = chunks.begin(); it != chunks.end(); ++it) {
-	len += it->length;
-      }
+    uint32_t len = 0;
+    for (auto it = chunks.begin(); it != chunks.end(); ++it) {
+      len += it->length;
+    }
 
+    sStats.bench.AddMeasurement(len);
+    
+    if (sEnableVectorCache) {
       VectorCache cache(chunks, pUrl, buffer?(char*)buffer:(char*)(chunks.begin()->buffer), sCachePath);
 
       if (cache.retrieve()) {
@@ -524,6 +526,7 @@ JCacheFile::AttachForRead()
       }
     }
   }
+  sStats.AddUrl(pUrl);  
   mAttachedForRead = true;
   return true;
 }
