@@ -133,6 +133,7 @@ JCacheFile::Close(ResponseHandler* handler,
 
   if (mIsOpen) {
     mIsOpen = false;
+    sStats.AddUrl(pUrl);
     pUrl = "";
     if (pFile) {
       st = pFile->Close(handler, timeout);
@@ -198,7 +199,6 @@ JCacheFile::Read(uint64_t offset,
         st = XRootDStatus(stOK, 0);
         return st;
       }
-      fprintf(stderr,"%s : %lu %u %lu %d\n", pUrl.c_str(), offset, size, rb, eof);
     }
 
     auto jhandler = new JCacheReadHandler(handler, &pStats.bytesRead,sEnableJournalCache?pJournal.get():nullptr);
@@ -397,9 +397,6 @@ JCacheFile::VectorRead(const ChunkList& chunks,
 	  vResp = chunks;
 	  obj->Set(vReadInfo);
 	  handler->HandleResponse(ret_st, obj);
-	  pStats.readVOps++;
-	  pStats.readVreadOps += chunks.size();
-	  pStats.bytesCachedV += len;
 	  return st;
 	}
       }
@@ -513,6 +510,10 @@ JCacheFile::AttachForRead()
       StatInfo* sinfo = 0;
       auto st = pFile->Stat(false, sinfo);
       if (sinfo) {
+	// only add a file if it wasn't yet added
+	if (!sStats.HasUrl(pUrl)) {
+	  sStats.totaldatasize+=sinfo->GetSize();
+	}
         if (pJournal->attach(pJournalPath, sinfo->GetModTime(),0, sinfo->GetSize())) {
           mLog->Error(1, "JCache : failed to attach to cache directory: %s", pJournalPath.c_str());
           mAttachedForRead = true;

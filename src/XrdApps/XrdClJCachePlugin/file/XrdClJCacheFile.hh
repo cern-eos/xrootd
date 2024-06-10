@@ -35,6 +35,9 @@
 #include "handler/XrdClJCacheReadVHandler.hh"
 /*----------------------------------------------------------------------------*/
 #include <atomic>
+#include <sys/resource.h>
+#include <sys/time.h>
+#include <chrono>
 /*----------------------------------------------------------------------------*/
 
 namespace XrdCl
@@ -285,6 +288,7 @@ public:
   }
 
   static std::string GlobalStats() {
+    sStats.GetTimes();
     std::ostringstream oss;
     oss << "# ----------------------------------------------------------- #" << std::endl;
     oss << "# JCache : cache combined hit rate  : " << std::fixed << std::setprecision(2) << sStats.CombinedHitRate() << " %%" << std::endl;
@@ -299,7 +303,14 @@ public:
     oss << "# JCache : total iops     readvread : " << sStats.readVreadOps.load() << std::endl;
     oss << "# ----------------------------------------------------------- #" << std::endl;
     oss << "# JCache : open files     read      : " << sStats.nreadfiles.load() << std::endl;
-    oss << "# JCache : open unique    read      : " << sStats.UniqueUrls() << std::endl;
+    oss << "# JCache : open unique f. read      : " << sStats.UniqueUrls() << std::endl;
+    oss << "# ----------------------------------------------------------- #" << std::endl;
+    oss << "# JCache : total dataset size       : " << sStats.totaldatasize << std::endl;
+    oss << "# JCache : percentage dataset read  : " << std::fixed << std::setprecision(2) << sStats.Used() << " %%" << std::endl;
+    oss << "# ----------------------------------------------------------- #" << std::endl;
+    oss << "# JCache : app user time            : " << std::fixed << std::setprecision(2) << sStats.userTime << " s" << std::endl;
+    oss << "# JCache : app real time            : " << std::fixed << std::setprecision(2) << sStats.realTime << " s" << std::endl;
+    oss << "# JCache : app sys  time            : " << std::fixed << std::setprecision(2) << sStats.sysTime  << " s" << std::endl;
     oss << "# ----------------------------------------------------------- #" << std::endl;
     return oss.str();
   }
@@ -315,7 +326,12 @@ public:
       readVreadOps(0),
       nreadfiles(0),
       dumponexit(doe)
-    {}
+    {
+      // Get the current real time
+      struct timeval now;
+      gettimeofday(&now, nullptr);
+      startTime = now.tv_sec + now.tv_usec / 1000000.0;
+    }
 
     ~CacheStats() {
       if (dumponexit.load()) {
@@ -342,10 +358,38 @@ public:
       std::lock_guard<std::mutex> guard(urlMutex);
       urls.insert(url);
     }
+    bool HasUrl(const std::string& url) {
+      std::lock_guard<std::mutex> guard(urlMutex);
+      return urls.count(url);
+    }
+
+    double Used() {
+      if (sStats.totaldatasize) {
+	return 100.0*(sStats.bytesRead.load()+sStats.bytesReadV.load() + sStats.bytesCached.load() + sStats.bytesCachedV.load()) / sStats.totaldatasize;
+      } else {
+	return 100.0;
+      }
+    }
 
     size_t UniqueUrls() {
       std::lock_guard<std::mutex> guard(urlMutex);
       return urls.size();
+    }
+
+    void GetTimes() {
+      struct rusage usage;
+      struct timeval now;
+
+      // Get the current real time
+      gettimeofday(&now, nullptr);
+      realTime = now.tv_sec + now.tv_usec / 1000000.0 - startTime;
+
+      // Get resource usage
+      getrusage(RUSAGE_SELF, &usage);
+
+      // Get user and system time
+      userTime = usage.ru_utime.tv_sec + usage.ru_utime.tv_usec / 1000000.0;
+      sysTime = usage.ru_stime.tv_sec + usage.ru_stime.tv_usec / 1000000.0;
     }
 
     std::atomic<uint64_t> bytesRead;
@@ -356,9 +400,14 @@ public:
     std::atomic<uint64_t> readVOps;
     std::atomic<uint64_t> readVreadOps;
     std::atomic<uint64_t> nreadfiles;
+    std::atomic<uint64_t> totaldatasize;
     std::atomic<bool>     dumponexit;
     std::set<std::string> urls;
     std::mutex            urlMutex;
+    std::atomic<double>   userTime;
+    std::atomic<double>   realTime;
+    std::atomic<double>   sysTime;
+    std::atomic<double>   startTime;
   };
 private:
 
