@@ -155,9 +155,9 @@ When an application exits, the globally collected JCache statistics for this app
                0   10  20  30  40  50  60  70  80  90  [ 100 % = 86.56s ]
 ```
 
-Most of these fields are self explanatory. The field *readvread* are the number of individual read requests which are contained inside all *readv* IO operations. The statistics shows the total number of files opened for read (only!) and the unique files. To distinguish unique files the CGI information and named connections are removed. The percentage of a dataset read is computed by adding all read bytes from *read/pgread* + *readv* normalized to the total filesize of all unique files opened for reading. The application acceleration is simply the ratio of CPU time over REAL time. The application IO rate is computed from total read bytes over the REAL time in MB/s.
+Most of these fields are self explanatory. The field *readvread* are the number of individual read requests which are contained inside all *readv* IO operations. The statistics shows the total number of files opened for read (only!) and the unique files. To distinguish unique files the CGI information and named connections are removed. The percentage of a dataset read is computed by adding all read bytes from *read/pgread* + *readv* normalized to the total filesize of all unique files opened for reading. The application acceleration is simply the ratio of cputime over realtime. The application IO rate is computed from total read bytes over realtime in MB/s.
 
-The ASCII plot shows the IO request rate over time. The total runtime (REAL time) is divided into 10 equal bins and in each bin the data requested is plotted. 
+The ASCII plot shows the IO request rate over time. The total runtime (REAL time) is divided into 40 equal bins and in each bin the data requested is plotted. 
 
 # 6 JSON Summary File
 
