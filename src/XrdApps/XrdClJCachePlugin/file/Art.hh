@@ -68,13 +68,17 @@ public:
     // Print the plot with Y legend
     for (int i = 0; i < plotHeight; ++i) {
       double yValue = minValue + (maxValue - minValue) * (plotHeight - 1 - i) / (plotHeight - 1);
-      std::cout << std::setw(yLegendWidth) << std::fixed << std::setprecision(2) << yValue << " MB/s | ";
+      if (i==0) {
+	std::cout << std::setw(yLegendWidth) << std::fixed << std::setprecision(2) << yValue << " MB/s | ";
+      } else {
+	std::cout << std::setw(yLegendWidth) << std::fixed << std::setprecision(2) << yValue << "      | ";
+      }
       std::cout << plot[i] << std::endl;
     }
 
     // Print the X axis
     std::cout << std::string(yLegendWidth + 7, ' ') << std::string(plotWidth, '-') << std::endl;
-    std::cout << std::string(yLegendWidth + 7, ' ') << "0  1  2  3  4  5  6  7  8  9" << std::endl;
+    std::cout << std::string(yLegendWidth + 7, ' ') << " 0   1   2   3   4   5   6   7   8   9" << std::endl;
   }
 
   void drawCurve(const std::vector<long unsigned int>& data, double interval) {
