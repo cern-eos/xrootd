@@ -60,8 +60,9 @@ public:
                                 XrdCl::AnyObject* pResponse) {              
                                   if (pStatus->IsOK()) {
                                     if (pResponse) {
-                                      ChunkList* chunks;
-                                      pResponse->Get(chunks);
+                                      VectorReadInfo* vReadInfo;
+                                      pResponse->Get(vReadInfo);
+				      ChunkList* chunks = &(vReadInfo->GetChunks());
                                       // store successfull reads in the journal if there is no vector cache
                                       if (journal) {
                                         if (vcachepath.empty()) {
