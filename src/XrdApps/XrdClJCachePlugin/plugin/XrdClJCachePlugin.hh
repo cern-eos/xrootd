@@ -61,10 +61,37 @@ class JCacheFactory : public PlugInFactory
 	JCacheFile::SetJsonPath( itjson != config->end() ? itjson->second : "./" );
 	auto its = config->find( "summary" );
 	JCacheFile::SetSummary( its != config->end() ? its->second != "false": true );
+
+	if (const char *v = getenv("XRD_JCACHE_CACHE")) {
+	  JCacheFile::SetCache( (std::string(v).length()) ? std::string(v) : "");
+	}
+
+	if (const char *v = getenv("XRD_JCACHE_SUMMARY")) {
+	  JCacheFile::SetSummary( (std::string(v) == "true") ? true : false);
+	}
+
+	if (const char *v = getenv("XRD_JCACHE_JOURNAL")) {
+	  JCacheFile::SetJournal( (std::string(v) == "true") ? true : false);
+	}
+
+	if (const char *v = getenv("XRD_JCACHE_VECTOR")) {
+	  JCacheFile::SetVector( (std::string(v) == "true") ? true : false);
+	}
+
+	if (const char *v = getenv("XRD_JCACHE_JSON")) {
+	  JCacheFile::SetJsonPath( (std::string(v).length()) ? std::string(v) : "");
+	}
+
         Log* log = DefaultEnv::GetLog();
         log->Info(1, "JCache : cache directory: %s", JCacheFile::sCachePath.c_str());
         log->Info(1, "JCache : caching readv in vector cache : %s", JCacheFile::sEnableVectorCache ? "true" : "false");
         log->Info(1, "JCache : caching reads in journal cache: %s", JCacheFile::sEnableJournalCache ? "true" : "false");
+	log->Info(1, "JCache : summary output is: %s", JCacheFile::sEnableSummary ? "true" : "false");
+	if (JCacheFile::sJsonPath.length()) {
+	  log->Info(1, "JCache : json output to prefix: %s", JCacheFile::sJsonPath.c_str());
+	} else {
+	  log->Info(1, "JCache : json output is disabled", JCacheFile::sJsonPath.c_str());
+	}
       }
     }
 
