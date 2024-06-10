@@ -85,7 +85,7 @@ a unique vector read request e.g.:
 
 ```/var/tmp/jcache/c04250faea5ae18d9a0024148da4c798852ee6b198848b2abd2ba8293b64af8e/7daf70f7f2fb3fff224623bcdbd111fe76dc0633f08ff83f0bcd6a443b1398eb```
 
-The vector read cache does not provide any additional benefit to the journal cache approach. Conceptionally a cached vector read request can be served by a single read request on the caching device. If vector reads are only slightly modified a new vector blob entry is stored, which is inefficient if the read pattern is changing. For the time being the vector cache implementation is kept. 
+The vector read cache does not provide any additional benefit to the journal cache approach. Conceptionally a cached vector read request can be served by a single read request on the caching device. If vector reads are only slightly modified a new vector blob entry is stored, which is inefficient if the read pattern is changing. For the time being the vector cache implementation is kept, but it is disabled by default. 
 
 # 4 Cache Hit Rate
 
