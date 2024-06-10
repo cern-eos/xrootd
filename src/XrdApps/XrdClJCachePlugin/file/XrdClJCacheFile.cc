@@ -498,7 +498,7 @@ JCacheFile::AttachForRead()
       StatInfo* sinfo = 0;
       auto st = pFile->Stat(false, sinfo);
       if (sinfo) {
-        if (pJournal->attach(pJournalPath,sinfo->GetSize(),sinfo->GetModTime(),0)) {
+        if (pJournal->attach(pJournalPath, sinfo->GetModTime(),0, sinfo->GetSize())) {
           mLog->Error(1, "JCache : failed to attach to cache directory: %s", pJournalPath.c_str());
           mAttachedForRead = true;
           return false;

@@ -85,6 +85,7 @@ void Journal::read_jheader()
        || (fheader.mtime_nsec != jheader.mtime_nsec)
        || (fheader.filesize != jheader.filesize) ) {
     std::cerr << "warning: remote file change detected - purging path:" << path << std::endl;
+    std::cerr << fheader.mtime  << ":" << jheader.mtime << " " << fheader.mtime_nsec << ":" << jheader.mtime_nsec << " " << fheader.filesize << ":" << jheader.filesize << std::endl;
     reset();
     return;
   }
