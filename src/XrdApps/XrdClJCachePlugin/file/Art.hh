@@ -38,8 +38,8 @@ public:
   virtual ~Art() {}
 
   void drawCurve(const std::vector<double>& dataPoints, double runtime) {
-    if (dataPoints.size() != 10) {
-      std::cerr << "Error: Exactly 10 data points are required." << std::endl;
+    if (dataPoints.size() != 40) {
+      std::cerr << "Error: Exactly 40 data points are required." << std::endl;
       return;
     }
     
@@ -69,16 +69,20 @@ public:
     for (int i = 0; i < plotHeight; ++i) {
       double yValue = minValue + (maxValue - minValue) * (plotHeight - 1 - i) / (plotHeight - 1);
       if (i==0) {
-	std::cout << std::setw(yLegendWidth) << std::fixed << std::setprecision(2) << yValue << " MB/s | ";
+	std::cerr << std::setw(yLegendWidth) << std::fixed << std::setprecision(2) << yValue << " MB/s | ";
       } else {
-	std::cout << std::setw(yLegendWidth) << std::fixed << std::setprecision(2) << yValue << "      | ";
+	std::cerr << std::setw(yLegendWidth) << std::fixed << std::setprecision(2) << yValue << "      | ";
       }
-      std::cout << plot[i] << std::endl;
+      std::cerr << plot[i] << std::endl;
     }
 
     // Print the X axis
-    std::cout << std::string(yLegendWidth + 7, ' ') << std::string(plotWidth, '-') << std::endl;
-    std::cout << std::string(yLegendWidth + 7, ' ') << " 0   1   2   3   4   5   6   7   8   9 [ 10 :=" << std::fixed << std::setprecision(2) << runtime << "s ]"<< std::endl;
+    std::cerr << std::string(yLegendWidth + 7, ' ') << std::string(plotWidth, '-') << std::endl;
+    std::cerr << std::string(yLegendWidth + 7, ' ');
+    for (size_t i = 0 ; i < dataPoints.size()/4; ++i) {
+      std::cerr << std::fixed << std::setw(4) << std::left << (i*10);
+    }
+    std::cerr << "[ " << 100 << " % = " << std::fixed << std::setprecision(2) << runtime << "s ]"<< std::endl;
   }
 
   void drawCurve(const std::vector<long unsigned int>& data, double interval, double runtime) {

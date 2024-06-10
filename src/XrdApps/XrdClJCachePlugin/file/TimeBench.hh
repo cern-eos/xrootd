@@ -39,10 +39,11 @@ private:
     TimePoint start;
     TimePoint end;
     uint64_t totalBytes;
+    size_t nbins;
     std::mutex mtx;
   
 public:
-    TimeBench() : totalBytes(0) {}
+    TimeBench() : totalBytes(0), nbins(10) {}
 
     void AddMeasurement(uint64_t bytes) {
         std::lock_guard<std::mutex> guard(mtx);
@@ -55,21 +56,19 @@ public:
         end = now;
     }
 
-    std::vector<uint64_t> GetBins() {
+    std::vector<uint64_t> GetBins(size_t bin = 10) {
         std::lock_guard<std::mutex> guard(mtx);
+	nbins = bin?bin:1;
         Duration totalTime = std::chrono::duration_cast<Duration>(end - start);
-        Duration binSize = totalTime / 10;
+        Duration binSize = totalTime / nbins;
         bins.clear();
-        bins.resize(10, 0);
+        bins.resize(nbins, 0);
 
-        TimePoint binStart = start;
         size_t binIndex = 0;
 
         for (auto i : measurements) {
-            TimePoint measurementTime = binStart + binSize;
-
 	    binIndex = (i.first - start)/ binSize;
-            if (Clock::now() >= measurementTime) {
+            if (binIndex < nbins) {
 	      bins[binIndex] += i.second;
             } else {
                 break; // Don't process future measurements
@@ -78,10 +77,10 @@ public:
 
         return bins;
     }
-  
+
     Duration GetTimePerBin() {
         Duration totalTime = std::chrono::duration_cast<Duration>(end - start);
-	Duration binSize = totalTime / 10;
+	Duration binSize = totalTime / nbins;
 	return binSize;
     }
 };

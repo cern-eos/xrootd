@@ -256,13 +256,17 @@ public:
   static void SetCache(const std::string& path) { sCachePath = path; }
   static void SetJournal(const bool& value) { sEnableJournalCache = value; }
   static void SetVector(const bool& value) { sEnableVectorCache = value; }
+  static void SetJsonPath(const std::string& path) { sJsonPath = path; }
+  static void SetSummary(const bool& value) { sEnableSummary = value; }
 
   //----------------------------------------------------------------------------
   //! @brief static members pointing to cache settings
   //----------------------------------------------------------------------------
   static std::string sCachePath;
+  static std::string sJsonPath;
   static bool sEnableVectorCache;
   static bool sEnableJournalCache;
+  static bool sEnableSummary;
   static JournalManager sJournalManager;
   
   //----------------------------------------------------------------------------
@@ -294,7 +298,6 @@ public:
   }
 
   static std::string GlobalStats() {
-    sStats.GetTimes();
     std::ostringstream oss;
     oss << "# ----------------------------------------------------------- #" << std::endl;
     oss << "# JCache : cache combined hit rate  : " << std::fixed << std::setprecision(2) << sStats.CombinedHitRate() << " %" << std::endl;
@@ -319,7 +322,7 @@ public:
     oss << "# JCache : app real time            : " << std::fixed << std::setprecision(2) << sStats.realTime << " s" << std::endl;
     oss << "# JCache : app sys  time            : " << std::fixed << std::setprecision(2) << sStats.sysTime  << " s" << std::endl;
     oss << "# JCache : app acceleration         : " << std::fixed << std::setprecision(2) << sStats.userTime / sStats.realTime  << "x" << std::endl;
-    oss << "# JCache : app readrate             : " << std::fixed << std::setprecision(2) << sStats.bytesToHumanReadable((sStats.ReadBytes()/sStats.realTime))  << "/s" << std::endl;
+    oss << "# JCache : app readrate             : " << std::fixed << std::setprecision(2) << sStats.bytesToHumanReadable((sStats.ReadBytes()/sStats.realTime))  << "/s" << " [ peak " << sStats.bytesToHumanReadable(sStats.peakrate) << "/s" << std::endl;
     oss << "# ----------------------------------------------------------- #" << std::endl;
 
     return oss.str();
@@ -335,7 +338,8 @@ public:
       readVOps(0),
       readVreadOps(0),
       nreadfiles(0),
-      dumponexit(doe)
+      dumponexit(doe),
+      peakrate(0)
     {
       // Get the current real time
       struct timeval now;
@@ -345,11 +349,26 @@ public:
 
     ~CacheStats() {
       if (dumponexit.load()) {
-	std::cerr << GlobalStats();
 	using namespace std::chrono;
-	std::vector<uint64_t> bins = sStats.bench.GetBins();
+	std::string jsonpath = sJsonPath + "jcache.";
+	std::string name = getenv("XRD_APPNAME")?getenv("XRD_APPNAME"):"none"+std::string(".")+std::to_string(getpid());
+	jsonpath += name;
+	jsonpath += ".json";
+	sStats.GetTimes();
+
+	sStats.bytes_per_second = sStats.bench.GetBins((int)(realTime));
+	sStats.peakrate = *(std::max_element(sStats.bytes_per_second.begin(), sStats.bytes_per_second.end()));
+	if (sJsonPath.length()) {
+	  sStats.persistToJson(jsonpath, name);
+	}
+	if (sEnableSummary) {
+	  std::cerr << GlobalStats();
+	}
+	std::vector<uint64_t> bins = sStats.bench.GetBins(40);
 	Art art;
-	art.drawCurve(bins, sStats.bench.GetTimePerBin().count() / 1000000.0, realTime);
+	if (sEnableSummary) {
+	  art.drawCurve(bins, sStats.bench.GetTimePerBin().count() / 1000000.0, realTime);
+	}
       }
     }
 
@@ -422,6 +441,55 @@ public:
       sysTime = usage.ru_stime.tv_sec + usage.ru_stime.tv_usec / 1000000.0;
     }
 
+    void persistToJson(const std::string& path, const std::string& name) {
+        std::ofstream outFile(path);
+        if (!outFile.is_open()) {
+            std::cerr << "error: failed to open JSON statistics file: " << path << std::endl;
+            return;
+        }
+
+        outFile << "{\n";
+	outFile << "  \"appname\": \"" << name << "\",\n";
+        outFile << "  \"bytesRead\": " << bytesRead.load() << ",\n";
+        outFile << "  \"bytesReadV\": " << bytesReadV.load() << ",\n";
+        outFile << "  \"bytesCached\": " << bytesCached.load() << ",\n";
+        outFile << "  \"bytesCachedV\": " << bytesCachedV.load() << ",\n";
+        outFile << "  \"readOps\": " << readOps.load() << ",\n";
+        outFile << "  \"readVOps\": " << readVOps.load() << ",\n";
+        outFile << "  \"readVreadOps\": " << readVreadOps.load() << ",\n";
+        outFile << "  \"nreadfiles\": " << nreadfiles.load() << ",\n";
+        outFile << "  \"totaldatasize\": " << totaldatasize.load() << ",\n";
+
+        std::lock_guard<std::mutex> lock(urlMutex);
+        outFile << "  \"urls\": [";
+        for (auto it = urls.begin(); it != urls.end(); ++it) {
+            if (it != urls.begin()) {
+                outFile << ", ";
+            }
+            outFile << "\"" << *it << "\"";
+        }
+        outFile << "],\n";
+
+	outFile << "  \"bytes_per_second\": [";
+        for (size_t i = 0; i < bytes_per_second.size(); ++i) {
+            if (i != 0) {
+                outFile << ", ";
+            }
+            outFile << bytes_per_second[i];
+        }
+        outFile << "],\n";
+
+        outFile << std::fixed << std::setprecision(6); // Set precision for double values
+
+        outFile << "  \"userTime\": " << userTime.load() << ",\n";
+        outFile << "  \"realTime\": " << realTime.load() << ",\n";
+        outFile << "  \"sysTime\": " << sysTime.load() << ",\n";
+        outFile << "  \"startTime\": " << startTime.load() << "\n";
+        outFile << "}\n";
+
+        outFile.close();
+    }
+
     std::atomic<uint64_t> bytesRead;
     std::atomic<uint64_t> bytesReadV;
     std::atomic<uint64_t> bytesCached;
@@ -439,6 +507,8 @@ public:
     std::atomic<double>   sysTime;
     std::atomic<double>   startTime;
     TimeBench             bench;
+    std::vector<uint64_t> bytes_per_second;
+    std::atomic<double>   peakrate;
   };
 private:
 
