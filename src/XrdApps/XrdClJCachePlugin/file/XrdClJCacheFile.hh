@@ -322,15 +322,6 @@ public:
     oss << "# JCache : app readrate             : " << std::fixed << std::setprecision(2) << sStats.bytesToHumanReadable((sStats.ReadBytes()/sStats.realTime))  << "/s" << std::endl;
     oss << "# ----------------------------------------------------------- #" << std::endl;
 
-    using namespace std::chrono;
-    
-    std::vector<uint64_t> bins = sStats.bench.GetBins();
-
-    for (size_t i = 0; i < bins.size(); ++i) {
-        std::cout << "Bin " << i + 1 << ": " << bins[i] << " bytes" << std::endl;
-    }
-    Art art;
-    art.drawCurve(bins, sStats.bench.GetTimePerBin().count() / 1000000.0);
     return oss.str();
   }
   //! structure about cache hit statistics 
@@ -355,6 +346,10 @@ public:
     ~CacheStats() {
       if (dumponexit.load()) {
 	std::cerr << GlobalStats();
+	using namespace std::chrono;
+	std::vector<uint64_t> bins = sStats.bench.GetBins();
+	Art art;
+	art.drawCurve(bins, sStats.bench.GetTimePerBin().count() / 1000000.0);
       }
     }
 
