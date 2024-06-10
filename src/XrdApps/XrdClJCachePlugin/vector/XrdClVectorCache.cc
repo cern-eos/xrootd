@@ -247,6 +247,19 @@ bool VectorCache::retrieve() const {
     std::ifstream inFile(fileName, std::ios::binary);
     if (inFile.is_open()) {
         inFile.read((char*)data, fileInfo.st_size);
+	if (inFile.fail()) {
+	  if (verbose) {
+	    std::cerr << "error: failed to read cached data" << std::endl;
+	  }
+	} else {
+	  std::streamsize bytesRead = inFile.gcount();
+	  if (bytesRead != fileInfo.st_size) {
+	    if (verbose) {
+	      std::cerr << "error: read only " << bytesRead << " bytes instead of " << fileInfo.st_size << " !"<< std::endl;
+	    }
+	    return false;
+	  }
+	}
         inFile.close();
         return true;
     } else {
