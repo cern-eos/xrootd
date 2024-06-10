@@ -31,33 +31,33 @@
 
 namespace XrdCl {
 
-class JCacheReadHandler : public XrdCl::ResponseHandler
+class JCachePgReadHandler : public XrdCl::ResponseHandler
   // ---------------------------------------------------------------------- //
 {
 public:
-    JCacheReadHandler() { }
+    JCachePgReadHandler() { }
 
-    JCacheReadHandler(JCacheReadHandler* other) {
+    JCachePgReadHandler(JCacheReadHandler* other) {
       rbytes = other->rbytes;
       journal = other->journal;
     }
 
-    JCacheReadHandler(XrdCl::ResponseHandler* handler, 
+    JCachePgReadHandler(XrdCl::ResponseHandler* handler, 
                       std::atomic<uint64_t>* rbytes,
                       Journal* journal) : handler(handler), rbytes(rbytes), journal(journal) {}
 
-    virtual ~JCacheReadHandler() {}
+    virtual ~JCachePgReadHandler() {}
 
     virtual void HandleResponse(XrdCl::XRootDStatus* pStatus,
                                 XrdCl::AnyObject* pResponse) {
 
-                                  XrdCl::ChunkInfo* chunkInfo;
+                                  XrdCl::PageInfo* pageInfo;               
                                   if (pStatus->IsOK()) {
                                     if (pResponse) {
-                                      pResponse->Get(chunkInfo);
+                                      pResponse->Get(pageInfo);
                                       // store successfull reads in the journal
-                                      if (journal) journal->pwrite(chunkInfo->GetBuffer(), chunkInfo->GetLength(), chunkInfo->GetOffset());
-                                      *rbytes+= chunkInfo->GetLength(); 
+                                      if (journal) journal->pwrite(pageInfo->GetBuffer(), pageInfo->GetLength(), pageInfo->GetOffset());
+                                      *rbytes+= pageInfo->GetLength(); 
                                     }
                                   }                          
                                   handler->HandleResponse(pStatus, pResponse);

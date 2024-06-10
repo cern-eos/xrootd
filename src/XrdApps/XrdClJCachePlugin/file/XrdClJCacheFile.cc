@@ -186,8 +186,8 @@ JCacheFile::Read(uint64_t offset,
     }
 
     auto jhandler = new JCacheReadHandler(handler, &pStats.bytesRead,sEnableJournalCache?&pJournal:nullptr);
-    pStats.readOps++; 
-    st = pFile->PgRead(offset, size, buffer, jhandler, timeout); 
+    pStats.readOps++;
+    st = pFile->Read(offset, size, buffer, jhandler, timeout); 
   } else {
     st = XRootDStatus(stError, errInvalidOp);
   }
@@ -227,7 +227,6 @@ JCacheFile::PgRead( uint64_t         offset,
                     uint16_t         timeout ) 
 {
   XRootDStatus st;
-
   if (pFile) {
     if (sEnableJournalCache && AttachForRead()) {
       auto rb = pJournal.pread(buffer, size, offset);
@@ -245,8 +244,8 @@ JCacheFile::PgRead( uint64_t         offset,
       }
     }
 
-    auto jhandler = new JCacheReadHandler(handler, &pStats.bytesRead,sEnableJournalCache?&pJournal:nullptr);
-    pStats.readOps++; 
+    auto jhandler = new JCachePgReadHandler(handler, &pStats.bytesRead,sEnableJournalCache?&pJournal:nullptr);
+    pStats.readOps++;
     st = pFile->PgRead(offset, size, buffer, jhandler, timeout);  
   } else {
     st = XRootDStatus(stError, errInvalidOp);

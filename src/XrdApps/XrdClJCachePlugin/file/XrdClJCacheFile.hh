@@ -31,6 +31,7 @@
 #include "cache/Journal.hh"
 #include "vector/XrdClVectorCache.hh"
 #include "handler/XrdClJCacheReadHandler.hh"
+#include "handler/XrdClJCachePgReadHandler.hh"
 #include "handler/XrdClJCacheReadVHandler.hh"
 /*----------------------------------------------------------------------------*/
 #include <atomic>
