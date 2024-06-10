@@ -22,10 +22,10 @@ journal = true
 summary = true
 json = ./
 ```
-**cache** points to a local or shared directory where accessed files are stored. 
+```cache``` points to a local or shared directory where accessed files are stored. This directory has to exist and should be terminated with a '/'. 
 
-By default JCache prints a summary at application exit. If you don't want the summary **summary = false**. 
-By default JCache writes a json summary file in to the current working directory. If you want to change the directory where json summaries are stored change **json = /tmp/". If you don't want any json summary file set it to an empty string.
+By default JCache prints a summary at application exit. If you don't want the summary set ```summary = false```. 
+By default JCache writes a json summary file into the current working directory. If you want to change the directory where json summaries are stored change ```json = /tmp/```. If you don't want any json summary file set it to an empty string. The name of the json summary file is ```jcache.env{"XRD_APPNAME"}:"none".{pid}.json```
 
 # 2 Read Journal Cache
 
