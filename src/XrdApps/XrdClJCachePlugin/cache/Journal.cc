@@ -1,7 +1,7 @@
 //------------------------------------------------------------------------------
 // Copyright (c) 2024 by European Organization for Nuclear Research (CERN)
 // Author: Andreas-Joachim Peters <andreas.joachim.peters@cern.ch>
-//         Michal Simon 
+//         Michal Simon
 //------------------------------------------------------------------------------
 // This file is part of the XRootD software suite.
 //
@@ -22,24 +22,21 @@
 // granted to it by virtue of its status as an Intergovernmental Organization
 // or submit itself to any jurisdiction.
 
-
 /*----------------------------------------------------------------------------*/
 #include "Journal.hh"
 /*----------------------------------------------------------------------------*/
 #include <algorithm>
-#include <iostream>
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/stat.h>
 #include <fcntl.h>
+#include <iostream>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 /*----------------------------------------------------------------------------*/
 
 //------------------------------------------------------------------------------
 //! Journal Constructor
 //------------------------------------------------------------------------------
-Journal::Journal() : cachesize(0),
-  max_offset(0), fd(-1)
-{
+Journal::Journal() : cachesize(0), max_offset(0), fd(-1) {
   std::lock_guard<std::mutex> guard(mtx);
   jheader.magic = JOURNAL_MAGIC;
   jheader.mtime = 0;
@@ -53,8 +50,7 @@ Journal::Journal() : cachesize(0),
 //------------------------------------------------------------------------------
 //! Journal Destructor
 //------------------------------------------------------------------------------
-Journal::~Journal()
-{
+Journal::~Journal() {
   std::lock_guard<std::mutex> guard(mtx);
   if (fd > 0) {
     int rc = close(fd);
@@ -70,48 +66,50 @@ Journal::~Journal()
 //------------------------------------------------------------------------------
 //! Routine to read a journal header
 //------------------------------------------------------------------------------
-void Journal::read_jheader()
-{
+void Journal::read_jheader() {
   jheader_t fheader;
   auto hr = ::pread64(fd, &fheader, sizeof(jheader), 0);
-  if ( (hr>0) &&
-       ( (hr != sizeof(jheader)) ||
-         (fheader.magic != JOURNAL_MAGIC)) ) {
-    std::cerr << "warning: inconsistent journal header found (I) - purging path:" << path << std::endl;
+  if ((hr > 0) &&
+      ((hr != sizeof(jheader)) || (fheader.magic != JOURNAL_MAGIC))) {
+    std::cerr
+        << "warning: inconsistent journal header found (I) - purging path:"
+        << path << std::endl;
     reset();
     return;
   }
   // TODO: understand why the mtime is +-1s
-  if ( ( abs(fheader.mtime - jheader.mtime) > 1 )
-       || (fheader.mtime_nsec != jheader.mtime_nsec)
-       || (fheader.filesize != jheader.filesize) ) {
+  if ((abs(fheader.mtime - jheader.mtime) > 1) ||
+      (fheader.mtime_nsec != jheader.mtime_nsec) ||
+      (fheader.filesize != jheader.filesize)) {
     if (fheader.mtime) {
-      std::cerr << "warning: remote file change detected - purging path:" << path << std::endl;
-      std::cerr << fheader.mtime  << ":" << jheader.mtime << " " << fheader.mtime_nsec << ":" << jheader.mtime_nsec << " " << fheader.filesize << ":" << jheader.filesize << std::endl;
+      std::cerr << "warning: remote file change detected - purging path:"
+                << path << std::endl;
+      std::cerr << fheader.mtime << ":" << jheader.mtime << " "
+                << fheader.mtime_nsec << ":" << jheader.mtime_nsec << " "
+                << fheader.filesize << ":" << jheader.filesize << std::endl;
     }
     reset();
     return;
   }
- }
+}
 
 //------------------------------------------------------------------------------
 //! Routine to write a journal header
 //------------------------------------------------------------------------------
-int Journal::write_jheader()
-{
+int Journal::write_jheader() {
   auto hw = ::pwrite64(fd, &jheader, sizeof(jheader), 0);
-  if ( (hw != sizeof(jheader)) ) {
-    std::cerr << "warning: failed to write journal header - purging path:" << path << std::endl;
+  if ((hw != sizeof(jheader))) {
+    std::cerr << "warning: failed to write journal header - purging path:"
+              << path << std::endl;
     return -errno;
   }
   return 0;
- }
+}
 
 //------------------------------------------------------------------------------
 //! Routine to read a journal
 //------------------------------------------------------------------------------
-int Journal::read_journal()
-{
+int Journal::read_journal() {
   journal.clear();
   const size_t bufsize = sizeof(header_t);
   char buffer[bufsize];
@@ -123,29 +121,30 @@ int Journal::read_journal()
   do {
     bytesRead = ::pread(fd, buffer, bufsize, totalBytesRead);
     if (bytesRead < (ssize_t)bufsize) {
-      if (bytesRead == 0 && (totalBytesRead==journalsize)) {
+      if (bytesRead == 0 && (totalBytesRead == journalsize)) {
         break;
       } else {
-        std::cerr << "warning: inconsistent journal found - purging path:" << path << std::endl;
+        std::cerr << "warning: inconsistent journal found - purging path:"
+                  << path << std::endl;
         reset();
         return 0;
       }
     }
-    header_t* header = reinterpret_cast<header_t*>(buffer);
+    header_t *header = reinterpret_cast<header_t *>(buffer);
     journal.insert(header->offset, header->offset + header->size,
-                    totalBytesRead);
+                   totalBytesRead);
     totalBytesRead += header->size; // size of the fragment
-    totalBytesRead += bytesRead; // size of the header
+    totalBytesRead += bytesRead;    // size of the header
   } while (pos < bytesRead);
-  
+
   return totalBytesRead;
 }
 
 //------------------------------------------------------------------------------
 //! Journal attach
 //------------------------------------------------------------------------------
-int Journal::attach(const std::string& lpath, uint64_t mtime, uint64_t mtime_nsec, uint64_t size)
-{
+int Journal::attach(const std::string &lpath, uint64_t mtime,
+                    uint64_t mtime_nsec, uint64_t size) {
   std::lock_guard<std::mutex> guard(mtx);
   path = lpath;
   jheader.mtime = mtime;
@@ -188,8 +187,7 @@ int Journal::attach(const std::string& lpath, uint64_t mtime, uint64_t mtime_nse
 //------------------------------------------------------------------------------
 //! Journal detach
 //------------------------------------------------------------------------------
-int Journal::detach()
-{
+int Journal::detach() {
   std::lock_guard<std::mutex> guard(mtx);
   return 0;
 }
@@ -197,8 +195,7 @@ int Journal::detach()
 //------------------------------------------------------------------------------
 //! Journal unlink
 //------------------------------------------------------------------------------
-int Journal::unlink()
-{
+int Journal::unlink() {
   std::lock_guard<std::mutex> guard(mtx);
   struct stat buf;
   int rc = stat(path.c_str(), &buf);
@@ -212,14 +209,13 @@ int Journal::unlink()
 //------------------------------------------------------------------------------
 //! Journal pread
 //------------------------------------------------------------------------------
-ssize_t Journal::pread(void* buf, size_t count, off_t offset, bool& eof)
-{
-  if (fd<0) {
+ssize_t Journal::pread(void *buf, size_t count, off_t offset, bool &eof) {
+  if (fd < 0) {
     return 0;
   }
 
   // rewrite reads to not go over EOF!
-  if ( (off_t)(offset + count) > (off_t) jheader.filesize ) {
+  if ((off_t)(offset + count) > (off_t)jheader.filesize) {
     if ((off_t)jheader.filesize > offset) {
       count = (off_t)jheader.filesize - offset;
     } else {
@@ -236,12 +232,11 @@ ssize_t Journal::pread(void* buf, size_t count, off_t offset, bool& eof)
     return 0;
   }
 
-  char* buffer = reinterpret_cast<char*>(buf);
+  char *buffer = reinterpret_cast<char *>(buf);
   uint64_t off = offset;
   uint64_t bytesRead = 0;
 
-  
-  for (auto& itr : result) {
+  for (auto &itr : result) {
     if (itr->low <= off && off < itr->high) {
       // read from cache
       uint64_t cacheoff = itr->value + sizeof(header_t) + (off - itr->low);
@@ -274,10 +269,10 @@ ssize_t Journal::pread(void* buf, size_t count, off_t offset, bool& eof)
 //------------------------------------------------------------------------------
 //! Journal process intersection
 //------------------------------------------------------------------------------
-void Journal::process_intersection(interval_tree<uint64_t, const void*>&
-                                        to_write, interval_tree<uint64_t, uint64_t>::iterator itr,
-                                        std::vector<chunk_t>& updates)
-{
+void Journal::process_intersection(
+    interval_tree<uint64_t, const void *> &to_write,
+    interval_tree<uint64_t, uint64_t>::iterator itr,
+    std::vector<chunk_t> &updates) {
   auto result = to_write.query(itr->low, itr->high);
 
   if (result.empty()) {
@@ -288,7 +283,8 @@ void Journal::process_intersection(interval_tree<uint64_t, const void*>&
     throw std::logic_error("Journal: overlapping journal entries");
   }
 
-  const interval_tree<uint64_t, const void*>::iterator to_wrt = *result.begin();
+  const interval_tree<uint64_t, const void *>::iterator to_wrt =
+      *result.begin();
   // the intersection
   uint64_t low = std::max(to_wrt->low, itr->low);
   uint64_t high = std::min(to_wrt->high, itr->high);
@@ -296,12 +292,12 @@ void Journal::process_intersection(interval_tree<uint64_t, const void*>&
   chunk_t update;
   update.offset = offset_for_update(itr->value, low - itr->low);
   update.size = high - low;
-  update.buff = static_cast<const char*>(to_wrt->value) + (low - to_wrt->low);
+  update.buff = static_cast<const char *>(to_wrt->value) + (low - to_wrt->low);
   updates.push_back(std::move(update));
   // update the 'to write' intervals
   uint64_t wrtlow = to_wrt->low;
   uint64_t wrthigh = to_wrt->high;
-  const void* wrtbuff = to_wrt->value;
+  const void *wrtbuff = to_wrt->value;
   to_write.erase(wrtlow, wrthigh);
 
   // the intersection overlaps with the given
@@ -312,7 +308,7 @@ void Journal::process_intersection(interval_tree<uint64_t, const void*>&
 
   if (high < wrthigh) {
     // the remaining right-hand-side interval
-    const char* buff = static_cast<const char*>(wrtbuff) + (high - wrtlow);
+    const char *buff = static_cast<const char *>(wrtbuff) + (high - wrtlow);
     to_write.insert(high, wrthigh, buff);
   }
 
@@ -323,15 +319,14 @@ void Journal::process_intersection(interval_tree<uint64_t, const void*>&
 }
 
 //------------------------------------------------------------------------------
-//! Journal update 
+//! Journal update
 //------------------------------------------------------------------------------
-int Journal::update_cache(std::vector<chunk_t>& updates)
-{
+int Journal::update_cache(std::vector<chunk_t> &updates) {
   // make sure we are updating the cache in ascending order
   std::sort(updates.begin(), updates.end());
   int rc = 0;
 
-  for (auto& u : updates) {
+  for (auto &u : updates) {
     rc = ::pwrite(fd, u.buff, u.size,
                   u.offset); // TODO is it safe to assume it will write it all
 
@@ -346,9 +341,8 @@ int Journal::update_cache(std::vector<chunk_t>& updates)
 //------------------------------------------------------------------------------
 //! Journal pwrite
 //------------------------------------------------------------------------------
-ssize_t Journal::pwrite(const void* buf, size_t count, off_t offset)
-{
-  if (fd<0) {
+ssize_t Journal::pwrite(const void *buf, size_t count, off_t offset) {
+  if (fd < 0) {
     return 0;
   }
 
@@ -357,7 +351,7 @@ ssize_t Journal::pwrite(const void* buf, size_t count, off_t offset)
     return 0;
   }
 
-  interval_tree<uint64_t, const void*> to_write;
+  interval_tree<uint64_t, const void *> to_write;
   std::vector<chunk_t> updates;
   to_write.insert(offset, offset + count, buf);
   auto res = journal.query(offset, offset + count);
@@ -372,7 +366,7 @@ ssize_t Journal::pwrite(const void* buf, size_t count, off_t offset)
     return -1;
   }
 
-  interval_tree<uint64_t, const void*>::iterator itr;
+  interval_tree<uint64_t, const void *>::iterator itr;
 
   for (itr = to_write.begin(); itr != to_write.end(); ++itr) {
     uint64_t size = itr->high - itr->low;
@@ -382,7 +376,7 @@ ssize_t Journal::pwrite(const void* buf, size_t count, off_t offset)
     iovec iov[2];
     iov[0].iov_base = &header;
     iov[0].iov_len = sizeof(header_t);
-    iov[1].iov_base = const_cast<void*>(itr->value);
+    iov[1].iov_base = const_cast<void *>(itr->value);
     iov[1].iov_len = size;
 
     rc = ::pwrite(fd, iov[0].iov_base, iov[0].iov_len, cachesize);
@@ -397,7 +391,7 @@ ssize_t Journal::pwrite(const void* buf, size_t count, off_t offset)
     cachesize += sizeof(header_t) + size;
   }
 
-  if ((ssize_t)(offset + count) >  max_offset) {
+  if ((ssize_t)(offset + count) > max_offset) {
     max_offset = offset + count;
   }
 
@@ -407,9 +401,8 @@ ssize_t Journal::pwrite(const void* buf, size_t count, off_t offset)
 //------------------------------------------------------------------------------
 //! Journal data sync
 //------------------------------------------------------------------------------
-int Journal::sync()
-{
-  if (fd<0) {
+int Journal::sync() {
+  if (fd < 0) {
     return -1;
   }
   return ::fdatasync(fd);
@@ -418,8 +411,7 @@ int Journal::sync()
 //------------------------------------------------------------------------------
 //! Journal get size
 //------------------------------------------------------------------------------
-size_t Journal::size()
-{
+size_t Journal::size() {
   std::lock_guard<std::mutex> guard(mtx);
   return cachesize;
 }
@@ -427,8 +419,7 @@ size_t Journal::size()
 //------------------------------------------------------------------------------
 //! Journal get max offset in the journal
 //------------------------------------------------------------------------------
-off_t Journal::get_max_offset()
-{
+off_t Journal::get_max_offset() {
   std::lock_guard<std::mutex> guard(mtx);
   return max_offset;
 }
@@ -436,12 +427,11 @@ off_t Journal::get_max_offset()
 //------------------------------------------------------------------------------
 //! Journal reset
 //------------------------------------------------------------------------------
-int Journal::reset()
-{
+int Journal::reset() {
   journal.clear();
-  int retc=0;
-  if (fd>=0) {
-    retc = ftruncate(fd,0);
+  int retc = 0;
+  if (fd >= 0) {
+    retc = ftruncate(fd, 0);
     retc |= write_jheader();
   }
   cachesize = 0;
@@ -449,8 +439,7 @@ int Journal::reset()
   return retc;
 }
 
-std::string Journal::dump()
-{
+std::string Journal::dump() {
   std::lock_guard<std::mutex> guard(mtx);
   std::string out;
   out += "fd=";
@@ -465,18 +454,16 @@ std::string Journal::dump()
 //------------------------------------------------------------------------------
 //! Journal get chunks
 //------------------------------------------------------------------------------
-std::vector<Journal::chunk_t> Journal::get_chunks(off_t offset,
-    size_t size)
-{
+std::vector<Journal::chunk_t> Journal::get_chunks(off_t offset, size_t size) {
   auto result = journal.query(offset, offset + size);
   std::vector<chunk_t> ret;
 
-  for (auto& itr : result) {
-    uint64_t off = (off_t) itr->low < (off_t) offset ? offset : itr->low;
-    uint64_t count = itr->high < offset + size ? itr->high - off : offset + size -
-                     off;
+  for (auto &itr : result) {
+    uint64_t off = (off_t)itr->low < (off_t)offset ? offset : itr->low;
+    uint64_t count =
+        itr->high < offset + size ? itr->high - off : offset + size - off;
     uint64_t cacheoff = itr->value + sizeof(header_t) + (off - itr->low);
-    std::unique_ptr<char[] > buffer(new char[count]);
+    std::unique_ptr<char[]> buffer(new char[count]);
     ssize_t rc = ::pread(fd, buffer.get(), count, cacheoff);
 
     if (rc < 0) {

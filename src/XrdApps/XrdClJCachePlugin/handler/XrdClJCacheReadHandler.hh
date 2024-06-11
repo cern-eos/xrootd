@@ -32,41 +32,42 @@
 namespace XrdCl {
 
 class JCacheReadHandler : public XrdCl::ResponseHandler
-  // ---------------------------------------------------------------------- //
+// ---------------------------------------------------------------------- //
 {
 public:
-    JCacheReadHandler() { }
+  JCacheReadHandler() {}
 
-    JCacheReadHandler(JCacheReadHandler* other) {
-      rbytes = other->rbytes;
-      journal = other->journal;
+  JCacheReadHandler(JCacheReadHandler *other) {
+    rbytes = other->rbytes;
+    journal = other->journal;
+  }
+
+  JCacheReadHandler(XrdCl::ResponseHandler *handler,
+                    std::atomic<uint64_t> *rbytes, Journal *journal)
+      : handler(handler), rbytes(rbytes), journal(journal) {}
+
+  virtual ~JCacheReadHandler() {}
+
+  virtual void HandleResponse(XrdCl::XRootDStatus *pStatus,
+                              XrdCl::AnyObject *pResponse) {
+
+    XrdCl::ChunkInfo *chunkInfo;
+    if (pStatus->IsOK()) {
+      if (pResponse) {
+        pResponse->Get(chunkInfo);
+        // store successfull reads in the journal
+        if (journal)
+          journal->pwrite(chunkInfo->GetBuffer(), chunkInfo->GetLength(),
+                          chunkInfo->GetOffset());
+        *rbytes += chunkInfo->GetLength();
+      }
     }
+    handler->HandleResponse(pStatus, pResponse);
+  }
 
-    JCacheReadHandler(XrdCl::ResponseHandler* handler, 
-                      std::atomic<uint64_t>* rbytes,
-                      Journal* journal) : handler(handler), rbytes(rbytes), journal(journal) {}
-
-    virtual ~JCacheReadHandler() {}
-
-    virtual void HandleResponse(XrdCl::XRootDStatus* pStatus,
-                                XrdCl::AnyObject* pResponse) {
-
-                                  XrdCl::ChunkInfo* chunkInfo;
-                                  if (pStatus->IsOK()) {
-                                    if (pResponse) {
-                                      pResponse->Get(chunkInfo);
-                                      // store successfull reads in the journal
-                                      if (journal) journal->pwrite(chunkInfo->GetBuffer(), chunkInfo->GetLength(), chunkInfo->GetOffset());
-                                      *rbytes+= chunkInfo->GetLength(); 
-                                    }
-                                  }                          
-                                  handler->HandleResponse(pStatus, pResponse);
-                                }
-
-    XrdCl::ResponseHandler* handler;
-    std::atomic<uint64_t>* rbytes;
-    Journal* journal;
-
+  XrdCl::ResponseHandler *handler;
+  std::atomic<uint64_t> *rbytes;
+  Journal *journal;
 };
 
 } // namespace XrdCl

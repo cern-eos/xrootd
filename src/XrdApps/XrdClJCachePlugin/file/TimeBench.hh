@@ -23,72 +23,71 @@
 
 #pragma once
 
-#include <iostream>
-#include <vector>
-#include <chrono>
-#include <mutex>
 #include <algorithm>
+#include <chrono>
+#include <iostream>
+#include <mutex>
+#include <vector>
 
-namespace JCache 
-{
-    class TimeBench {
-    private:
-        using Clock = std::chrono::high_resolution_clock;
-        using TimePoint = std::chrono::time_point<Clock>;
-        using Duration = std::chrono::microseconds;
+namespace JCache {
+class TimeBench {
+private:
+  using Clock = std::chrono::high_resolution_clock;
+  using TimePoint = std::chrono::time_point<Clock>;
+  using Duration = std::chrono::microseconds;
 
-        std::vector<std::pair<TimePoint,uint64_t>> measurements;
-        std::vector<uint64_t> bins;
-        TimePoint start;
-        TimePoint end;
-        uint64_t totalBytes;
-        size_t nbins;
-        std::mutex mtx;
-    
-    public:
-        TimeBench() : totalBytes(0), nbins(10) {}
+  std::vector<std::pair<TimePoint, uint64_t>> measurements;
+  std::vector<uint64_t> bins;
+  TimePoint start;
+  TimePoint end;
+  uint64_t totalBytes;
+  size_t nbins;
+  std::mutex mtx;
 
-        void AddMeasurement(uint64_t bytes) {
-            std::lock_guard<std::mutex> guard(mtx);
-            auto now = Clock::now();
-            if (measurements.empty()) {
-                start = now;
-            }
-            measurements.push_back(std::make_pair(now,bytes));
-            totalBytes += bytes;
-            end = now;
-        }
+public:
+  TimeBench() : totalBytes(0), nbins(10) {}
 
-        std::vector<uint64_t> GetBins(size_t bin = 10) {
-            std::lock_guard<std::mutex> guard(mtx);
-	    nbins = bin?bin:1;
-            Duration totalTime = std::chrono::duration_cast<Duration>(end - start);
-            Duration binSize = totalTime / nbins;
-            bins.clear();
-            bins.resize(nbins, 0);
-	    std::fill(bins.begin(), bins.end(), 0);
-            size_t binIndex = 0;
+  void AddMeasurement(uint64_t bytes) {
+    std::lock_guard<std::mutex> guard(mtx);
+    auto now = Clock::now();
+    if (measurements.empty()) {
+      start = now;
+    }
+    measurements.push_back(std::make_pair(now, bytes));
+    totalBytes += bytes;
+    end = now;
+  }
 
-            for (auto i : measurements) {
-	        if (binSize.count()) {
-		    binIndex = (i.first - start)/ binSize;
-		} else {
-		    binIndex = 0;
-		}
-                if (binIndex < nbins) {
-		    bins[binIndex] += i.second;
-                } else {
-		    break; // Don't process future measurements
-                }
-            }
+  std::vector<uint64_t> GetBins(size_t bin = 10) {
+    std::lock_guard<std::mutex> guard(mtx);
+    nbins = bin ? bin : 1;
+    Duration totalTime = std::chrono::duration_cast<Duration>(end - start);
+    Duration binSize = totalTime / nbins;
+    bins.clear();
+    bins.resize(nbins, 0);
+    std::fill(bins.begin(), bins.end(), 0);
+    size_t binIndex = 0;
 
-            return bins;
-        }
+    for (auto i : measurements) {
+      if (binSize.count()) {
+        binIndex = (i.first - start) / binSize;
+      } else {
+        binIndex = 0;
+      }
+      if (binIndex < nbins) {
+        bins[binIndex] += i.second;
+      } else {
+        break; // Don't process future measurements
+      }
+    }
 
-        Duration GetTimePerBin() {
-            Duration totalTime = std::chrono::duration_cast<Duration>(end - start);
-        Duration binSize = totalTime / nbins;
-        return binSize;
-        }
-    };
+    return bins;
+  }
+
+  Duration GetTimePerBin() {
+    Duration totalTime = std::chrono::duration_cast<Duration>(end - start);
+    Duration binSize = totalTime / nbins;
+    return binSize;
+  }
+};
 } // namespace JCache

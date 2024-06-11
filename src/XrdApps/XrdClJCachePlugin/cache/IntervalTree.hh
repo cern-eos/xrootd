@@ -1,7 +1,7 @@
 //------------------------------------------------------------------------------
 // Copyright (c) 2024 by European Organization for Nuclear Research (CERN)
 // Author: Andreas-Joachim Peters <andreas.joachim.peters@cern.ch>
-//         Michal Simon 
+//         Michal Simon
 //------------------------------------------------------------------------------
 // This file is part of the XRootD software suite.
 //
@@ -27,79 +27,68 @@
 /*----------------------------------------------------------------------------*/
 #include "RbTree.hh"
 /*----------------------------------------------------------------------------*/
-#include <set>
-#include <memory>
-#include <vector>
-#include <exception>
 #include <algorithm>
 #include <cstdlib>
+#include <exception>
+#include <memory>
+#include <set>
+#include <vector>
 /*----------------------------------------------------------------------------*/
 
-template<typename I, typename V>
-class interval_node_t
-{
+template <typename I, typename V> class interval_node_t {
 public:
-
-  template<typename, typename> friend class interval_tree;
-  template<typename, typename, typename> friend class rbtree;
+  template <typename, typename> friend class interval_tree;
+  template <typename, typename, typename> friend class rbtree;
   friend class IntervalTreeTest;
 
 public:
-
-  interval_node_t(I low, I high, const V& value) :
-    low(low), high(high), value(value), key(this->low), max(high), colour(RED),
-    parent(nullptr) { }
+  interval_node_t(I low, I high, const V &value)
+      : low(low), high(high), value(value), key(this->low), max(high),
+        colour(RED), parent(nullptr) {}
 
   const I low;
   const I high;
   V value;
 
 private:
-  const I& key;
+  const I &key;
   I max;
   colour_t colour;
-  interval_node_t* parent;
+  interval_node_t *parent;
 
   std::unique_ptr<interval_node_t> left;
   std::unique_ptr<interval_node_t> right;
 };
 
-template<typename I, typename V>
-class interval_tree : public rbtree< I, V, interval_node_t<I, V> >
-{
+template <typename I, typename V>
+class interval_tree : public rbtree<I, V, interval_node_t<I, V>> {
 private:
-
   typedef interval_node_t<I, V> N;
 
   typedef typename rbtree<I, V, N>::leaf_node_t leaf_node_t;
 
-  std::unique_ptr<N> make_node(I low, I high, const V& value)
-  {
+  std::unique_ptr<N> make_node(I low, I high, const V &value) {
     return std::unique_ptr<N>(new N(low, high, value));
   }
 
 public:
-
   typedef typename rbtree<I, V, N>::iterator iterator;
 
   struct less {
 
-    bool operator()(const iterator& x, const iterator& y) const
-    {
+    bool operator()(const iterator &x, const iterator &y) const {
       return x->low < y->low;
     }
   };
 
-  virtual ~interval_tree() { }
+  virtual ~interval_tree() {}
 
-  void insert(I low, I high, const V& value)
-  {
+  void insert(I low, I high, const V &value) {
     insert_into(low, high, value, this->tree_root);
   }
 
-  void erase(I low, I high)
-  {
-    std::unique_ptr<N>& node = this->find_in(low, this->tree_root);
+  void erase(I low, I high) {
+    std::unique_ptr<N> &node = this->find_in(low, this->tree_root);
 
     if (!node || node->low != low || node->high != high) {
       return;
@@ -108,21 +97,18 @@ public:
     this->erase_node(node);
   }
 
-  std::set<iterator, less> query(I low, I high)
-  {
+  std::set<iterator, less> query(I low, I high) {
     std::set<iterator, less> result;
     query(low, high, this->tree_root, result);
     return result;
   }
 
 private:
-
   using rbtree<I, V, N>::insert;
   using rbtree<I, V, N>::erase;
   using rbtree<I, V, N>::find;
 
-  static bool overlaps(I low, I high, const N* node)
-  {
+  static bool overlaps(I low, I high, const N *node) {
     int64_t s1 = low + high;
     int64_t d1 = high - low;
     int64_t s2 = node->low + node->high;
@@ -130,9 +116,8 @@ private:
     return std::abs(s2 - s1) < d1 + d2;
   }
 
-  static void query(I low, I high, std::unique_ptr<N>& node,
-                    std::set<iterator, less>& result)
-  {
+  static void query(I low, I high, std::unique_ptr<N> &node,
+                    std::set<iterator, less> &result) {
     // base case
     if (!node) {
       return;
@@ -157,9 +142,8 @@ private:
     }
   }
 
-  void insert_into(I low, I high, const V& value, std::unique_ptr<N>& node,
-                   N* parent = nullptr)
-  {
+  void insert_into(I low, I high, const V &value, std::unique_ptr<N> &node,
+                   N *parent = nullptr) {
     if (!node) {
       node = make_node(low, high, value);
       node->parent = parent;
@@ -180,8 +164,7 @@ private:
     }
   }
 
-  void erase_node(std::unique_ptr<N>& node)
-  {
+  void erase_node(std::unique_ptr<N> &node) {
     if (!node) {
       return;
     }
@@ -191,8 +174,8 @@ private:
       // 1. look for the in-order successor
       // 2. replace the node with the in-order successor
       // 3. erase the in-order successor
-      N* n = node.get();
-      std::unique_ptr<N>& successor = this->find_successor(node);
+      N *n = node.get();
+      std::unique_ptr<N> &successor = this->find_successor(node);
       this->swap_successor(node, successor);
 
       // we don't update max since in erase_node we
@@ -201,12 +184,12 @@ private:
       // 'successor' unique pointer holds now the node
       if (successor.get() == n) {
         erase_node(successor);
-      }// otherwise the successor was the right child of node,
+      } // otherwise the successor was the right child of node,
       // hence node should be now the right child of 'node'
       // unoique pointer
       else if (node->right.get() == n) {
         erase_node(node->right);
-      }// there are no other cases so anything else is wrong
+      } // there are no other cases so anything else is wrong
       else {
         throw std::logic_error("Bad rbtree swap.");
       }
@@ -217,8 +200,8 @@ private:
     // node has at most one child
     // in this case simply replace the node with the
     // single child or null if there are no children
-    N* parent = node->parent;
-    std::unique_ptr<N>& child = node->left ? node->left : node->right;
+    N *parent = node->parent;
+    std::unique_ptr<N> &child = node->left ? node->left : node->right;
     colour_t old_colour = node->colour;
 
     if (child) {
@@ -243,17 +226,16 @@ private:
         this->rb_erase_case1(leaf_node_t(parent));
       }
     } else if (node)
-      // if the node was red it has to have two BLACK children
-      // and since at most one of those children is a non-leaf
-      // child actually both have to be leafs (null) in order
-      // to satisfy the red-black tree invariant
+    // if the node was red it has to have two BLACK children
+    // and since at most one of those children is a non-leaf
+    // child actually both have to be leafs (null) in order
+    // to satisfy the red-black tree invariant
     {
       throw rb_invariant_error();
     }
   }
 
-  void update_max(N* node, I new_high)
-  {
+  void update_max(N *node, I new_high) {
     while (node) {
       if (new_high > node->max) {
         node->max = new_high;
@@ -264,16 +246,14 @@ private:
     }
   }
 
-  void update_max(N* node)
-  {
+  void update_max(N *node) {
     while (node) {
       set_max(node);
       node = node->parent;
     }
   }
 
-  void set_max(N* node)
-  {
+  void set_max(N *node) {
     if (!node->left && !node->right) {
       node->max = node->high;
       return;
@@ -285,20 +265,19 @@ private:
       return;
     }
 
-    node->max = std::max(node->high, std::max(node->left->max, node->right->max));
+    node->max =
+        std::max(node->high, std::max(node->left->max, node->right->max));
   }
 
-  virtual void right_rotation(N* node)
-  {
-    N* pivot = node->left.get();
+  virtual void right_rotation(N *node) {
+    N *pivot = node->left.get();
     rbtree<I, V, N>::right_rotation(node);
     set_max(node); // set first max for node since now it's lower in the tree
     set_max(pivot);
   }
 
-  virtual void left_rotation(N* node)
-  {
-    N* pivot = node->right.get();
+  virtual void left_rotation(N *node) {
+    N *pivot = node->right.get();
     rbtree<I, V, N>::left_rotation(node);
     set_max(node); // set first max for node since now it's lower in the tree
     set_max(pivot);

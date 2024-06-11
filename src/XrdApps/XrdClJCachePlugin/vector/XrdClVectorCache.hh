@@ -24,16 +24,16 @@
 #pragma once
 
 /*----------------------------------------------------------------------------*/
-#include <iostream>
-#include <vector>
-#include <utility>
-#include <openssl/sha.h>  // For SHA-256
-#include <sstream>
+#include <cstring> // For std::memcpy
+#include <fstream> // For file operations
 #include <iomanip>
-#include <cstring>        // For std::memcpy
+#include <iostream>
+#include <openssl/sha.h> // For SHA-256
+#include <sstream>
 #include <string>
-#include <fstream>        // For file operations
-#include <sys/stat.h>     // For checking if file exists
+#include <sys/stat.h> // For checking if file exists
+#include <utility>
+#include <vector>
 /*----------------------------------------------------------------------------*/
 #include "XrdCl/XrdClXRootDResponses.hh"
 //----------------------------------------------------------------------------
@@ -44,25 +44,27 @@ namespace XrdCl {
 
 class VectorCache {
 public:
-    VectorCache(const XrdCl::ChunkList chunks, const std::string& name, const char* data, const std::string& prefix, bool verbose=false)
-        : chunks(chunks), name(name), data(data), prefix(prefix), verbose(verbose) {}
-    
-    std::pair<std::string, std::string> computeHash() const;
-    bool store() const;
-    bool retrieve() const;
+  VectorCache(const XrdCl::ChunkList chunks, const std::string &name,
+              const char *data, const std::string &prefix, bool verbose = false)
+      : chunks(chunks), name(name), data(data), prefix(prefix),
+        verbose(verbose) {}
 
-    static std::string computeSHA256(const std::vector<unsigned char>& data);
-    static std::string computeSHA256(const std::string& data);
-    static bool ensureLastSubdirectoryExists(const std::string& dirName);
+  std::pair<std::string, std::string> computeHash() const;
+  bool store() const;
+  bool retrieve() const;
+
+  static std::string computeSHA256(const std::vector<unsigned char> &data);
+  static std::string computeSHA256(const std::string &data);
+  static bool ensureLastSubdirectoryExists(const std::string &dirName);
 
 private:
-    XrdCl::ChunkList chunks;
-    std::string name;
-    const char* data;
-    std::string prefix;
-    bool verbose;
+  XrdCl::ChunkList chunks;
+  std::string name;
+  const char *data;
+  std::string prefix;
+  bool verbose;
 
-    std::vector<unsigned char> serializeVector() const;
+  std::vector<unsigned char> serializeVector() const;
 };
 
 } // namespace XrdCl

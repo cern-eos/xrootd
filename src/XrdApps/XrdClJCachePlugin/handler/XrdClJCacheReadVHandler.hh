@@ -33,61 +33,62 @@
 namespace XrdCl {
 
 class JCacheReadVHandler : public XrdCl::ResponseHandler
-  // ---------------------------------------------------------------------- //
+// ---------------------------------------------------------------------- //
 {
 public:
-    JCacheReadVHandler() { }
+  JCacheReadVHandler() {}
 
-    JCacheReadVHandler(JCacheReadVHandler* other) {
-      
-      journal = other->journal;
-      buffer = other->buffer;
-      rvbytes = other->rvbytes;
-      vcachepath = other->vcachepath;
-      url = other->url;
+  JCacheReadVHandler(JCacheReadVHandler *other) {
+
+    journal = other->journal;
+    buffer = other->buffer;
+    rvbytes = other->rvbytes;
+    vcachepath = other->vcachepath;
+    url = other->url;
+  }
+
+  JCacheReadVHandler(XrdCl::ResponseHandler *handler,
+                     std::atomic<uint64_t> *rvbytes, Journal *journal,
+                     void *buffer, const std::string &vcachepath,
+                     const std::string &url)
+      : handler(handler), rvbytes(rvbytes), journal(journal), buffer(buffer),
+        vcachepath(vcachepath), url(url) {}
+
+  virtual ~JCacheReadVHandler() {}
+
+  virtual void HandleResponse(XrdCl::XRootDStatus *pStatus,
+                              XrdCl::AnyObject *pResponse) {
+    if (pStatus->IsOK()) {
+      if (pResponse) {
+        VectorReadInfo *vReadInfo;
+        pResponse->Get(vReadInfo);
+        ChunkList *chunks = &(vReadInfo->GetChunks());
+        // store successfull reads in the journal if there is no vector cache
+        if (vcachepath.empty()) {
+          if (journal) {
+            for (auto it = chunks->begin(); it != chunks->end(); ++it) {
+              journal->pwrite(it->GetBuffer(), it->GetLength(),
+                              it->GetOffset());
+            }
+          }
+        } else {
+          VectorCache cache(*chunks, url, (const char *)buffer, vcachepath);
+          cache.store();
+        }
+        for (auto it = chunks->begin(); it != chunks->end(); ++it) {
+          *rvbytes += it->GetLength();
+        }
+      }
     }
+    handler->HandleResponse(pStatus, pResponse);
+  }
 
-    JCacheReadVHandler(XrdCl::ResponseHandler* handler, 
-                      std::atomic<uint64_t>* rvbytes,
-                      Journal* journal,
-                      void* buffer,
-                      const std::string& vcachepath,
-                      const std::string& url) : handler(handler), rvbytes(rvbytes), journal(journal), buffer(buffer), vcachepath(vcachepath), url(url) {}
-
-    virtual ~JCacheReadVHandler() {}
-
-    virtual void HandleResponse(XrdCl::XRootDStatus* pStatus,
-                                XrdCl::AnyObject* pResponse) {              
-                                  if (pStatus->IsOK()) {
-                                    if (pResponse) {
-                                      VectorReadInfo* vReadInfo;
-                                      pResponse->Get(vReadInfo);
-				      ChunkList* chunks = &(vReadInfo->GetChunks());
-                                      // store successfull reads in the journal if there is no vector cache
-				      if (vcachepath.empty()) {
-					if (journal) {
-					  for (auto it = chunks->begin(); it != chunks->end(); ++it) {
-					    journal->pwrite(it->GetBuffer(), it->GetLength(), it->GetOffset());
-					  }
-					}
-				      } else {
-					VectorCache cache(*chunks, url, (const char*)buffer, vcachepath);
-					cache.store();
-                                      }  
-                                      for (auto it = chunks->begin(); it != chunks->end(); ++it) {
-                                        *rvbytes += it->GetLength();
-                                      }
-                                    }
-                                  }                          
-                                  handler->HandleResponse(pStatus, pResponse);
-                                }
-
-    XrdCl::ResponseHandler* handler;
-    std::atomic<uint64_t>* rvbytes;
-    Journal* journal;
-    void* buffer;
-    std::string vcachepath;
-    std::string url;
+  XrdCl::ResponseHandler *handler;
+  std::atomic<uint64_t> *rvbytes;
+  Journal *journal;
+  void *buffer;
+  std::string vcachepath;
+  std::string url;
 };
 
 } // namespace XrdCl

@@ -26,13 +26,10 @@
 
 XrdVERSIONINFO(XrdClGetPlugIn, XrdClGetPlugIn)
 
-extern "C"
-{
-  void* XrdClGetPlugIn( const void* arg )
-  {
-    const std::map<std::string, std::string>* config =
-      static_cast< const std::map<std::string, std::string>* >(arg);
-    return static_cast<void*>(new XrdCl::JCacheFactory( config ) );
+    extern "C" {
+  void *XrdClGetPlugIn(const void *arg) {
+    const std::map<std::string, std::string> *config =
+        static_cast<const std::map<std::string, std::string> *>(arg);
+    return static_cast<void *>(new XrdCl::JCacheFactory(config));
   }
 }
-

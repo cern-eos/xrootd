@@ -24,82 +24,89 @@
 #pragma once
 
 /*----------------------------------------------------------------------------*/
-#include <iostream>
-#include <iomanip>
-#include <vector>
 #include <cmath>
+#include <iomanip>
+#include <iostream>
 #include <numeric>
+#include <vector>
 /*----------------------------------------------------------------------------*/
 
 namespace JCache {
-  class Art {
-  public:
-    Art() {}
-    virtual ~Art() {}
+class Art {
+public:
+  Art() {}
+  virtual ~Art() {}
 
-    void drawCurve(const std::vector<double>& dataPoints, double runtime) {
-      if (dataPoints.size() != 40) {
-        std::cerr << "Error: Exactly 40 data points are required." << std::endl;
-        return;
-      }
-      
-      double maxValue = *std::max_element(dataPoints.begin(), dataPoints.end());
-      double minValue = *std::min_element(dataPoints.begin(), dataPoints.end());
-      
-      const int plotHeight = 10; // Number of lines in the plot
-      const int plotWidth = 40;  // Width of the plot in characters
-      const int yLegendWidth = 8; // Width of the Y legend in characters
-      
-      std::vector<std::string> plot(plotHeight, std::string(plotWidth, ' '));
-      
-      // Normalize data points to the plot height
-      std::vector<int> normalizedDataPoints;
-      for (double point : dataPoints) {
-        int normalizedValue = static_cast<int>((point - minValue) / (maxValue - minValue) * (plotHeight - 1));
-	if (normalizedValue<0){
-	  normalizedValue=0;
-	}
-        normalizedDataPoints.push_back(normalizedValue);
-      }
-
-      // Draw the curve
-      for (size_t i = 0; i < normalizedDataPoints.size(); ++i) {
-        int y = plotHeight - 1 - normalizedDataPoints[i];
-        plot[y][i * (plotWidth / (dataPoints.size() - 1))] = '*';
-      }
-      
-      // Print the plot with Y legend
-      for (int i = 0; i < plotHeight; ++i) {
-        double yValue = minValue + (maxValue - minValue) * (plotHeight - 1 - i) / (plotHeight - 1);
-        if (i==0) {
-	  std::cerr << "# " << std::setw(yLegendWidth) << std::fixed << std::setprecision(2) << yValue << " MB/s | ";
-        } else {
-	  std::cerr << "# " << std::setw(yLegendWidth) << std::fixed << std::setprecision(2) << yValue << "      | ";
-        }
-        std::cerr << plot[i] << std::endl;
-      }
-
-      // Print the X axis
-      std::cerr << "# " << std::string(yLegendWidth + 7, ' ') << std::string(plotWidth, '-') << std::endl;
-      std::cerr << "# " << std::string(yLegendWidth + 7, ' ');
-      for (size_t i = 0 ; i < dataPoints.size()/4; ++i) {
-        std::cerr << std::fixed << std::setw(4) << std::left << (i*10);
-      }
-      std::cerr << "[ " << 100 << " % = " << std::fixed << std::setprecision(2) << runtime << "s ]"<< std::endl;
+  void drawCurve(const std::vector<double> &dataPoints, double runtime) {
+    if (dataPoints.size() != 40) {
+      std::cerr << "Error: Exactly 40 data points are required." << std::endl;
+      return;
     }
 
-    void drawCurve(const std::vector<long unsigned int>& data, double interval, double runtime) {
-      std::vector<double> newdata;
-      if (interval == 0) {
-	interval = 0.00001;
+    double maxValue = *std::max_element(dataPoints.begin(), dataPoints.end());
+    double minValue = *std::min_element(dataPoints.begin(), dataPoints.end());
+
+    const int plotHeight = 10;  // Number of lines in the plot
+    const int plotWidth = 40;   // Width of the plot in characters
+    const int yLegendWidth = 8; // Width of the Y legend in characters
+
+    std::vector<std::string> plot(plotHeight, std::string(plotWidth, ' '));
+
+    // Normalize data points to the plot height
+    std::vector<int> normalizedDataPoints;
+    for (double point : dataPoints) {
+      int normalizedValue = static_cast<int>(
+          (point - minValue) / (maxValue - minValue) * (plotHeight - 1));
+      if (normalizedValue < 0) {
+        normalizedValue = 0;
       }
-      if (runtime == 0) {
-	runtime = 0.00001;
-      }
-      for ( auto i:data ) {
-        newdata.push_back(i/1000000.0 / interval);
-      }
-      return drawCurve(newdata, runtime);
+      normalizedDataPoints.push_back(normalizedValue);
     }
-  };
+
+    // Draw the curve
+    for (size_t i = 0; i < normalizedDataPoints.size(); ++i) {
+      int y = plotHeight - 1 - normalizedDataPoints[i];
+      plot[y][i * (plotWidth / (dataPoints.size() - 1))] = '*';
+    }
+
+    // Print the plot with Y legend
+    for (int i = 0; i < plotHeight; ++i) {
+      double yValue = minValue + (maxValue - minValue) * (plotHeight - 1 - i) /
+                                     (plotHeight - 1);
+      if (i == 0) {
+        std::cerr << "# " << std::setw(yLegendWidth) << std::fixed
+                  << std::setprecision(2) << yValue << " MB/s | ";
+      } else {
+        std::cerr << "# " << std::setw(yLegendWidth) << std::fixed
+                  << std::setprecision(2) << yValue << "      | ";
+      }
+      std::cerr << plot[i] << std::endl;
+    }
+
+    // Print the X axis
+    std::cerr << "# " << std::string(yLegendWidth + 7, ' ')
+              << std::string(plotWidth, '-') << std::endl;
+    std::cerr << "# " << std::string(yLegendWidth + 7, ' ');
+    for (size_t i = 0; i < dataPoints.size() / 4; ++i) {
+      std::cerr << std::fixed << std::setw(4) << std::left << (i * 10);
+    }
+    std::cerr << "[ " << 100 << " % = " << std::fixed << std::setprecision(2)
+              << runtime << "s ]" << std::endl;
+  }
+
+  void drawCurve(const std::vector<long unsigned int> &data, double interval,
+                 double runtime) {
+    std::vector<double> newdata;
+    if (interval == 0) {
+      interval = 0.00001;
+    }
+    if (runtime == 0) {
+      runtime = 0.00001;
+    }
+    for (auto i : data) {
+      newdata.push_back(i / 1000000.0 / interval);
+    }
+    return drawCurve(newdata, runtime);
+  }
+};
 } // namespace JCache
