@@ -27,6 +27,7 @@
 #include <vector>
 #include <chrono>
 #include <mutex>
+#include <algorithm>
 
 namespace JCache 
 {
@@ -60,20 +61,24 @@ namespace JCache
 
         std::vector<uint64_t> GetBins(size_t bin = 10) {
             std::lock_guard<std::mutex> guard(mtx);
-        nbins = bin?bin:1;
+	    nbins = bin?bin:1;
             Duration totalTime = std::chrono::duration_cast<Duration>(end - start);
             Duration binSize = totalTime / nbins;
             bins.clear();
             bins.resize(nbins, 0);
-
+	    std::fill(bins.begin(), bins.end(), 0);
             size_t binIndex = 0;
 
             for (auto i : measurements) {
-            binIndex = (i.first - start)/ binSize;
+	        if (binSize.count()) {
+		    binIndex = (i.first - start)/ binSize;
+		} else {
+		    binIndex = 0;
+		}
                 if (binIndex < nbins) {
-            bins[binIndex] += i.second;
+		    bins[binIndex] += i.second;
                 } else {
-                    break; // Don't process future measurements
+		    break; // Don't process future measurements
                 }
             }
 

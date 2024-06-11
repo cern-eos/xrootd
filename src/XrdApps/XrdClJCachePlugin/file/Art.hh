@@ -56,6 +56,9 @@ namespace JCache {
       std::vector<int> normalizedDataPoints;
       for (double point : dataPoints) {
         int normalizedValue = static_cast<int>((point - minValue) / (maxValue - minValue) * (plotHeight - 1));
+	if (normalizedValue<0){
+	  normalizedValue=0;
+	}
         normalizedDataPoints.push_back(normalizedValue);
       }
       
@@ -87,6 +90,12 @@ namespace JCache {
 
     void drawCurve(const std::vector<long unsigned int>& data, double interval, double runtime) {
       std::vector<double> newdata;
+      if (interval == 0) {
+	interval = 0.00001;
+      }
+      if (runtime == 0) {
+	runtime = 0.00001;
+      }
       for ( auto i:data ) {
         newdata.push_back(i/1000000.0 / interval);
       }

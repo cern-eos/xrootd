@@ -145,7 +145,7 @@ JCacheFile::Close(ResponseHandler* handler,
     } else {
       st = XRootDStatus(stOK, 0);
     }
-    if (sEnableJournalCache) {
+    if (sEnableJournalCache && pJournal) {
       pJournal->detach();
     }
   } else {

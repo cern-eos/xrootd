@@ -66,7 +66,7 @@ namespace JCache
     }
 
     ~CacheStats() {
-      if (dumponexit.load()) {
+      if (dumponexit.load() && totaldatasize) {
 	    using namespace std::chrono;
 	    std::string jsonpath = XrdCl::JCacheFile::sJsonPath + "jcache.";
 	    std::string name = getenv("XRD_APPNAME")?getenv("XRD_APPNAME"):"none"+std::string(".")+std::to_string(getpid());
@@ -76,6 +76,9 @@ namespace JCache
 
 	    XrdCl::JCacheFile::sStats.bytes_per_second = XrdCl::JCacheFile::sStats.bench.GetBins((int)(realTime));
 	    XrdCl::JCacheFile::sStats.peakrate = *(std::max_element(XrdCl::JCacheFile::sStats.bytes_per_second.begin(), XrdCl::JCacheFile::sStats.bytes_per_second.end()));
+	    if (realTime <1) {
+	      XrdCl::JCacheFile::sStats.peakrate = ReadBytes() / realTime;
+	    }
 	    if (XrdCl::JCacheFile::sJsonPath.length()) {
 	        XrdCl::JCacheFile::sStats.persistToJson(jsonpath, name);
 	    }
@@ -245,7 +248,7 @@ namespace JCache
         oss << "# JCache : app real time            : " << std::fixed << std::setprecision(2) << sStats.realTime << " s" << std::endl;
         oss << "# JCache : app sys  time            : " << std::fixed << std::setprecision(2) << sStats.sysTime  << " s" << std::endl;
         oss << "# JCache : app acceleration         : " << std::fixed << std::setprecision(2) << sStats.userTime / sStats.realTime  << "x" << std::endl;
-        oss << "# JCache : app readrate             : " << std::fixed << std::setprecision(2) << sStats.bytesToHumanReadable((sStats.ReadBytes()/sStats.realTime))  << "/s" << " [ peak " << sStats.bytesToHumanReadable(sStats.peakrate) << "/s ]" << std::endl;
+        oss << "# JCache : app readrate             : " << std::fixed << std::setprecision(2) << sStats.bytesToHumanReadable((sStats.ReadBytes()/sStats.realTime))  << "/s" << " [ peak (1s) " << sStats.bytesToHumanReadable(sStats.peakrate) << "/s ]" << std::endl;
         oss << "# ----------------------------------------------------------- #" << std::endl;
 
         return oss.str();
