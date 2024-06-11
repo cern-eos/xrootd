@@ -61,7 +61,7 @@ namespace JCache {
 	}
         normalizedDataPoints.push_back(normalizedValue);
       }
-      
+
       // Draw the curve
       for (size_t i = 0; i < normalizedDataPoints.size(); ++i) {
         int y = plotHeight - 1 - normalizedDataPoints[i];
@@ -72,16 +72,16 @@ namespace JCache {
       for (int i = 0; i < plotHeight; ++i) {
         double yValue = minValue + (maxValue - minValue) * (plotHeight - 1 - i) / (plotHeight - 1);
         if (i==0) {
-    std::cerr << std::setw(yLegendWidth) << std::fixed << std::setprecision(2) << yValue << " MB/s | ";
+	  std::cerr << "# " << std::setw(yLegendWidth) << std::fixed << std::setprecision(2) << yValue << " MB/s | ";
         } else {
-    std::cerr << std::setw(yLegendWidth) << std::fixed << std::setprecision(2) << yValue << "      | ";
+	  std::cerr << "# " << std::setw(yLegendWidth) << std::fixed << std::setprecision(2) << yValue << "      | ";
         }
         std::cerr << plot[i] << std::endl;
       }
 
       // Print the X axis
-      std::cerr << std::string(yLegendWidth + 7, ' ') << std::string(plotWidth, '-') << std::endl;
-      std::cerr << std::string(yLegendWidth + 7, ' ');
+      std::cerr << "# " << std::string(yLegendWidth + 7, ' ') << std::string(plotWidth, '-') << std::endl;
+      std::cerr << "# " << std::string(yLegendWidth + 7, ' ');
       for (size_t i = 0 ; i < dataPoints.size()/4; ++i) {
         std::cerr << std::fixed << std::setw(4) << std::left << (i*10);
       }

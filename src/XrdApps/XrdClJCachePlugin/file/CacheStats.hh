@@ -88,7 +88,9 @@ namespace JCache
 	    std::vector<uint64_t> bins = XrdCl::JCacheFile::sStats.bench.GetBins(40);
 	    JCache::Art art;
 	    if (XrdCl::JCacheFile::sEnableSummary) {
-	        art.drawCurve(bins, XrdCl::JCacheFile::sStats.bench.GetTimePerBin().count() / 1000000.0, realTime);
+	        std::cerr << "# IO Timeprofile " << std::endl;
+		art.drawCurve(bins, XrdCl::JCacheFile::sStats.bench.GetTimePerBin().count() / 1000000.0, realTime);
+		std::cerr << "# ----------------------------------------------------------------------- #" << std::endl;
 	    }
       }
     }
@@ -105,7 +107,14 @@ namespace JCache
       oss << std::fixed << std::setprecision(2) << val << " " << suffixes[exp];
       return oss.str();
     }
+
+    uint64_t ReadOpBytes() {
+      return this->bytesCached.load()+this->bytesRead.load();
+    }
     
+    uint64_t ReadVOpBytes() {
+      return this->bytesCachedV.load()+this->bytesReadV.load();
+    }
     double HitRate() {
       auto n = this->bytesCached.load()+this->bytesRead.load();
       if (!n) return 100.0;      
@@ -225,31 +234,34 @@ namespace JCache
 
     static std::string GlobalStats(CacheStats& sStats) {
         std::ostringstream oss;
-        oss << "# ----------------------------------------------------------- #" << std::endl;
+        oss << "# ----------------------------------------------------------------------- #" << std::endl;
+        oss << "# JCache : 2024 CERN.EOS - Andreas-Joachim Peters                         #" << std::endl;
+	oss << "# ----------------------------------------------------------------------- #" << std::endl;
+
         oss << "# JCache : cache combined hit rate  : " << std::fixed << std::setprecision(2) << sStats.CombinedHitRate() << " %" << std::endl;
-        oss << "# JCache : cache read     hit rate  : " << std::fixed << std::setprecision(2) << sStats.HitRate() << " %" << std::endl;
-        oss << "# JCache : cache readv    hit rate  : " << std::fixed << std::setprecision(2) << sStats.HitRateV() << " %" << std::endl;
-        oss << "# ----------------------------------------------------------- #" << std::endl;
+        oss << "# JCache : cache read     hit rate  : " << std::fixed << std::setprecision(2) << (!sStats.ReadOpBytes()?"\033[9m":"") << sStats.HitRate() << " %" << (!sStats.ReadOpBytes()?"\033[0m":"") << std::endl;
+        oss << "# JCache : cache readv    hit rate  : " << std::fixed << std::setprecision(2) << (!sStats.ReadVOpBytes()?"\033[9m":"") <<sStats.HitRateV() << " %" << (!sStats.ReadOpBytes()?"\033[0m":"") << std::endl;
+        oss << "# ----------------------------------------------------------------------- #" << std::endl;
         oss << "# JCache : total bytes    read      : " << sStats.bytesRead.load()+sStats.bytesCached.load() << std::endl;
         oss << "# JCache : total bytes    readv     : " << sStats.bytesReadV.load()+sStats.bytesCachedV.load() << std::endl;
-        oss << "# ----------------------------------------------------------- #" << std::endl;
+        oss << "# ----------------------------------------------------------------------- #" << std::endl;
         oss << "# JCache : total iops     read      : " << sStats.readOps.load() << std::endl;
         oss << "# JCache : total iops     readv     : " << sStats.readVOps.load() << std::endl;
         oss << "# JCache : total iops     readvread : " << sStats.readVreadOps.load() << std::endl;
-        oss << "# ----------------------------------------------------------- #" << std::endl;
+        oss << "# ----------------------------------------------------------------------- #" << std::endl;
         oss << "# JCache : open files     read      : " << sStats.nreadfiles.load() << std::endl;
         oss << "# JCache : open unique f. read      : " << sStats.UniqueUrls() << std::endl;
-        oss << "# ----------------------------------------------------------- #" << std::endl;
+        oss << "# ----------------------------------------------------------------------- #" << std::endl;
         oss << "# JCache : total unique files bytes : " << sStats.totaldatasize << std::endl;
         oss << "# JCache : total unique files size  : " << sStats.bytesToHumanReadable((double)sStats.totaldatasize) << std::endl;
         oss << "# JCache : percentage dataset read  : " << std::fixed << std::setprecision(2) << sStats.Used() << " %" << std::endl;
-        oss << "# ----------------------------------------------------------- #" << std::endl;
+        oss << "# ----------------------------------------------------------------------- #" << std::endl;
         oss << "# JCache : app user time            : " << std::fixed << std::setprecision(2) << sStats.userTime << " s" << std::endl;
         oss << "# JCache : app real time            : " << std::fixed << std::setprecision(2) << sStats.realTime << " s" << std::endl;
         oss << "# JCache : app sys  time            : " << std::fixed << std::setprecision(2) << sStats.sysTime  << " s" << std::endl;
         oss << "# JCache : app acceleration         : " << std::fixed << std::setprecision(2) << sStats.userTime / sStats.realTime  << "x" << std::endl;
         oss << "# JCache : app readrate             : " << std::fixed << std::setprecision(2) << sStats.bytesToHumanReadable((sStats.ReadBytes()/sStats.realTime))  << "/s" << " [ peak (1s) " << sStats.bytesToHumanReadable(sStats.peakrate) << "/s ]" << std::endl;
-        oss << "# ----------------------------------------------------------- #" << std::endl;
+        oss << "# ----------------------------------------------------------------------- #" << std::endl;
 
         return oss.str();
     }
