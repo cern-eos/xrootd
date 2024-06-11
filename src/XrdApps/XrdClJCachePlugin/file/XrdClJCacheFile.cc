@@ -463,12 +463,12 @@ bool JCacheFile::AttachForRead() {
         }
         if (pJournal->attach(pJournalPath, sinfo->GetModTime(), 0,
                              sinfo->GetSize())) {
-          mLog->Error(1, "JCache : failed to attach to cache directory: %s",
+          mLog->Error(1, "JCache : failed to attach to cache file: %s",
                       pJournalPath.c_str());
           mAttachedForRead = true;
           return false;
         } else {
-          mLog->Info(1, "JCache : attached to cache directory: %s",
+          mLog->Info(1, "JCache : attached to cache file: %s",
                      pJournalPath.c_str());
         }
       }

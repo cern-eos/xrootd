@@ -229,6 +229,8 @@ add_library(
   XrdApps/XrdClJCachePlugin/cache/Journal.hh
   XrdApps/XrdClJCachePlugin/cache/IntervalTree.hh
   XrdApps/XrdClJCachePlugin/cache/RbTree.hh
+  XrdApps/XrdClJCachePlugin/cleaner/Cleaner.cc
+  XrdApps/XrdClJCachePlugin/cleaner/Cleaner.hh
 )
 
 target_include_directories( ${LIB_XRDCL_JCACHE_PLUGIN} PRIVATE "${CMAKE_SOURCE_DIR}/src/XrdApps/XrdClJCachePlugin/" )

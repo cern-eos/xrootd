@@ -31,6 +31,9 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <iostream>
+#include <cstring>
+#include <cerrno>
 /*----------------------------------------------------------------------------*/
 
 //------------------------------------------------------------------------------
@@ -53,6 +56,14 @@ Journal::Journal() : cachesize(0), max_offset(0), fd(-1) {
 Journal::~Journal() {
   std::lock_guard<std::mutex> guard(mtx);
   if (fd > 0) {
+    struct flock lock;
+    std::memset(&lock, 0, sizeof(lock));
+
+    lock.l_type = F_UNLCK; // Unlock the file
+    if (fcntl(fd, F_SETLK, &lock) == -1) {
+        std::cerr << "error: failed to unlock journal: " << std::strerror(errno) << std::endl;
+    }
+
     int rc = close(fd);
 
     if (rc) {
@@ -169,6 +180,30 @@ int Journal::attach(const std::string &lpath, uint64_t mtime,
         }
 
         return -errno;
+      }
+
+      // get a POSIX lock on the file
+      struct flock lock;
+      std::memset(&lock, 0, sizeof(lock));
+      lock.l_type = F_WRLCK;    // Request a write lock
+      lock.l_whence = SEEK_SET; // Lock from the beginning of the file
+      lock.l_start = 0;         // Starting offset for lock
+      lock.l_len = 0;           // 0 means to lock the entire file
+
+      if (fcntl(fd, F_SETLK, &lock) == -1) {
+        if (errno == EACCES || errno == EAGAIN) {
+          std::cerr << "error: journal file is already locked by another process."
+                    << std::endl;
+          close(fd);
+          fd = -1;
+          return -errno;
+        } else {
+          std::cerr << "error: failed to lock journal file: " << std::strerror(errno)
+                    << std::endl;
+          close(fd);
+          fd = -1;
+          return -errno;
+        }
       }
 
       break;
