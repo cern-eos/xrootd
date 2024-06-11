@@ -126,6 +126,12 @@ void Cleaner::cleanDirectory(const fs::path &directory, long long highWatermark,
     try {
       fs::remove(filePath);
       currentSize -= fileSize;
+      fs::path parentDir = filePath.parent_path();
+      std::error_code ec;
+      fs::remove_all(parentDir, ec);
+      if (ec) {
+        mLog->Error(1, "JCache::Cleaner: error deleting directory '%s'", parentDir.c_str());
+      }
       mLog->Info(1, "JCache:Cleaner : deleted '%s' (Size: %lu bytes)", filePath.c_str(),
       fileSize);
     } catch (const std::exception &e) {
