@@ -34,7 +34,7 @@ bool XrdCl::JCacheFile::sEnableJournalCache = true;
 bool XrdCl::JCacheFile::sEnableVectorCache = false;
 bool XrdCl::JCacheFile::sEnableSummary = true;
 JCache::CacheStats XrdCl::JCacheFile::sStats(true);
-
+JCache::Cleaner XrdCl::JCacheFile::sCleaner;
 JournalManager XrdCl::JCacheFile::sJournalManager;
 
 namespace XrdCl {

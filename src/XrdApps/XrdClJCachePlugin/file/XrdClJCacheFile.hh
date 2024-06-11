@@ -29,6 +29,7 @@
 #include "XrdCl/XrdClPlugInInterface.hh"
 /*----------------------------------------------------------------------------*/
 #include "cache/Journal.hh"
+#include "cleaner/Cleaner.hh"
 #include "file/Art.hh"
 #include "file/TimeBench.hh"
 #include "handler/XrdClJCachePgReadHandler.hh"
@@ -220,6 +221,7 @@ public:
   static void SetVector(const bool &value) { sEnableVectorCache = value; }
   static void SetJsonPath(const std::string &path) { sJsonPath = path; }
   static void SetSummary(const bool &value) { sEnableSummary = value; }
+  static void SetSize(uint64_t size) { sCleaner.SetSize(size,sCachePath);}
 
   //----------------------------------------------------------------------------
   //! @brief static members pointing to cache settings
@@ -238,6 +240,9 @@ public:
 
   //! @brief global plugin cache hit statistics
   static JCache::CacheStats sStats;
+
+  //! @brief cleaner instance 
+  static JCache::Cleaner sCleaner;
 
 private:
   //! @brief attach for read

@@ -37,7 +37,7 @@ class JCachePgReadHandler : public XrdCl::ResponseHandler
 public:
   JCachePgReadHandler() {}
 
-  JCachePgReadHandler(JCacheReadHandler *other) {
+  JCachePgReadHandler(JCachePgReadHandler *other) {
     rbytes = other->rbytes;
     journal = other->journal;
   }

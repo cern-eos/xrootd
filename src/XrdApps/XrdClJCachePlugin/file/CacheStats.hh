@@ -83,6 +83,7 @@ struct CacheStats {
       JCache::Art art;
       if (XrdCl::JCacheFile::sEnableSummary) {
         std::cerr << "# IO Timeprofile " << std::endl;
+        std::cerr << "# --------------" << std::endl;
         art.drawCurve(bins,
                       XrdCl::JCacheFile::sStats.bench.GetTimePerBin().count() /
                           1000000.0,

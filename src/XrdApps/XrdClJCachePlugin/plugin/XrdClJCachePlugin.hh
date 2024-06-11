@@ -49,20 +49,29 @@ public:
     if (config) {
       auto itc = config->find("cache");
       JCacheFile::SetCache(itc != config->end() ? itc->second : "");
+
+      auto itsz = config->find("size");
+      JCacheFile::SetSize(itsz != config->end() ? std::stoll(std::string(itsz->second),0,10) : 0);
+
       auto itv = config->find("vector");
       JCacheFile::SetVector(itv != config->end() ? itv->second == "true"
                                                  : false);
       auto itj = config->find("journal");
-      JCacheFile::SetJournal(itj != config->end() ? itj->second == "true"
-                                                  : false);
+      JCacheFile::SetJournal(itj != config->end() ? itj->second == "false"
+                                                  : true);
       auto itjson = config->find("json");
       JCacheFile::SetJsonPath(itjson != config->end() ? itjson->second : "./");
+
       auto its = config->find("summary");
       JCacheFile::SetSummary(its != config->end() ? its->second != "false"
                                                   : true);
 
       if (const char *v = getenv("XRD_JCACHE_CACHE")) {
         JCacheFile::SetCache((std::string(v).length()) ? std::string(v) : "");
+      }
+
+      if (const char *v = getenv("XRD_JCACHE_SIZE")) {
+        JCacheFile::SetSize((std::string(v).length()) ? std::stoll(std::string(v),0,10) : 0);
       }
 
       if (const char *v = getenv("XRD_JCACHE_SUMMARY")) {
