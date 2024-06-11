@@ -3,9 +3,12 @@
 
 This XRootD Client Plugin provides a client side read cache. 
 
-There are two ways of caching, which can be configured individually, only the default mechanism is really useful: 
+There are two ways of caching, which can be configured individually: 
 1. **Read Journal Cache** (journalling)
-2. **Vector Read Cache** (vector read responses are stored in binary blobs)
+2. ~~Vector Read Cache~~ (vector read responses are stored in binary blobs)
+
+> [!IMPORTANT] 
+> Only the default *Read Journal Cache* is really useful. 
 
 # Plug-in Configuration
 To enable the plugin create a configuration file e.g. in the default machine wide location */etc/xrootd/client.plugin.d/jcache.conf* or enable in a one-liner using an environment variable:
@@ -26,14 +29,22 @@ cache = /var/tmp/jcache/
 vector = false
 journal = true
 summary = true
-size = 10000000000
+size = 0
 json = ./
 ```
-```cache``` points to a local or shared directory where accessed files are stored. This directory has to exist and should be terminated with a '/'. 
+```cache``` points to a local or shared directory where accessed files are stored. This directory has to exist and the configuration path should be terminated with a '/'. 
 
-By default JCache prints a summary at application exit. If you don't want the summary set ```summary = false```. 
-By default JCache writes a json summary file into the current working directory. If you want to change the directory where json summaries are stored change ```json = /tmp/```. If you don't want any json summary file set it to an empty string. The name of the json summary file is ```jcache.env{"XRD_APPNAME"}:"none".{pid}.json```
+> [!TIP]
+> By default JCache prints a summary at application exit. If you don't want the summary set ```summary = false```. 
 
+> [!TIP]
+> By default JCache writes a JSON summary file into the current working directory. If you want to change the directory where json summaries are stored change ```json = /tmp/```. If you don't want any json summary file set it to an empty string. The name of the json summary file is ```jcache.env{"XRD_APPNAME"}:"none".{pid}.json```
+
+> [!NOTE]  
+> The easiest way to verifyt the plug-in functionning is to run with ```XRD_LOGLEVEL=Info``` since the plug-in will provide
+> some startup information and also prints where a file is cached locally once it is attached.
+
+### Overwriting Configuration using Environment Variables
 It is possible to overwrite defaults or settings in the configuration file using the following environment variables:
 ```
 XRD_JCACHE_SUMMARY=true|false
@@ -44,7 +55,9 @@ XRD_JCACHE_JSON=directory-path-for-json|""
 XRD_JCACHE_SIZE=number-in-bytes
 XRD_APPNAME=application-name-used-in-json-file
 ```
-
+> [!TIP]
+> These are in particular useful, if you want to configure the plug-in using the default mechanism or want to overwrite some default settings in your environment without changing configuration fiels.
+> ```env XRD_PLUGIN="libXrdClJCachePlugin-5.so" xrdcp ```
 
 # 2 Read Journal Cache
 
@@ -77,23 +90,30 @@ Each application read request is then written in an append log style using a chu
 ```
 followed by a data blob of ```<size>``` bytes.
 
-The advantage of the journal approach is that unlike in a page cache like XCACHE, only requested data is cached! There is no such thing as pagesize.
+The advantage of the journal approach is that unlike in a page cache like XCACHE, only requested data is cached! There is no such thing as pagesize. 
 
-When a file is opened for reading and a journal exists, the journal is scanned on startup and stored in a red-black tree structure. If in subsequent readings 
-new pages are requested, the journal is append accordingly and supports even re-writing and merging of chunks (which mostly not required for this use case).
-Requests are served by the journal only, if they can be fully satisfied.
+When a file is opened for reading and a journal exists, the journal is scanned on startup and stored in a red-black tree structure. If in subsequent readings new pages are requested, the journal is appended accordingly and supports even re-writing and merging of chunks (which is not required for read-only caching).
 
+> [!IMPORTANT]  
+> Requests are served by journal contents only, if they can be fully satisfied. As an example if a read requires more data than available in the journal, the read triggers a full remote read operation.
 
-All **Read**, **PgRead** and **ReadV** requests are stored into the journal in the order they appeared from the first application run.
+All **Read**, **PgRead** and **ReadV** requests are stored into the journal in the order they appeared from the first application run. As a result a repeated run of the same application creates perfect sequential IO when reading the journal.
+
+> [!IMPORTANT]
+> When several clients attach to a local journal cache or to a journal stored on a shared filesystem, the first client creates an exclusive lock on the journal. As a result client attaching later to the same journal in use will not get data served from the journal cache. This behaviour can be optimized in the future.
 
 # 3 Vector Read Cache
 If the vector read cache is enabled in the configuration file, **ReadV** requests are stored/retrieved using a vector blob for each ReadV request.
+> [!CAUTION]
+> It is not recommended to use the vector read cache!
+
 The prefix path of these blob files is the same as the journal location, but all the chunk offsets and lengths are hashed into an SHA256 filename to identity 
 a unique vector read request e.g.:
 
 ```/var/tmp/jcache/c04250faea5ae18d9a0024148da4c798852ee6b198848b2abd2ba8293b64af8e/7daf70f7f2fb3fff224623bcdbd111fe76dc0633f08ff83f0bcd6a443b1398eb```
 
-The vector read cache does not provide any additional benefit to the journal cache approach. Conceptionally a cached vector read request can be served by a single read request on the caching device. If vector reads are only slightly modified a new vector blob entry is stored, which is inefficient if the read pattern is changing. For the time being the vector cache implementation is kept, but it is disabled by default. 
+> [!CAUTION]
+> The vector read cache does not provide any additional benefit to the journal cache approach. Conceptionally a cached vector read request can be served by a single read request on the caching device. If vector reads are only slightly modified a new vector blob entry has to be stored, which is inefficient if the read pattern is changing. For the time being the vector cache implementation is kept, but it is disabled by default. 
 
 # 4 Cache Hit Rate
 
