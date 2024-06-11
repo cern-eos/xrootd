@@ -1,14 +1,20 @@
 # 1 JCache Client Plugin
+<img width="128" alt="Screenshot 2024-06-11 at 16 14 16" src="https://github.com/cern-eos/xrootd/assets/2655845/5915ac77-675d-4b5e-a3fc-9cce2f9f1955">
 
 This XRootD Client Plugin provides a client side read cache. 
 
-There are two ways of caching, which can be configured individually:
+There are two ways of caching, which can be configured individually, only the default mechanism is really useful: 
 1. **Read Journal Cache** (journalling)
 2. **Vector Read Cache** (vector read responses are stored in binary blobs)
 
 # Plug-in Configuration
-To enable the plugin create a configuration file e.g. in the default machine wide location */etc/xrootd/client.plugin.d/jcache.conf*
+To enable the plugin create a configuration file e.g. in the default machine wide location */etc/xrootd/client.plugin.d/jcache.conf* or enable in a one-liner using an environment variable:
 
+## Quicksetup via Environment
+```
+mkdir -p /var/tmp/jcache/
+env XRD_PLUGIN_1="lib=libXrdClJCachePlugin-5.so,enable=true,url=*,cache=/var/tmp/jcache/,size=10000000000" xrdcp root://... /localpath/... 
+```
 ## Config File Format
 
 **jcache.conf:**
@@ -20,6 +26,7 @@ cache = /var/tmp/jcache/
 vector = false
 journal = true
 summary = true
+size = 10000000000
 json = ./
 ```
 ```cache``` points to a local or shared directory where accessed files are stored. This directory has to exist and should be terminated with a '/'. 
@@ -34,6 +41,7 @@ XRD_JCACHE_JOURNAL=true|false
 XRD_JCACHE_VECTOR=true|false
 XRD_JCACHE_CACHE=directory-path-to-cache
 XRD_JCACHE_JSON=directory-path-for-json|""
+XRD_JCACHE_SIZE=number-in-bytes
 XRD_APPNAME=application-name-used-in-json-file
 ```
 
