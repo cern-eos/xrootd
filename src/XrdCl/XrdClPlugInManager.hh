@@ -145,6 +145,11 @@ namespace XrdCl
       void ProcessPlugInConfig( const std::string &confFile );
 
       //------------------------------------------------------------------------
+      //! Process a plug-in config file and load the plug-in if possible
+      //------------------------------------------------------------------------
+      void ProcessConfig(std::map<std::string, std::string>& config, const std::string& configOrigin);
+
+      //------------------------------------------------------------------------
       //! Load the plug-in and create the factory
       //------------------------------------------------------------------------
       std::pair<XrdOucPinLoader*,PlugInFactory*> LoadFactory(
