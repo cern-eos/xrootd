@@ -57,13 +57,13 @@ public:
       JCacheFile::SetVector(itv != config->end() ? itv->second == "true"
                                                  : false);
       auto itj = config->find("journal");
-      JCacheFile::SetJournal(itj != config->end() ? itj->second == "false"
+      JCacheFile::SetJournal(itj != config->end() ? itj->second == "true"
                                                   : true);
       auto itjson = config->find("json");
       JCacheFile::SetJsonPath(itjson != config->end() ? itjson->second : "./");
 
       auto its = config->find("summary");
-      JCacheFile::SetSummary(its != config->end() ? its->second != "false"
+      JCacheFile::SetSummary(its != config->end() ? its->second == "true"
                                                   : true);
 
       if (const char *v = getenv("XRD_JCACHE_CACHE")) {
