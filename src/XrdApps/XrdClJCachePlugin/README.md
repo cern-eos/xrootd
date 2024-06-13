@@ -1,14 +1,8 @@
 # 1 JCache Client Plugin
 <img width="128" alt="Screenshot 2024-06-11 at 16 14 16" src="https://github.com/cern-eos/xrootd/assets/2655845/5915ac77-675d-4b5e-a3fc-9cce2f9f1955">
 
-This XRootD Client Plugin provides a client side read cache. 
+This XRootD Client Plugin provides a client side read cache, which is implemented as a journal.
 
-There are two ways of caching, which can be configured individually: 
-1. **Read Journal Cache** (journalling)
-2. ~~Vector Read Cache~~ (vector read responses are stored in binary blobs)
-
-> [!IMPORTANT] 
-> Only the default *Read Journal Cache* is really useful. 
 
 # Plug-in Configuration
 To enable the plugin create a configuration file e.g. in the default machine wide location */etc/xrootd/client.plugin.d/jcache.conf* or enable in a one-liner using an environment variable:
@@ -26,7 +20,6 @@ url = *
 lib = /usr/lib64/libXrdClJCachePlugin-5.so
 enable = true
 cache = /var/tmp/jcache/
-vector = false
 journal = true
 summary = true
 size = 0
@@ -50,7 +43,6 @@ It is possible to overwrite defaults or settings in the configuration file using
 ```
 XRD_JCACHE_SUMMARY=true|false
 XRD_JCACHE_JOURNAL=true|false
-XRD_JCACHE_VECTOR=true|false
 XRD_JCACHE_CACHE=directory-path-to-cache
 XRD_JCACHE_JSON=directory-path-for-json|""
 XRD_JCACHE_SIZE=number-in-bytes
@@ -103,20 +95,7 @@ All **Read**, **PgRead** and **ReadV** requests are stored into the journal in t
 > [!IMPORTANT]
 > When several clients attach to a local journal cache or to a journal stored on a shared filesystem, the first client creates an exclusive lock on the journal. As a result client attaching later to the same journal in use will not get data served from the journal cache. This behaviour can be optimized in the future.
 
-# 3 Vector Read Cache
-If the vector read cache is enabled in the configuration file, **ReadV** requests are stored/retrieved using a vector blob for each ReadV request.
-> [!CAUTION]
-> It is not recommended to use the vector read cache!
-
-The prefix path of these blob files is the same as the journal location, but all the chunk offsets and lengths are hashed into an SHA256 filename to identity 
-a unique vector read request e.g.:
-
-```/var/tmp/jcache/c04250faea5ae18d9a0024148da4c798852ee6b198848b2abd2ba8293b64af8e/7daf70f7f2fb3fff224623bcdbd111fe76dc0633f08ff83f0bcd6a443b1398eb```
-
-> [!CAUTION]
-> The vector read cache does not provide any additional benefit to the journal cache approach. Conceptionally a cached vector read request can be served by a single read request on the caching device. If vector reads are only slightly modified a new vector blob entry has to be stored, which is inefficient if the read pattern is changing. For the time being the vector cache implementation is kept, but it is disabled by default. 
-
-# 4 Cache Hit Rate
+# 3 Cache Hit Rate
 
 When running in INFO logging mode, the plug-in provides some informative messages:
 
@@ -140,7 +119,7 @@ When running in INFO logging mode, the plug-in provides some informative message
 ```cached-bytes-read/readv```
 - bytes read from the cache for simple read or vector read requests
 
-# 5 Application Exit Summary
+# 4 Application Exit Summary
 
 When an application exits, the globally collected JCache statistics for this application is printed. It is summing all individual file IO statistics passing through the plug-in.
 
@@ -188,7 +167,7 @@ Most of these fields are self explanatory. The field *readvread* are the number 
 
 The ASCII plot shows the IO request rate over time. The total runtime (REAL time) is divided into 40 equal bins and in each bin the data requested is plotted. 
 
-# 6 JSON Summary File
+# 5 JSON Summary File
 
 As mentioned in the configuration section JCache writes by default a summary file under the current working directory. The prefix can be changed in the plug-in configuration. If the prefix is empty, the JSON summary is disabled.
 
@@ -204,9 +183,10 @@ Usage: xrdclcacheclean <directory> <highwatermark> <lowwatermark> <interval>
 - ~~Pre-shard cache directory structure not to have all cached files in a flat directory listing~~ (won't do)
 - ~~Add async response handler to allow fully asynchronous open through the cache~~ (not required, already fully asynchronous)
 - Add optional dynamic read-ahead with window scaling
-- Add cache-cleaning as option to client plug-in
+- ~~Add cache-cleaning as option to client plug-in~~
 - Make xrdclcacheclean a daemon with systemd support
 - Add automatix connection de-multi-plexing if contention to storage servers is detected
+- Attaching large files which are not in the buffercache is slow. We should write a compacted journal index, when we detach and read it on attach in a single read
 
 
 
