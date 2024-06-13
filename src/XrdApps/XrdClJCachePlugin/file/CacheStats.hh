@@ -385,7 +385,6 @@ struct CacheStats {
       } else {
         break;
       }
-      std::cerr << "dumper global stats" << std::endl;
       if (XrdCl::JCacheFile::sEnableSummary) {
         XrdCl::JCacheFile::sStats.GetTimes();
         XrdCl::JCacheFile::sStats.bytes_per_second =
