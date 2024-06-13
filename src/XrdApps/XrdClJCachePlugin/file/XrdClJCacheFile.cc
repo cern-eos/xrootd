@@ -165,6 +165,8 @@ XRootDStatus JCacheFile::Read(uint64_t offset, uint32_t size, void *buffer,
   if (pFile) {
     sStats.bench.AddMeasurement(size);
     if (sEnableJournalCache && AttachForRead()) {
+      mLog->Info(1, "JCache : Read: offset=%llu size=%llu buffer=%x path='%s'",
+                  offset, size, buffer, pUrl.c_str());
       bool eof = false;
       auto rb = pJournal->pread(buffer, size, offset, eof);
       if ((rb == size) || (eof && rb)) {
@@ -218,16 +220,21 @@ XRootDStatus JCacheFile::PgRead(uint64_t offset, uint32_t size, void *buffer,
   if (pFile) {
     sStats.bench.AddMeasurement(size);
     if (sEnableJournalCache && AttachForRead()) {
+      mLog->Info(1, "JCache : PgRead: offset=%llu size=%llu buffer=%x path='%s'",
+                offset, size, buffer, pUrl.c_str());
       bool eof = false;
       auto rb = pJournal->pread(buffer, size, offset, eof);
+
+      mLog->Info(1, "JCache : PgRead: rb=%llu size=%llu eof=%x path='%s'",
+                  rb, size, eof, pUrl.c_str());
       if ((rb == size) || (eof && rb)) {
         pStats->bytesCached += rb;
         pStats->readOps++;
-        // we can only serve success full reads from the cache for now
+        // we can only serve complete reads from the cache for now
         XRootDStatus *ret_st = new XRootDStatus(st);
-        ChunkInfo *chunkInfo = new ChunkInfo(offset, rb, buffer);
+        PageInfo *pageInfo = new PageInfo(offset, rb, buffer);
         AnyObject *obj = new AnyObject();
-        obj->Set(chunkInfo);
+        obj->Set(pageInfo);
         handler->HandleResponse(ret_st, obj);
         st = XRootDStatus(stOK, 0);
         return st;
