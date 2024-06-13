@@ -10,7 +10,15 @@ To enable the plugin create a configuration file e.g. in the default machine wid
 ## Quicksetup via Environment
 ```
 mkdir -p /var/tmp/jcache/
-env XRD_PLUGIN_1="lib=libXrdClJCachePlugin-5.so,enable=true,url=*,cache=/var/tmp/jcache/,size=10000000000" xrdcp root://... /localpath/... 
+```
+```
+# as default plug-in
+env XRD_PLUGIN=libXrdClJCachePlugin-5.so XRD_JCACHE_CACHE=/var/tmp/jcache/ xrdcp root://
+```
+or 
+```
+# as numbered plug-in
+env XRD_PLUGIN_1="lib=libXrdClJCachePlugin-5.so,enable=true,url=*,cache=/var/tmp/jcache/" xrdcp root://... /localpath/... 
 ```
 ## Config File Format
 
