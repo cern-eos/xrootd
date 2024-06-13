@@ -29,7 +29,7 @@
 /*----------------------------------------------------------------------------*/
 
 std::string XrdCl::JCacheFile::sCachePath = "";
-std::string XrdCl::JCacheFile::sJsonPath = "./";
+std::string XrdCl::JCacheFile::sJsonPath = "";
 bool XrdCl::JCacheFile::sEnableJournalCache = true;
 bool XrdCl::JCacheFile::sEnableVectorCache = false;
 bool XrdCl::JCacheFile::sEnableSummary = true;

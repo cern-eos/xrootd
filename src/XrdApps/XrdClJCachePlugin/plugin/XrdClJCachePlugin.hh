@@ -60,7 +60,7 @@ public:
       JCacheFile::SetJournal(itj != config->end() ? itj->second == "true"
                                                   : true);
       auto itjson = config->find("json");
-      JCacheFile::SetJsonPath(itjson != config->end() ? itjson->second : "./");
+      JCacheFile::SetJsonPath(itjson != config->end() ? itjson->second : "");
 
       auto its = config->find("summary");
       JCacheFile::SetSummary(its != config->end() ? its->second == "true"

@@ -30,7 +30,8 @@ vector = false
 journal = true
 summary = true
 size = 0
-json = ./
+json =
+
 ```
 ```cache``` points to a local or shared directory where accessed files are stored. This directory has to exist and the configuration path should be terminated with a '/'. 
 
@@ -38,7 +39,7 @@ json = ./
 > By default JCache prints a summary at application exit. If you don't want the summary set ```summary = false```. 
 
 > [!TIP]
-> By default JCache writes a JSON summary file into the current working directory. If you want to change the directory where json summaries are stored change ```json = /tmp/```. If you don't want any json summary file set it to an empty string. The name of the json summary file is ```jcache.env{"XRD_APPNAME"}:"none".{pid}.json```
+> By default JCache does not write a JSON summary.  If you want JSON summaries define a directory whare stored change ```json = /tmp/```. If you don't want any json summary file use the defualt or set it to an empty string. The name of the json summary file is ```jcache.env{"XRD_APPNAME"}:"none".{pid}.json```
 
 > [!NOTE]  
 > The easiest way to verifyt the plug-in functionning is to run with ```XRD_LOGLEVEL=Info``` since the plug-in will provide
