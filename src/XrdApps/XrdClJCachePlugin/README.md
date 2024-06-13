@@ -50,7 +50,7 @@ XRD_APPNAME=application-name-used-in-json-file
 ```
 > [!TIP]
 > These are in particular useful, if you want to configure the plug-in using the default mechanism or want to overwrite some default settings in your environment without changing configuration fiels.
-> ```env XRD_PLUGIN="libXrdClJCachePlugin-5.so" xrdcp ```
+> ```mkdir -p /var/tmp/jcache/; env XRD_PLUGIN=libXrdClJCachePlugin-5.so XRD_JCACHE_CACHE=/var/tmp/jcache/ xrdcp ```
 
 # 2 Read Journal Cache
 
@@ -179,7 +179,38 @@ xrdclcacheclean
 Usage: xrdclcacheclean <directory> <highwatermark> <lowwatermark> <interval> 
 ```
 
-# 7 To-Do List
+# 7 JCache in a Proxy server
+
+To run a proxy server with JCache you create a usual proxy configuration file:
+```
+pss.origin xrootd.cern.ch
+all.export /xrootd/
+ofs.osslib libXrdPss.so
+```
+Before startup you should configure the JCache plugin:
+```
+/etc/xrootd/client.plugins.d/jcache.conf:
+url = root://*
+lib = libXrdClJCachePlugin-5.so
+enable = true
+cache = /var/tmp/jcache/
+```
+You have to make sure, that the cache directory exists and is owned by the user running your XRootD process.
+
+For interactive testing a quick startup of a server without client plugin configuration would look like this:
+```
+mkdir -p /var/tmp/jcache/
+chown daemon:daemon /var/tmp/jcache/
+env XRD_PLUGIN=/usr/lib64/libXrdClJCachePlugin-5.so XRD_JCACHE_CACHE=/var/tmp/jcache/ xrootd -c jcache.cf -Rdaemon -p 8443
+```
+
+
+
+
+
+
+
+# 8 To-Do List
 - ~~Pre-shard cache directory structure not to have all cached files in a flat directory listing~~ (won't do)
 - ~~Add async response handler to allow fully asynchronous open through the cache~~ (not required, already fully asynchronous)
 - Add optional dynamic read-ahead with window scaling
@@ -187,6 +218,7 @@ Usage: xrdclcacheclean <directory> <highwatermark> <lowwatermark> <interval>
 - Make xrdclcacheclean a daemon with systemd support
 - Add automatix connection de-multi-plexing if contention to storage servers is detected
 - Attaching large files which are not in the buffercache is slow. We should write a compacted journal index, when we detach and read it on attach in a single read
+- We should make a configuration variable, which allows to regularily dump cache statistics and reset counters. This is useful when the plug-in runs inside a proxy server.
 
 
 
