@@ -22,6 +22,7 @@ enable = true
 cache = /var/tmp/jcache/
 journal = true
 summary = true
+stats = 0
 size = 0
 json =
 
@@ -33,6 +34,9 @@ json =
 
 > [!TIP]
 > By default JCache does not write a JSON summary.  If you want JSON summaries define a directory whare stored change ```json = /tmp/```. If you don't want any json summary file use the defualt or set it to an empty string. The name of the json summary file is ```jcache.env{"XRD_APPNAME"}:"none".{pid}.json```
+
+> [!TIP]
+> If you want to run the plug-in inside a proxy server, you can set ```stats = 60```. In this case it will print every 60s a summary with the current cache statistics. The default is not print in intervals the cache statistics (```stats = 0```).
 
 > [!NOTE]  
 > The easiest way to verifyt the plug-in functionning is to run with ```XRD_LOGLEVEL=Info``` since the plug-in will provide
