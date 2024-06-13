@@ -33,6 +33,7 @@ std::string XrdCl::JCacheFile::sJsonPath = "";
 bool XrdCl::JCacheFile::sEnableJournalCache = true;
 bool XrdCl::JCacheFile::sEnableVectorCache = false;
 bool XrdCl::JCacheFile::sEnableSummary = true;
+
 JCache::CacheStats XrdCl::JCacheFile::sStats(true);
 JCache::Cleaner XrdCl::JCacheFile::sCleaner;
 JournalManager XrdCl::JCacheFile::sJournalManager;
@@ -500,4 +501,15 @@ void JCacheFile::LogStats() {
       pStats->HitRateV(), pStats->bytesRead.load(), pStats->bytesReadV.load(),
       pStats->bytesCached.load(), pStats->bytesCachedV.load());
 }
+
+//----------------------------------------------------------------------------
+//! @brief set stats interval in CachStats class
+//----------------------------------------------------------------------------
+void
+JCacheFile::SetStatsInterval(uint64_t interval)
+{
+  sStats.SetInterval(interval);
+}
+
+
 } // namespace XrdCl

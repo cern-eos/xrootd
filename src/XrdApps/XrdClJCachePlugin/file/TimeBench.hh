@@ -47,6 +47,13 @@ private:
 public:
   TimeBench() : totalBytes(0), nbins(10) {}
 
+  void Reset() {
+    std::lock_guard<std::mutex> guard(mtx);
+    measurements.clear();
+    bins.clear();
+    totalBytes = 0;
+  }
+
   void AddMeasurement(uint64_t bytes) {
     std::lock_guard<std::mutex> guard(mtx);
     auto now = Clock::now();

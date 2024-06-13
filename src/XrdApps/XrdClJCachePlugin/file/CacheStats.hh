@@ -32,6 +32,7 @@
 #include <map>
 #include <mutex>
 #include <sstream>
+#include <thread>
 
 #include "file/XrdClJCacheFile.hh"
 #include <set>
@@ -55,6 +56,9 @@ struct CacheStats {
   }
 
   ~CacheStats() {
+    if (dumperInterval.load()) {
+      stop();
+    }
     if (dumponexit.load() && totaldatasize) {
       using namespace std::chrono;
       std::string jsonpath = XrdCl::JCacheFile::sJsonPath + "jcache.";
@@ -96,6 +100,18 @@ struct CacheStats {
     }
   }
 
+  void Reset() {
+    bytesRead = 0 ;
+    bytesReadV = 0;
+    bytesCached = 0;
+    bytesCachedV = 0;
+    readOps = 0;
+    readVOps = 0;
+    readVreadOps = 0;
+    nreadfiles = 0;
+    peakrate = 0;
+    bench.Reset();
+  }
   static std::string bytesToHumanReadable(double bytes) {
     const char *suffixes[] = {"B",  "KB", "MB", "GB", "TB",
                               "PB", "EB", "ZB", "YB"};
@@ -248,6 +264,7 @@ struct CacheStats {
 
   static std::string GlobalStats(CacheStats &sStats) {
     std::ostringstream oss;
+
     oss << "# "
            "-------------------------------------------------------------------"
            "---- #"
@@ -259,6 +276,7 @@ struct CacheStats {
            "-------------------------------------------------------------------"
            "---- #"
         << std::endl;
+
 
     oss << "# JCache : cache combined hit rate  : " << std::fixed
         << std::setprecision(2) << sStats.CombinedHitRate() << " %"
@@ -324,8 +342,8 @@ struct CacheStats {
     oss << "# JCache : app readrate             : " << std::fixed
         << std::setprecision(2)
         << sStats.bytesToHumanReadable((sStats.ReadBytes() / sStats.realTime))
-        << "/s" << " [ peak (1s) "
-        << sStats.bytesToHumanReadable(sStats.peakrate) << "/s ]" << std::endl;
+        << "/s" << " [ peak (1s) ";
+    oss << sStats.bytesToHumanReadable(sStats.peakrate) << "/s ]" << std::endl;
     oss << "# "
            "-------------------------------------------------------------------"
            "---- #"
@@ -353,5 +371,59 @@ struct CacheStats {
   JCache::TimeBench bench;
   std::vector<uint64_t> bytes_per_second;
   std::atomic<double> peakrate;
+  // Thread-related variables
+  std::atomic<uint64_t> dumperInterval;
+  std::thread dumperThread;
+  std::atomic<bool> stopFlag;
+
+
+  // Loop to regulary dump the statistics and to reset global counters
+  static void dumper(CacheStats* stats) {
+    while (!stats->stopFlag.load()) {
+      if (stats->dumperInterval) {
+        std::this_thread::sleep_for(std::chrono::seconds(stats->dumperInterval));
+      } else {
+        break;
+      }
+      std::cerr << "dumper global stats" << std::endl;
+      if (XrdCl::JCacheFile::sEnableSummary) {
+        XrdCl::JCacheFile::sStats.GetTimes();
+        XrdCl::JCacheFile::sStats.bytes_per_second =
+          XrdCl::JCacheFile::sStats.bench.GetBins((int)(XrdCl::JCacheFile::sStats.realTime));
+        XrdCl::JCacheFile::sStats.peakrate =
+          *(std::max_element(XrdCl::JCacheFile::sStats.bytes_per_second.begin(),
+                             XrdCl::JCacheFile::sStats.bytes_per_second.end()));
+        if (XrdCl::JCacheFile::sStats.realTime < 1) {
+          XrdCl::JCacheFile::sStats.peakrate = XrdCl::JCacheFile::sStats.ReadBytes() / XrdCl::JCacheFile::sStats.realTime;
+        }
+        std::string st = CacheStats::GlobalStats(XrdCl::JCacheFile::sStats);
+        std::cerr << st << std::endl;
+      }
+    }
+  }
+
+  // Method to start the dumper process in a separate thread
+  void run() {
+    stopFlag = false;
+    dumperThread = std::thread(&dumper, this);
+    dumperThread.detach();
+  }
+
+  // Method to stop the dumper process and join the thread
+  void stop() {
+    stopFlag = true;
+    if (dumperThread.joinable()) {
+      dumperThread.join();
+    }
+  }
+
+  // Configure thread to dump statistics every 'interval' seconds
+  void SetInterval(uint64_t interval) {
+    dumperInterval = interval;
+    stop();
+    if (interval) {
+      run();
+    }
+  }
 }; // class CacheStats
 } // namespace JCache

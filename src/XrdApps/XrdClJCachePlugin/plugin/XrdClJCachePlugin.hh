@@ -65,6 +65,9 @@ public:
       auto its = config->find("summary");
       JCacheFile::SetSummary(its != config->end() ? its->second == "true"
                                                   : true);
+      auto itsi = config->find("stats");
+      JCacheFile::SetStatsInterval(itsi != config->end() ? std::stoll(std::string(itsi->second),0,10) : 0);
+
 
       if (const char *v = getenv("XRD_JCACHE_CACHE")) {
         JCacheFile::SetCache((std::string(v).length()) ? std::string(v) : "");
@@ -89,6 +92,10 @@ public:
       if (const char *v = getenv("XRD_JCACHE_JSON")) {
         JCacheFile::SetJsonPath((std::string(v).length()) ? std::string(v)
                                                           : "");
+      }
+
+      if (const char *v = getenv("XRD_JCACHE_STATS")) {
+        JCacheFile::SetStatsInterval((std::string(v).length()) ? std::stoll(std::string(v),0,10) : 0);
       }
 
       Log *log = DefaultEnv::GetLog();

@@ -233,6 +233,9 @@ public:
   static bool sEnableSummary;
   static JournalManager sJournalManager;
 
+  //! @brief set stats interval in seconds
+  static void SetStatsInterval(uint64_t interval);
+
   //----------------------------------------------------------------------------
   //! @brief log cache hit statistics
   //----------------------------------------------------------------------------
@@ -241,7 +244,7 @@ public:
   //! @brief global plugin cache hit statistics
   static JCache::CacheStats sStats;
 
-  //! @brief cleaner instance 
+  //! @brief cleaner instance
   static JCache::Cleaner sCleaner;
 
 private:
