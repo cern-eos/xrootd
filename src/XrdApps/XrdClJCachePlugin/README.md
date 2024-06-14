@@ -32,6 +32,7 @@ journal = true
 summary = true
 stats = 0
 size = 0
+async = 0
 json =
 
 ```
@@ -46,6 +47,9 @@ json =
 > [!TIP]
 > If you want to run the plug-in inside a proxy server, you can set ```stats = 60```. In this case it will print every 60s a summary with the current cache statistics. The default is not print in intervals the cache statistics (```stats = 0```).
 
+> [!TIP]
+> If you want to have the possiblity of detached/asynchronous open operation, then set ```async = 1```. The cache then relies on the filesize and modification times stored in the journal cache. This should only be used for WORM data. The advantage is that there is no need to wait for remote Open operations to finish during the attachment to the cache if there is already a journal entry for the requested file. So if all requests are already in the cache, there is not a single possibly slow remote operation in the IO path.
+
 > [!NOTE]  
 > The easiest way to verifyt the plug-in functionning is to run with ```XRD_LOGLEVEL=Info``` since the plug-in will provide
 > some startup information and also prints where a file is cached locally once it is attached.
@@ -53,11 +57,12 @@ json =
 ### Overwriting Configuration using Environment Variables
 It is possible to overwrite defaults or settings in the configuration file using the following environment variables:
 ```
-XRD_JCACHE_SUMMARY=true|false
-XRD_JCACHE_JOURNAL=true|false
+XRD_JCACHE_SUMMARY=true|false|1|0
+XRD_JCACHE_JOURNAL=true|false|1|0
 XRD_JCACHE_CACHE=directory-path-to-cache
 XRD_JCACHE_JSON=directory-path-for-json|""
 XRD_JCACHE_SIZE=number-in-bytes
+XRD_JCACHE_ASYNC=true|false|1|0
 XRD_APPNAME=application-name-used-in-json-file
 ```
 > [!TIP]
@@ -150,6 +155,7 @@ When an application exits, the globally collected JCache statistics for this app
 # ----------------------------------------------------------- #
 # JCache : open files     read      : 923
 # JCache : open unique f. read      : 796
+# JCache : time to open files (s)   : 27.179
 # ----------------------------------------------------------- #
 # JCache : total unique files bytes : 1053908070952
 # JCache : total unique files size  : 1.05 TB
