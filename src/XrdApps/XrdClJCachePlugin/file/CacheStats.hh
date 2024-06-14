@@ -53,6 +53,7 @@ struct CacheStats {
     struct timeval now;
     gettimeofday(&now, nullptr);
     startTime = now.tv_sec + now.tv_usec / 1000000.0;
+    dumperInterval=0;
   }
 
   ~CacheStats() {

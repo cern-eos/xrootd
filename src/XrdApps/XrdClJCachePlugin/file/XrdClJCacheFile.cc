@@ -192,10 +192,10 @@ XRootDStatus JCacheFile::Stat(bool force, ResponseHandler *handler,
 
   if (pFile) {
     if (!force && mOpenAsync) {
-      // let's create a stat response using the cache
-      AnyObject *obj = new AnyObject();
-      std::string id = pUrl;
       if (sEnableJournalCache && AttachForRead() && mOpenAsync) {
+        // let's create a stat response using the cache
+        AnyObject *obj = new AnyObject();
+        std::string id = pUrl;
         auto statInfo = new StatInfo(id, pJournal->getHeaderFileSize(), 0, pJournal->getHeaderMtime());
         obj->Set(statInfo);
         XRootDStatus *ret_st = new XRootDStatus(XRootDStatus(stOK, 0));
@@ -577,10 +577,12 @@ bool JCacheFile::AttachForRead() {
           mLog->Error(1, "JCache : failed to attach to cache file: %s",
                       pJournalPath.c_str());
           mAttachedForRead = true;
+          delete sinfo;
           return false;
         } else {
           mLog->Info(1, "JCache : attached to cache file: %s",
                      pJournalPath.c_str());
+          delete sinfo;
         }
       }
     }
