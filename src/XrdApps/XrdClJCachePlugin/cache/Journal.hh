@@ -81,7 +81,7 @@ public:
 
   // base class interface
   int attach(const std::string &path, uint64_t mtime, uint64_t mtime_nsec,
-             uint64_t size);
+             uint64_t size, bool ifexists=false);
   int detach();
   int unlink();
 
@@ -99,6 +99,16 @@ public:
   std::vector<chunk_t> get_chunks(off_t offset, size_t size);
 
   std::string dump();
+
+  off_t getHeaderFileSize() {
+    std::lock_guard<std::mutex> guard(mtx);
+    return jheader.filesize;
+  }
+
+   off_t getHeaderMtime() {
+    std::lock_guard<std::mutex> guard(mtx);
+    return jheader.mtime;
+  }
 
 private:
   void process_intersection(interval_tree<uint64_t, const void *> &write,

@@ -225,6 +225,10 @@ add_library(
   XrdApps/XrdClJCachePlugin/file/XrdClJCacheFile.cc
   XrdApps/XrdClJCachePlugin/vector/XrdClVectorCache.cc
   XrdApps/XrdClJCachePlugin/vector/XrdClVectorCache.hh
+  XrdApps/XrdClJCachePlugin/handler/XrdClJCacheOpenHandler.cc
+  XrdApps/XrdClJCachePlugin/handler/XrdClJCacheOpenHandler.hh
+  XrdApps/XrdClJCachePlugin/handler/XrdClJCacheReadHandler.hh
+  XrdApps/XrdClJCachePlugin/handler/XrdClJCacheReadVHandler.hh
   XrdApps/XrdClJCachePlugin/cache/Journal.cc
   XrdApps/XrdClJCachePlugin/cache/Journal.hh
   XrdApps/XrdClJCachePlugin/cache/IntervalTree.hh

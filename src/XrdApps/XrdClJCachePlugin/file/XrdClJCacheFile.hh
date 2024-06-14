@@ -35,6 +35,7 @@
 #include "handler/XrdClJCachePgReadHandler.hh"
 #include "handler/XrdClJCacheReadHandler.hh"
 #include "handler/XrdClJCacheReadVHandler.hh"
+#include "handler/XrdClJCacheOpenHandler.hh"
 #include "vector/XrdClVectorCache.hh"
 /*----------------------------------------------------------------------------*/
 #include <atomic>
@@ -221,7 +222,8 @@ public:
   static void SetVector(const bool &value) { sEnableVectorCache = value; }
   static void SetJsonPath(const std::string &path) { sJsonPath = path; }
   static void SetSummary(const bool &value) { sEnableSummary = value; }
-  static void SetSize(uint64_t size) { sCleaner.SetSize(size,sCachePath);}
+  static void SetSize(uint64_t size) { sCleaner.SetSize(size,sCachePath); }
+  static void SetAsync(bool async) { sOpenAsync = async; }
 
   //----------------------------------------------------------------------------
   //! @brief static members pointing to cache settings
@@ -231,6 +233,7 @@ public:
   static bool sEnableVectorCache;
   static bool sEnableJournalCache;
   static bool sEnableSummary;
+  static bool sOpenAsync;
   static JournalManager sJournalManager;
 
   //! @brief set stats interval in seconds
@@ -247,6 +250,15 @@ public:
   //! @brief cleaner instance
   static JCache::Cleaner sCleaner;
 
+   enum State {
+    CLOSED = 0,
+    OPENING,
+    OPEN,
+    FAILED
+  };
+  //! @brief openstate
+  std::atomic<int> mOpenState;
+
 private:
   //! @brief attach for read
   bool AttachForRead();
@@ -259,8 +271,12 @@ private:
   OpenFlags::Flags mFlags;
   //! @brief boolean to track if file is open
   bool mIsOpen;
+  //! @brief async open handler
+  JCacheOpenHandler* pOpenHandler;
   //! @brief pointer to the remote file
   XrdCl::File *pFile;
+  //! @brief boolean if file open is async
+  bool mOpenAsync;
   //! @brief URL of the remote file
   std::string pUrl;
   //! @brief instance of a local journal for this file

@@ -47,7 +47,7 @@ namespace JCache {
 struct CacheStats {
   CacheStats(bool doe = false)
       : bytesRead(0), bytesReadV(0), bytesCached(0), bytesCachedV(0),
-        readOps(0), readVOps(0), readVreadOps(0), nreadfiles(0),
+        readOps(0), readVOps(0), readVreadOps(0), nreadfiles(0), totaldatasize(0),
         dumponexit(doe), peakrate(0) {
     // Get the current real time
     struct timeval now;
@@ -219,6 +219,7 @@ struct CacheStats {
     outFile << "  \"readVreadOps\": " << readVreadOps.load() << ",\n";
     outFile << "  \"nreadfiles\": " << nreadfiles.load() << ",\n";
     outFile << "  \"totaldatasize\": " << totaldatasize.load() << ",\n";
+    outFile << "  \"opentime_ms\": " << opentime.load() << ",\n";
 
     std::lock_guard<std::mutex> lock(urlMutex);
     outFile << "  \"urls\": [";
@@ -315,6 +316,8 @@ struct CacheStats {
         << std::endl;
     oss << "# JCache : open unique f. read      : " << sStats.UniqueUrls()
         << std::endl;
+    oss << "# JCache : time to open files (s)   : " << std::setprecision(3) << sStats.opentime.load()
+        << std::endl;
     oss << "# "
            "-------------------------------------------------------------------"
            "---- #"
@@ -361,6 +364,8 @@ struct CacheStats {
   std::atomic<uint64_t> readVreadOps;
   std::atomic<uint64_t> nreadfiles;
   std::atomic<uint64_t> totaldatasize;
+  std::atomic<double>   opentime;
+
   std::atomic<bool> dumponexit;
   std::set<std::string> urls;
   std::mutex urlMutex;

@@ -33,7 +33,7 @@ std::string XrdCl::JCacheFile::sJsonPath = "";
 bool XrdCl::JCacheFile::sEnableJournalCache = true;
 bool XrdCl::JCacheFile::sEnableVectorCache = false;
 bool XrdCl::JCacheFile::sEnableSummary = true;
-
+bool XrdCl::JCacheFile::sOpenAsync = false;
 JCache::CacheStats XrdCl::JCacheFile::sStats(true);
 JCache::Cleaner XrdCl::JCacheFile::sCleaner;
 JournalManager XrdCl::JCacheFile::sJournalManager;
@@ -43,17 +43,21 @@ namespace XrdCl {
 //------------------------------------------------------------------------------
 // Constructor
 //------------------------------------------------------------------------------
-JCacheFile::JCacheFile(const std::string &url) : mIsOpen(false), pFile(0) {
+JCacheFile::JCacheFile(const std::string &url) : mIsOpen(false), pFile(0), mOpenAsync(false) {
   mAttachedForRead = false;
+  mOpenState=JCacheFile::CLOSED;
   mLog = DefaultEnv::GetLog();
+  pOpenHandler = nullptr;
 }
 //------------------------------------------------------------------------------
 // Constructor
 //------------------------------------------------------------------------------
-JCacheFile::JCacheFile() : mIsOpen(false), pFile(0) {
+JCacheFile::JCacheFile() : mIsOpen(false), pFile(0), mOpenAsync(false) {
   mAttachedForRead = false;
-  mLog = DefaultEnv::GetLog();
+  mOpenState=JCacheFile::CLOSED;
   pStats = new JCache::CacheStats();
+  mLog = DefaultEnv::GetLog();
+  pOpenHandler = nullptr;
 }
 
 //------------------------------------------------------------------------------
@@ -68,6 +72,9 @@ JCacheFile::~JCacheFile() {
   if (pStats) {
     delete pStats;
   }
+  if (pOpenHandler) {
+    delete pOpenHandler;
+  }
 }
 
 //------------------------------------------------------------------------------
@@ -81,7 +88,7 @@ XRootDStatus JCacheFile::Open(const std::string &url, OpenFlags::Flags flags,
 
   if (mIsOpen) {
     st = XRootDStatus(stError, errInvalidOp);
-    std::cerr << "error: file is already opened: " << pUrl << std::endl;
+    mLog->Error(1, "File is already opened: %s", pUrl.c_str());
     return st;
   }
 
@@ -95,23 +102,55 @@ XRootDStatus JCacheFile::Open(const std::string &url, OpenFlags::Flags flags,
   cleanUrl.SetPort(origUrl.GetPort());
   cleanUrl.SetPath(origUrl.GetPath());
   pUrl = cleanUrl.GetURL();
-  st = pFile->Open(url, flags, mode, handler, timeout);
-  if (st.IsOK()) {
-    mIsOpen = true;
-    if (sEnableVectorCache || sEnableJournalCache) {
-      if ((flags & OpenFlags::Flags::Read) == OpenFlags::Flags::Read) {
-        std::string JournalDir =
-            sCachePath + "/" + VectorCache::computeSHA256(pUrl);
-        pJournalPath = JournalDir + "/journal";
-        // it can be that we cannot write the journal directory
-        if (!VectorCache::ensureLastSubdirectoryExists(JournalDir)) {
-          st = XRootDStatus(stError, errOSError);
-          std::cerr << "error: unable to create cache directory: " << JournalDir
-                    << std::endl;
-          return st;
-        }
-      }
+
+
+  // allow to enable asynchronous operation globally
+  if (sOpenAsync) {
+    mOpenAsync = true;
+  }
+
+  // allow to enable asynchronous operation by CGI per file
+  if (origUrl.GetParams().count("xrd.jcache.async") &&
+      origUrl.GetParams().at("xrd.jcache.async")=="1") {
+    mLog->Info(1, "JCache : user allowed async/detached mode");
+    mOpenAsync =true;
+  }
+
+  if ((flags & OpenFlags::Flags::Read) == OpenFlags::Flags::Read) {
+    pOpenHandler = new JCacheOpenHandler(this);
+    st = pFile->Open(url, flags, mode, pOpenHandler, timeout);
+
+    if (!mOpenAsync) {
+      // we have to be sure the file is opened
+      st = pOpenHandler->Wait();
     }
+    if (st.IsOK()) {
+        mIsOpen = true;
+        mOpenState = OPENING;
+        if (sEnableVectorCache || sEnableJournalCache) {
+          if ((flags & OpenFlags::Flags::Read) == OpenFlags::Flags::Read) {
+            std::string JournalDir =
+                sCachePath + "/" + VectorCache::computeSHA256(pUrl);
+            pJournalPath = JournalDir + "/journal";
+            // it can be that we cannot write the journal directory
+            if (!VectorCache::ensureLastSubdirectoryExists(JournalDir)) {
+              st = XRootDStatus(stError, errOSError);
+              std::cerr << "error: unable to create cache directory: " << JournalDir
+                        << std::endl;
+              return st;
+            }
+          }
+        }
+      mOpenState = OPENING;
+      // call the external handler to pretend all is already good!
+      handler->HandleResponseWithHosts(new XRootDStatus(st),0,0);
+    } else {
+      mOpenState = FAILED;
+    }
+  } else {
+    // run with the user handler
+    st = pFile->Open(url, flags, mode, handler, timeout);
+    mOpenState = OPEN;
   }
   return st;
 }
@@ -123,7 +162,11 @@ XRootDStatus JCacheFile::Close(ResponseHandler *handler, uint16_t timeout) {
   XRootDStatus st;
 
   if (mIsOpen) {
+    if (mOpenState == OPENING) {
+      pOpenHandler->Wait();
+    }
     mIsOpen = false;
+    mOpenState = CLOSED;
     pUrl = "";
     if (pFile) {
       st = pFile->Close(handler, timeout);
@@ -148,6 +191,22 @@ XRootDStatus JCacheFile::Stat(bool force, ResponseHandler *handler,
   XRootDStatus st;
 
   if (pFile) {
+    if (!force && mOpenAsync) {
+      // let's create a stat response using the cache
+      AnyObject *obj = new AnyObject();
+      std::string id = pUrl;
+      if (sEnableJournalCache && AttachForRead() && mOpenAsync) {
+        auto statInfo = new StatInfo(id, pJournal->getHeaderFileSize(), 0, pJournal->getHeaderMtime());
+        obj->Set(statInfo);
+        XRootDStatus *ret_st = new XRootDStatus(XRootDStatus(stOK, 0));
+        handler->HandleResponse(ret_st,obj);
+        st = XRootDStatus(stOK, 0);
+        return st;
+      }
+    }
+    // we have to be sure the file is opened
+    st = pOpenHandler->Wait();
+    if (!st.IsOK()) {return st;}
     st = pFile->Stat(force, handler, timeout);
   } else {
     st = XRootDStatus(stError, errInvalidOp);
@@ -165,6 +224,7 @@ XRootDStatus JCacheFile::Read(uint64_t offset, uint32_t size, void *buffer,
 
   if (pFile) {
     sStats.bench.AddMeasurement(size);
+
     if (sEnableJournalCache && AttachForRead()) {
       mLog->Info(1, "JCache : Read: offset=%llu size=%llu buffer=%x path='%s'",
                   offset, size, buffer, pUrl.c_str());
@@ -183,6 +243,10 @@ XRootDStatus JCacheFile::Read(uint64_t offset, uint32_t size, void *buffer,
         return st;
       }
     }
+
+    // we have to be sure the file is opened
+    st = pOpenHandler->Wait();
+    if (!st.IsOK()) {return st;}
 
     auto jhandler =
         new JCacheReadHandler(handler, &pStats->bytesRead,
@@ -220,6 +284,7 @@ XRootDStatus JCacheFile::PgRead(uint64_t offset, uint32_t size, void *buffer,
   XRootDStatus st;
   if (pFile) {
     sStats.bench.AddMeasurement(size);
+
     if (sEnableJournalCache && AttachForRead()) {
       mLog->Info(1, "JCache : PgRead: offset=%llu size=%llu buffer=%x path='%s'",
                 offset, size, buffer, pUrl.c_str());
@@ -241,6 +306,10 @@ XRootDStatus JCacheFile::PgRead(uint64_t offset, uint32_t size, void *buffer,
         return st;
       }
     }
+
+    // we have to be sure the file is opened
+    st = pOpenHandler->Wait();
+    if (!st.IsOK()) {return st;}
 
     auto jhandler =
         new JCachePgReadHandler(handler, &pStats->bytesRead,
@@ -374,6 +443,10 @@ XRootDStatus JCacheFile::VectorRead(const ChunkList &chunks, void *buffer,
       }
     }
 
+    // we have to be sure the file is opened
+    st = pOpenHandler->Wait();
+    if (!st.IsOK()) {return st;}
+
     auto jhandler = new JCacheReadVHandler(
         handler, &pStats->bytesReadV,
         sEnableJournalCache ? pJournal.get() : nullptr,
@@ -398,6 +471,10 @@ XRootDStatus JCacheFile::Fcntl(const XrdCl::Buffer &arg,
                                ResponseHandler *handler, uint16_t timeout) {
   XRootDStatus st;
 
+  // we have to be sure the file is opened
+  st = pOpenHandler->Wait();
+  if (!st.IsOK()) {return st;}
+
   if (pFile) {
     st = pFile->Fcntl(arg, handler, timeout);
   } else {
@@ -412,6 +489,10 @@ XRootDStatus JCacheFile::Fcntl(const XrdCl::Buffer &arg,
 //------------------------------------------------------------------------------
 XRootDStatus JCacheFile::Visa(ResponseHandler *handler, uint16_t timeout) {
   XRootDStatus st;
+
+  // we have to be sure the file is opened
+  st =  pOpenHandler->Wait();
+  if (!st.IsOK()) {return st;}
 
   if (pFile) {
     st = pFile->Visa(handler, timeout);
@@ -444,6 +525,7 @@ bool JCacheFile::SetProperty(const std::string &name,
 //------------------------------------------------------------------------------
 bool JCacheFile::GetProperty(const std::string &name,
                              std::string &value) const {
+  if (!pOpenHandler->Wait().IsOK()) { return false;}
   if (pFile) {
     return pFile->GetProperty(name, value);
   } else {
@@ -462,12 +544,33 @@ bool JCacheFile::AttachForRead() {
       mLog->Info(1, "JCache : attaching via journalmanager to '%s'",
                  pUrl.c_str());
       pJournal = sJournalManager.attach(pUrl);
+
+      // try to attach to an existing journal (disconnected mode)
+      if (mOpenAsync) {
+        if (!pJournal->attach(pJournalPath, 0, 0, 0, true)) {
+          if (!sStats.HasUrl(pUrl)) {
+            sStats.totaldatasize += pJournal->getHeaderFileSize();
+          }
+          mLog->Info(1, "JCache : attached (async) to cache file: %s",
+                     pJournalPath.c_str());
+          sStats.AddUrl(pUrl);
+          mAttachedForRead = true;
+          return true;
+        } else {
+          mOpenAsync = false;
+        }
+      }
+
+      // We need an open file here to proceed
+      pOpenHandler->Wait();
+
       StatInfo *sinfo = 0;
       auto st = pFile->Stat(false, sinfo);
       if (sinfo) {
         // only add a file if it wasn't yet added
         if (!sStats.HasUrl(pUrl)) {
           sStats.totaldatasize += sinfo->GetSize();
+          sStats.opentime = sStats.opentime.load() + pOpenHandler->GetTimeToOpen();
         }
         if (pJournal->attach(pJournalPath, sinfo->GetModTime(), 0,
                              sinfo->GetSize())) {

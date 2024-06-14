@@ -54,16 +54,19 @@ public:
       JCacheFile::SetSize(itsz != config->end() ? std::stoll(std::string(itsz->second),0,10) : 0);
 
       auto itv = config->find("vector");
-      JCacheFile::SetVector(itv != config->end() ? itv->second == "true"
+      JCacheFile::SetVector(itv != config->end() ? (itv->second == "true") || (itv->second == "1")
                                                  : false);
       auto itj = config->find("journal");
-      JCacheFile::SetJournal(itj != config->end() ? itj->second == "true"
+      JCacheFile::SetJournal(itj != config->end() ? (itj->second == "true") || (itj->second == "1")
                                                   : true);
+      auto ita = config->find("async");
+      JCacheFile::SetAsync(ita != config->end() ? (ita->second == "true") || (ita->second == "1")
+                                                  : false);
       auto itjson = config->find("json");
       JCacheFile::SetJsonPath(itjson != config->end() ? itjson->second : "");
 
       auto its = config->find("summary");
-      JCacheFile::SetSummary(its != config->end() ? its->second == "true"
+      JCacheFile::SetSummary(its != config->end() ? (its->second == "true") || (its->second == "1")
                                                   : true);
       auto itsi = config->find("stats");
       JCacheFile::SetStatsInterval(itsi != config->end() ? std::stoll(std::string(itsi->second),0,10) : 0);
@@ -78,15 +81,19 @@ public:
       }
 
       if (const char *v = getenv("XRD_JCACHE_SUMMARY")) {
-        JCacheFile::SetSummary((std::string(v) == "true") ? true : false);
+        JCacheFile::SetSummary(((std::string(v) == "true") || (std::string(v) == "1")) ? true : false);
       }
 
       if (const char *v = getenv("XRD_JCACHE_JOURNAL")) {
-        JCacheFile::SetJournal((std::string(v) == "true") ? true : false);
+        JCacheFile::SetJournal(((std::string(v) == "true") || (std::string(v) == "1")) ? true : false);
       }
 
       if (const char *v = getenv("XRD_JCACHE_VECTOR")) {
-        JCacheFile::SetVector((std::string(v) == "true") ? true : false);
+        JCacheFile::SetVector(((std::string(v) == "true") || (std::string(v) == "1")) ? true : false);
+      }
+
+      if (const char *v = getenv("XRD_JCACHE_ASYNC")) {
+        JCacheFile::SetAsync(((std::string(v) == "true") || (std::string(v) == "1")) ? true : false);
       }
 
       if (const char *v = getenv("XRD_JCACHE_JSON")) {
@@ -107,6 +114,8 @@ public:
                 JCacheFile::sEnableJournalCache ? "true" : "false");
       log->Info(1, "JCache : summary output is: %s",
                 JCacheFile::sEnableSummary ? "true" : "false");
+      log->Info(1, "JCache : asynchrous/disconnected operation: %s",
+                JCacheFile::sOpenAsync ? "true" : "false");
       if (JCacheFile::sJsonPath.length()) {
         log->Info(1, "JCache : json output to prefix: %s",
                   JCacheFile::sJsonPath.c_str());

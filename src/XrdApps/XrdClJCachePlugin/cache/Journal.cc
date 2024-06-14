@@ -89,18 +89,22 @@ void Journal::read_jheader() {
     return;
   }
   // TODO: understand why the mtime is +-1s
-  if ((abs(fheader.mtime - jheader.mtime) > 1) ||
-      (fheader.mtime_nsec != jheader.mtime_nsec) ||
-      (fheader.filesize != jheader.filesize)) {
-    if (fheader.mtime) {
+  if (jheader.mtime) {
+    if ((abs(fheader.mtime - jheader.mtime) > 1) ||
+        (fheader.mtime_nsec != jheader.mtime_nsec) ||
+        (jheader.filesize && (fheader.filesize != jheader.filesize))) {
       std::cerr << "warning: remote file change detected - purging path:"
                 << path << std::endl;
       std::cerr << fheader.mtime << ":" << jheader.mtime << " "
                 << fheader.mtime_nsec << ":" << jheader.mtime_nsec << " "
                 << fheader.filesize << ":" << jheader.filesize << std::endl;
+      reset();
+      return;
     }
-    reset();
-    return;
+  } else {
+    // we assume the contents referenced in the header is ok to allow disconnected ops
+    jheader.mtime = fheader.mtime;
+    jheader.filesize = fheader.filesize;
   }
 }
 
@@ -155,13 +159,27 @@ int Journal::read_journal() {
 //! Journal attach
 //------------------------------------------------------------------------------
 int Journal::attach(const std::string &lpath, uint64_t mtime,
-                    uint64_t mtime_nsec, uint64_t size) {
+                    uint64_t mtime_nsec, uint64_t size, bool ifexists) {
   std::lock_guard<std::mutex> guard(mtx);
   path = lpath;
-  jheader.mtime = mtime;
-  jheader.mtime_nsec = mtime_nsec;
-  jheader.filesize = size;
 
+  if (!ifexists) {
+    jheader.mtime = mtime;
+    jheader.mtime_nsec = mtime_nsec;
+    jheader.filesize = size;
+  }
+
+  if (ifexists) {
+    struct stat buf;
+    // check if there is already a journal for this file known
+    if (::stat(path.c_str(), &buf)) {
+      return -ENOENT;
+    } else {
+      if ((size_t)buf.st_size < sizeof(jheader_t)) {
+        return -EINVAL;
+      }
+    }
+  }
   if ((fd == -1)) {
     // need to open the file
     size_t tries = 0;
