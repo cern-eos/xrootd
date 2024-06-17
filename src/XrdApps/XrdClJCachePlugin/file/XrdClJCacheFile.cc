@@ -151,6 +151,7 @@ XRootDStatus JCacheFile::Open(const std::string &url, OpenFlags::Flags flags,
     // run with the user handler
     st = pFile->Open(url, flags, mode, handler, timeout);
     mOpenState = OPEN;
+    mIsOpen = true;
   }
   return st;
 }
@@ -205,8 +206,10 @@ XRootDStatus JCacheFile::Stat(bool force, ResponseHandler *handler,
       }
     }
     // we have to be sure the file is opened
-    st = pOpenHandler->Wait();
-    if (!st.IsOK()) {return st;}
+    if (pOpenHandler) {
+      st = pOpenHandler->Wait();
+      if (!st.IsOK()) {return st;}
+    }
     st = pFile->Stat(force, handler, timeout);
   } else {
     st = XRootDStatus(stError, errInvalidOp);
@@ -245,8 +248,10 @@ XRootDStatus JCacheFile::Read(uint64_t offset, uint32_t size, void *buffer,
     }
 
     // we have to be sure the file is opened
-    st = pOpenHandler->Wait();
-    if (!st.IsOK()) {return st;}
+    if (pOpenHandler) {
+      st = pOpenHandler->Wait();
+      if (!st.IsOK()) {return st;}
+    }
 
     auto jhandler =
         new JCacheReadHandler(handler, &pStats->bytesRead,
@@ -266,7 +271,6 @@ XRootDStatus JCacheFile::Write(uint64_t offset, uint32_t size,
                                const void *buffer, ResponseHandler *handler,
                                uint16_t timeout) {
   XRootDStatus st;
-
   if (pFile) {
     st = pFile->Write(offset, size, buffer, handler, timeout);
   } else {
@@ -308,9 +312,10 @@ XRootDStatus JCacheFile::PgRead(uint64_t offset, uint32_t size, void *buffer,
     }
 
     // we have to be sure the file is opened
-    st = pOpenHandler->Wait();
-    if (!st.IsOK()) {return st;}
-
+    if (pOpenHandler) {
+      st = pOpenHandler->Wait();
+      if (!st.IsOK()) {return st;}
+    }
     auto jhandler =
         new JCachePgReadHandler(handler, &pStats->bytesRead,
                                 sEnableJournalCache ? pJournal.get() : nullptr);
@@ -444,8 +449,10 @@ XRootDStatus JCacheFile::VectorRead(const ChunkList &chunks, void *buffer,
     }
 
     // we have to be sure the file is opened
-    st = pOpenHandler->Wait();
-    if (!st.IsOK()) {return st;}
+    if (pOpenHandler) {
+      st = pOpenHandler->Wait();
+      if (!st.IsOK()) {return st;}
+    }
 
     auto jhandler = new JCacheReadVHandler(
         handler, &pStats->bytesReadV,
@@ -472,8 +479,10 @@ XRootDStatus JCacheFile::Fcntl(const XrdCl::Buffer &arg,
   XRootDStatus st;
 
   // we have to be sure the file is opened
-  st = pOpenHandler->Wait();
-  if (!st.IsOK()) {return st;}
+  if (pOpenHandler) {
+    st = pOpenHandler->Wait();
+    if (!st.IsOK()) {return st;}
+  }
 
   if (pFile) {
     st = pFile->Fcntl(arg, handler, timeout);
@@ -491,9 +500,10 @@ XRootDStatus JCacheFile::Visa(ResponseHandler *handler, uint16_t timeout) {
   XRootDStatus st;
 
   // we have to be sure the file is opened
-  st =  pOpenHandler->Wait();
-  if (!st.IsOK()) {return st;}
-
+  if (pOpenHandler) {
+    st =  pOpenHandler->Wait();
+    if (!st.IsOK()) {return st;}
+  }
   if (pFile) {
     st = pFile->Visa(handler, timeout);
   } else {
@@ -525,7 +535,9 @@ bool JCacheFile::SetProperty(const std::string &name,
 //------------------------------------------------------------------------------
 bool JCacheFile::GetProperty(const std::string &name,
                              std::string &value) const {
-  if (!pOpenHandler->Wait().IsOK()) { return false;}
+  if (pOpenHandler) {
+    if (!pOpenHandler->Wait().IsOK()) { return false;}
+  }
   if (pFile) {
     return pFile->GetProperty(name, value);
   } else {
