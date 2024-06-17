@@ -62,6 +62,9 @@ public:
       auto ita = config->find("async");
       JCacheFile::SetAsync(ita != config->end() ? (ita->second == "true") || (ita->second == "1")
                                                   : false);
+      auto itb = config->find("bypass");
+      JCacheFile::SetBypass(itb != config->end() ? (itb->second == "true") || (itb->second == "1")
+                                                  : false);
       auto itjson = config->find("json");
       JCacheFile::SetJsonPath(itjson != config->end() ? itjson->second : "");
 
@@ -96,6 +99,10 @@ public:
         JCacheFile::SetAsync(((std::string(v) == "true") || (std::string(v) == "1")) ? true : false);
       }
 
+      if (const char *v = getenv("XRD_JCACHE_BYPASS")) {
+        JCacheFile::SetBypass(((std::string(v) == "true") || (std::string(v) == "1")) ? true : false);
+      }
+
       if (const char *v = getenv("XRD_JCACHE_JSON")) {
         JCacheFile::SetJsonPath((std::string(v).length()) ? std::string(v)
                                                           : "");
@@ -116,6 +123,8 @@ public:
                 JCacheFile::sEnableSummary ? "true" : "false");
       log->Info(1, "JCache : asynchrous/disconnected operation: %s",
                 JCacheFile::sOpenAsync ? "true" : "false");
+      log->Info(1, "JCache : bypass operation: %s",
+                JCacheFile::sEnableBypass ? "true" : "false");
       if (JCacheFile::sJsonPath.length()) {
         log->Info(1, "JCache : json output to prefix: %s",
                   JCacheFile::sJsonPath.c_str());

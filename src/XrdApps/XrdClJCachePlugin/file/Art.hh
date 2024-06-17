@@ -46,6 +46,12 @@ public:
     double maxValue = *std::max_element(dataPoints.begin(), dataPoints.end());
     double minValue = *std::min_element(dataPoints.begin(), dataPoints.end());
 
+    // we want to see the full range starting at 0 on the Y axis for now
+    minValue = 0;
+
+    // we round the axis to clean 100
+    maxValue = (int)(maxValue+9) / 10 * 10;
+
     const int plotHeight = 10;  // Number of lines in the plot
     const int plotWidth = 40;   // Width of the plot in characters
     const int yLegendWidth = 8; // Width of the Y legend in characters

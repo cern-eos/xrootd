@@ -33,6 +33,7 @@ std::string XrdCl::JCacheFile::sJsonPath = "";
 bool XrdCl::JCacheFile::sEnableJournalCache = true;
 bool XrdCl::JCacheFile::sEnableVectorCache = false;
 bool XrdCl::JCacheFile::sEnableSummary = true;
+bool XrdCl::JCacheFile::sEnableBypass = false;
 bool XrdCl::JCacheFile::sOpenAsync = false;
 JCache::CacheStats XrdCl::JCacheFile::sStats(true);
 JCache::Cleaner XrdCl::JCacheFile::sCleaner;
@@ -127,7 +128,7 @@ XRootDStatus JCacheFile::Open(const std::string &url, OpenFlags::Flags flags,
     if (st.IsOK()) {
         mIsOpen = true;
         mOpenState = OPENING;
-        if (sEnableVectorCache || sEnableJournalCache) {
+        if (sEnableVectorCache || (sEnableJournalCache && !sEnableBypass)) {
           if ((flags & OpenFlags::Flags::Read) == OpenFlags::Flags::Read) {
             std::string JournalDir =
                 sCachePath + "/" + VectorCache::computeSHA256(pUrl);
@@ -228,7 +229,7 @@ XRootDStatus JCacheFile::Read(uint64_t offset, uint32_t size, void *buffer,
   if (pFile) {
     sStats.bench.AddMeasurement(size);
 
-    if (sEnableJournalCache && AttachForRead()) {
+    if (!sEnableBypass && sEnableJournalCache && AttachForRead()) {
       mLog->Info(1, "JCache : Read: offset=%llu size=%llu buffer=%x path='%s'",
                   offset, size, buffer, pUrl.c_str());
       bool eof = false;
@@ -255,7 +256,7 @@ XRootDStatus JCacheFile::Read(uint64_t offset, uint32_t size, void *buffer,
 
     auto jhandler =
         new JCacheReadHandler(handler, &pStats->bytesRead,
-                              sEnableJournalCache ? pJournal.get() : nullptr);
+                              sEnableJournalCache &&! sEnableBypass? pJournal.get() : nullptr);
     pStats->readOps++;
     st = pFile->Read(offset, size, buffer, jhandler, timeout);
   } else {
@@ -289,7 +290,7 @@ XRootDStatus JCacheFile::PgRead(uint64_t offset, uint32_t size, void *buffer,
   if (pFile) {
     sStats.bench.AddMeasurement(size);
 
-    if (sEnableJournalCache && AttachForRead()) {
+    if (sEnableJournalCache && AttachForRead() && !sEnableBypass) {
       mLog->Info(1, "JCache : PgRead: offset=%llu size=%llu buffer=%x path='%s'",
                 offset, size, buffer, pUrl.c_str());
       bool eof = false;
@@ -318,7 +319,7 @@ XRootDStatus JCacheFile::PgRead(uint64_t offset, uint32_t size, void *buffer,
     }
     auto jhandler =
         new JCachePgReadHandler(handler, &pStats->bytesRead,
-                                sEnableJournalCache ? pJournal.get() : nullptr);
+                                sEnableJournalCache && !sEnableBypass ? pJournal.get() : nullptr);
     pStats->readOps++;
     st = pFile->PgRead(offset, size, buffer, jhandler, timeout);
   } else {
@@ -414,7 +415,7 @@ XRootDStatus JCacheFile::VectorRead(const ChunkList &chunks, void *buffer,
         return st;
       }
     } else {
-      if (sEnableJournalCache) {
+      if (!sEnableBypass && sEnableJournalCache) {
         bool inJournal = true;
         size_t len = 0;
         // try to get chunks from journal cache
@@ -456,7 +457,7 @@ XRootDStatus JCacheFile::VectorRead(const ChunkList &chunks, void *buffer,
 
     auto jhandler = new JCacheReadVHandler(
         handler, &pStats->bytesReadV,
-        sEnableJournalCache ? pJournal.get() : nullptr,
+        sEnableJournalCache && !sEnableBypass ? pJournal.get() : nullptr,
         buffer ? (char *)buffer : (char *)(chunks.begin()->buffer),
         sEnableVectorCache ? sCachePath : "", pUrl);
     pStats->readVOps++;
@@ -586,8 +587,12 @@ bool JCacheFile::AttachForRead() {
         }
         if (pJournal->attach(pJournalPath, sinfo->GetModTime(), 0,
                              sinfo->GetSize())) {
-          mLog->Error(1, "JCache : failed to attach to cache file: %s",
+          if (!sEnableBypass) {
+            // when bypass=true this might throw an error because we don't create the
+            // journal directory - we just don't want to see this
+            mLog->Error(1, "JCache : failed to attach to cache file: %s",
                       pJournalPath.c_str());
+          }
           mAttachedForRead = true;
           delete sinfo;
           return false;

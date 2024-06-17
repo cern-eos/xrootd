@@ -82,7 +82,7 @@ struct CacheStats {
         XrdCl::JCacheFile::sStats.persistToJson(jsonpath, name);
       }
       if (XrdCl::JCacheFile::sEnableSummary) {
-        std::cerr << CacheStats::GlobalStats(XrdCl::JCacheFile::sStats);
+        std::cerr << CacheStats::GlobalStats(XrdCl::JCacheFile::sStats, XrdCl::JCacheFile::sEnableBypass);
       }
       std::vector<uint64_t> bins = XrdCl::JCacheFile::sStats.bench.GetBins(40);
       JCache::Art art;
@@ -264,7 +264,7 @@ struct CacheStats {
     gStats.nreadfiles += 1;
   }
 
-  static std::string GlobalStats(CacheStats &sStats) {
+  static std::string GlobalStats(CacheStats &sStats, bool bypass) {
     std::ostringstream oss;
 
     oss << "# "
@@ -279,22 +279,26 @@ struct CacheStats {
            "---- #"
         << std::endl;
 
-
-    oss << "# JCache : cache combined hit rate  : " << std::fixed
-        << std::setprecision(2) << sStats.CombinedHitRate() << " %"
-        << std::endl;
-    oss << "# JCache : cache read     hit rate  : " << std::fixed
-        << std::setprecision(2) << (!sStats.ReadOpBytes() ? "\033[9m" : "")
-        << sStats.HitRate() << " %" << (!sStats.ReadOpBytes() ? "\033[0m" : "")
-        << std::endl;
-    oss << "# JCache : cache readv    hit rate  : " << std::fixed
-        << std::setprecision(2) << (!sStats.ReadVOpBytes() ? "\033[9m" : "")
-        << sStats.HitRateV() << " %" << (!sStats.ReadOpBytes() ? "\033[0m" : "")
-        << std::endl;
+    if (bypass) {
+      oss << "# JCache : cache runs in bypass mode (hitrate=0%) " << std::endl;
+    } else {
+      oss << "# JCache : cache combined hit rate  : " << std::fixed
+          << std::setprecision(2) << sStats.CombinedHitRate() << " %"
+          << std::endl;
+      oss << "# JCache : cache read     hit rate  : " << std::fixed
+          << std::setprecision(2) << (!sStats.ReadOpBytes() ? "\033[9m" : "")
+          << sStats.HitRate() << " %" << (!sStats.ReadOpBytes() ? "\033[0m" : "")
+          << std::endl;
+      oss << "# JCache : cache readv    hit rate  : " << std::fixed
+          << std::setprecision(2) << (!sStats.ReadVOpBytes() ? "\033[9m" : "")
+          << sStats.HitRateV() << " %" << (!sStats.ReadOpBytes() ? "\033[0m" : "")
+          << std::endl;
+    }
     oss << "# "
-           "-------------------------------------------------------------------"
-           "---- #"
+            "-------------------------------------------------------------------"
+            "---- #"
         << std::endl;
+
     oss << "# JCache : total bytes    read      : "
         << sStats.bytesRead.load() + sStats.bytesCached.load() << std::endl;
     oss << "# JCache : total bytes    readv     : "
@@ -401,7 +405,7 @@ struct CacheStats {
         if (XrdCl::JCacheFile::sStats.realTime < 1) {
           XrdCl::JCacheFile::sStats.peakrate = XrdCl::JCacheFile::sStats.ReadBytes() / XrdCl::JCacheFile::sStats.realTime;
         }
-        std::string st = CacheStats::GlobalStats(XrdCl::JCacheFile::sStats);
+        std::string st = CacheStats::GlobalStats(XrdCl::JCacheFile::sStats, XrdCl::JCacheFile::sEnableBypass);
         std::cerr << st << std::endl;
       }
     }

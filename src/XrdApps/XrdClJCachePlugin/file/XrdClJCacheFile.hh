@@ -222,6 +222,7 @@ public:
   static void SetVector(const bool &value) { sEnableVectorCache = value; }
   static void SetJsonPath(const std::string &path) { sJsonPath = path; }
   static void SetSummary(const bool &value) { sEnableSummary = value; }
+  static void SetBypass(const bool &value) { sEnableBypass = value; }
   static void SetSize(uint64_t size) { sCleaner.SetSize(size,sCachePath); }
   static void SetAsync(bool async) { sOpenAsync = async; }
 
@@ -232,6 +233,7 @@ public:
   static std::string sJsonPath;
   static bool sEnableVectorCache;
   static bool sEnableJournalCache;
+  static bool sEnableBypass;
   static bool sEnableSummary;
   static bool sOpenAsync;
   static JournalManager sJournalManager;

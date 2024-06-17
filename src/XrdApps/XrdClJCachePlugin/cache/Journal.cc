@@ -79,6 +79,7 @@ Journal::~Journal() {
 //------------------------------------------------------------------------------
 void Journal::read_jheader() {
   jheader_t fheader;
+  bool exists=false;
   auto hr = ::pread64(fd, &fheader, sizeof(jheader), 0);
   if ((hr > 0) &&
       ((hr != sizeof(jheader)) || (fheader.magic != JOURNAL_MAGIC))) {
@@ -88,18 +89,24 @@ void Journal::read_jheader() {
     reset();
     return;
   }
+
+  exists = (hr==sizeof(jheader));
+
   // TODO: understand why the mtime is +-1s
   if (jheader.mtime) {
-    if ((abs(fheader.mtime - jheader.mtime) > 1) ||
-        (fheader.mtime_nsec != jheader.mtime_nsec) ||
-        (jheader.filesize && (fheader.filesize != jheader.filesize))) {
-      std::cerr << "warning: remote file change detected - purging path:"
-                << path << std::endl;
-      std::cerr << fheader.mtime << ":" << jheader.mtime << " "
-                << fheader.mtime_nsec << ":" << jheader.mtime_nsec << " "
-                << fheader.filesize << ":" << jheader.filesize << std::endl;
-      reset();
-      return;
+    if (exists) {
+      // we only compare if there was a header in the journal
+      if ((abs(fheader.mtime - jheader.mtime) > 1) ||
+          (fheader.mtime_nsec != jheader.mtime_nsec) ||
+          (jheader.filesize && (fheader.filesize != jheader.filesize))) {
+        std::cerr << "warning: remote file change detected - purging path:"
+                 << path << std::endl;
+       std::cerr << fheader.mtime << ":" << jheader.mtime << " "
+                 << fheader.mtime_nsec << ":" << jheader.mtime_nsec << " "
+                 << fheader.filesize << ":" << jheader.filesize << std::endl;
+        reset();
+        return;
+      }
     }
   } else {
     // we assume the contents referenced in the header is ok to allow disconnected ops
