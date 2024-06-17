@@ -198,7 +198,16 @@ As mentioned in the configuration section JCache writes by default a summary fil
 
 # 6 Cache-Cleaning
 
-For the time being the levelling of the cache directory is not part of the Client plug-in. A simple cleaner executable is provides:
+If you have a long-running application or a proxy server you can define the size of your cache directory by configuration file:
+```
+size = 10000000000
+```
+or via the environment variable XRD_JCACHE_SIZE=1000000000
+
+The minimum cleaner size is 1GB, otherwise it is ignored. The cleaner thread by default runs every minutes and when the given size is exceeded (high water mark), it cleans the cache directory to 90% starting with the oldest files by access time. Setting the size to 0 disables the cleaning (default behaviour). 
+
+In more complex environments the cleaner can be run as a daemon using a standalone application:
+
 ```
 xrdclcacheclean 
 Usage: xrdclcacheclean <directory> <highwatermark> <lowwatermark> <interval> 
@@ -228,12 +237,6 @@ mkdir -p /var/tmp/jcache/
 chown daemon:daemon /var/tmp/jcache/
 env XRD_PLUGIN=/usr/lib64/libXrdClJCachePlugin-5.so XRD_JCACHE_CACHE=/var/tmp/jcache/ xrootd -c jcache.cf -Rdaemon -p 8443
 ```
-
-
-
-
-
-
 
 # 8 To-Do List
 - ~~Pre-shard cache directory structure not to have all cached files in a flat directory listing~~ (won't do)
