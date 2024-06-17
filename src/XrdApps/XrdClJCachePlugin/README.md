@@ -33,6 +33,7 @@ summary = true
 stats = 0
 size = 0
 async = 0
+bypass = 0
 json =
 
 ```
@@ -50,6 +51,9 @@ json =
 > [!TIP]
 > If you want to have the possiblity of detached/asynchronous open operation, then set ```async = 1```. The cache then relies on the filesize and modification times stored in the journal cache. This should only be used for WORM data. The advantage is that there is no need to wait for remote Open operations to finish during the attachment to the cache if there is already a journal entry for the requested file. So if all requests are already in the cache, there is not a single possibly slow remote operation in the IO path.
 
+> [!TIP]
+> If you want to benefit from the benchmarking statics you can switch the plug-to to bypass. In this case statistics is gathered but no file is written to the cache and not data is served from the cache.
+
 > [!NOTE]  
 > The easiest way to verifyt the plug-in functionning is to run with ```XRD_LOGLEVEL=Info``` since the plug-in will provide
 > some startup information and also prints where a file is cached locally once it is attached.
@@ -63,6 +67,7 @@ XRD_JCACHE_CACHE=directory-path-to-cache
 XRD_JCACHE_JSON=directory-path-for-json|""
 XRD_JCACHE_SIZE=number-in-bytes
 XRD_JCACHE_ASYNC=true|false|1|0
+XRD_JCACHE_BYPASS=true|false|1|0
 XRD_APPNAME=application-name-used-in-json-file
 ```
 > [!TIP]
@@ -184,6 +189,8 @@ When an application exits, the globally collected JCache statistics for this app
 Most of these fields are self explanatory. The field *readvread* are the number of individual read requests which are contained inside all *readv* IO operations. The statistics shows the total number of files opened for read (only!) and the unique files. To distinguish unique files the CGI information and named connections are removed. The percentage of a dataset read is computed by adding all read bytes from *read/pgread* + *readv* normalized to the total filesize of all unique files opened for reading. The application acceleration is simply the ratio of cputime over realtime. The application IO rate is computed from total read bytes over realtime in MB/s.
 
 The ASCII plot shows the IO request rate over time. The total runtime (REAL time) is divided into 40 equal bins and in each bin the data requested is plotted. 
+
+If the plug-in is running in bypass mode, the hitrate section is replaced mentioning the bypass mode.
 
 # 5 JSON Summary File
 
