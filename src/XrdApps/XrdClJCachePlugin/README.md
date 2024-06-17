@@ -249,6 +249,7 @@ env XRD_PLUGIN=/usr/lib64/libXrdClJCachePlugin-5.so XRD_JCACHE_CACHE=/var/tmp/jc
 - Add automatic connection de-multiplexing if contention to storage servers is detected
 - Add a CGI option to force cleaning of journal cache for a given file
 - Add a CGI option to bypass journal cache for a given file
+- Add crc32c to journal fragement structure
 - Attaching large files which are not in the buffercache is slow. We should write a compacted journal index, when we detach and read it on attach in a single read
 - ~~We should make a configuration variable, which allows to regularily dump cache statistics and reset counters. This is useful when the plug-in runs inside a proxy server.~~ :white_check_mark:
 
