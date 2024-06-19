@@ -27,10 +27,11 @@
 //------------------------------------------------------------------------------
 #include <sys/stat.h>
 #include <sys/xattr.h>
+
 #include <cstring>
 #include <iomanip>
-#include <sstream>
 #include <iostream>
+#include <sstream>
 //------------------------------------------------------------------------------
 #include "XrdPosix/XrdPosixExtern.hh"
 //------------------------------------------------------------------------------
@@ -291,7 +292,7 @@ int S3Utils::makePath(char *path, mode_t mode) {
 //! @param stop The path to stop at
 //------------------------------------------------------------------------------
 void S3Utils::RmPath(std::filesystem::path path,
-                    const std::filesystem::path &stop) {
+                     const std::filesystem::path &stop) {
   while (path != stop && !XrdPosix_Rmdir(path.c_str())) {
     path = path.parent_path();
   }
@@ -317,7 +318,7 @@ std::string S3Utils::GetXattr(const std::filesystem::path &path,
   if (ret == -1) {
     return {};
   }
-  
+
   // Add a terminating '\0'
   res.resize(ret + 1);
   XrdPosix_Getxattr(path.c_str(), ("user.s3." + key).c_str(), res.data(),
@@ -327,6 +328,7 @@ std::string S3Utils::GetXattr(const std::filesystem::path &path,
 }
 
 #include <sys/xattr.h>
+
 #include "XrdS3XAttr.hh"
 #define XrdPosix_Setxattr setxattr
 // TODO: Replace by XrdPosix_Setxattr once implemented
@@ -347,7 +349,7 @@ int S3Utils::SetXattr(const std::filesystem::path &path, const std::string &key,
 //------------------------------------------------------------------------------
 bool S3Utils::IsDirEmpty(const std::filesystem::path &path) {
   auto dir = XrdPosix_Opendir(path.c_str());
-  
+
   if (dir == nullptr) {
     return false;
   }

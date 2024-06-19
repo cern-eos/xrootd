@@ -26,6 +26,8 @@
 
 //------------------------------------------------------------------------------
 #include <dirent.h>
+#include <sys/types.h>
+
 #include <bitset>
 #include <filesystem>
 #include <functional>
@@ -34,7 +36,6 @@
 #include <numeric>
 #include <sstream>
 #include <string>
-#include <sys/types.h>
 //------------------------------------------------------------------------------
 
 namespace S3 {
@@ -152,4 +153,3 @@ class S3Utils {
 };
 
 }  // namespace S3
-

@@ -1,6 +1,7 @@
 //------------------------------------------------------------------------------
 // Copyright (c) 2024 by European Organization for Nuclear Research (CERN)
-// Author: Andreas-Joachim Peters / CERN EOS Project <andreas.joachim.peters@cern.ch>
+// Author: Andreas-Joachim Peters / CERN EOS Project
+// <andreas.joachim.peters@cern.ch>
 //------------------------------------------------------------------------------
 // This file is part of the XRootD software suite.
 //
@@ -35,15 +36,12 @@ namespace S3 {
 //! process to the given values during the lifetime of the object.
 //! On destruction the fsuid and fsgid are restored to their original values.
 //------------------------------------------------------------------------------
-class ScopedFsId
-{
-public:
+class ScopedFsId {
+ public:
   //----------------------------------------------------------------------------
   //! Constructor
   //----------------------------------------------------------------------------
-  ScopedFsId(uid_t fsuid_, gid_t fsgid_)
-    : fsuid(fsuid_), fsgid(fsgid_)
-  {
+  ScopedFsId(uid_t fsuid_, gid_t fsgid_) : fsuid(fsuid_), fsgid(fsgid_) {
     ok = true;
     prevFsuid = -1;
     prevFsgid = -1;
@@ -55,7 +53,8 @@ public:
       prevFsuid = setfsuid(fsuid);
 
       if (setfsuid(fsuid) != fsuid) {
-        std::cerr << "Error: Unable to set fsuid to " << fsuid << "." <<std::endl;
+        std::cerr << "Error: Unable to set fsuid to " << fsuid << "."
+                  << std::endl;
         ok = false;
         return;
       }
@@ -68,7 +67,8 @@ public:
       prevFsgid = setfsgid(fsgid);
 
       if (setfsgid(fsgid) != fsgid) {
-        std::cerr << "Error: Unable to set fsgid to " << fsgid << "." <<std::endl;
+        std::cerr << "Error: Unable to set fsgid to " << fsgid << "."
+                  << std::endl;
         ok = false;
         return;
       }
@@ -78,8 +78,7 @@ public:
   //----------------------------------------------------------------------------
   //! Destructor
   //----------------------------------------------------------------------------
-  ~ScopedFsId()
-  {
+  ~ScopedFsId() {
     if (prevFsuid >= 0) {
       setfsuid(prevFsuid);
     }
@@ -89,18 +88,17 @@ public:
     }
   }
 
-  bool IsOk() const
-  {
-    return ok;
-  }
+  bool IsOk() const { return ok; }
 
   static void Validate() {
-    ScopedFsId scope(geteuid()+1, geteuid()+1);
+    ScopedFsId scope(geteuid() + 1, geteuid() + 1);
     if (!scope.IsOk()) {
-      throw std::runtime_error("XrdS3 misses the capability to set the filesystem IDs on the fly!");
+      throw std::runtime_error(
+          "XrdS3 misses the capability to set the filesystem IDs on the fly!");
     }
   }
-private:
+
+ private:
   int fsuid;
   int fsgid;
 
@@ -110,26 +108,24 @@ private:
   bool ok;
 };
 
-} // namespace S3
+}  // namespace S3
 
 #else
 // Dummy implementation for non-linux platforms
-class ScopedFsId
-{
-public:
+class ScopedFsId {
+ public:
   //----------------------------------------------------------------------------
   //! Constructor
   //----------------------------------------------------------------------------
-  ScopedFsId(uid_t fsuid_, gid_t fsgid_)
-    : fsuid(fsuid_), fsgid(fsgid_) {}
+  ScopedFsId(uid_t fsuid_, gid_t fsgid_) : fsuid(fsuid_), fsgid(fsgid_) {}
 
   //----------------------------------------------------------------------------
   //! Destructor
   //----------------------------------------------------------------------------
   ~ScopedFsId() {}
 
-  bool IsOk() const { return true;}
+  bool IsOk() const { return true; }
 };
 
-} // namespace S3
+}  // namespace S3
 #endif

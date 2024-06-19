@@ -1,6 +1,7 @@
 //------------------------------------------------------------------------------
 // Copyright (c) 2024 by European Organization for Nuclear Research (CERN)
-// Author: Andreas-Joachim Peters / CERN EOS Project <andreas.joachim.peters@cern.ch>
+// Author: Andreas-Joachim Peters / CERN EOS Project
+// <andreas.joachim.peters@cern.ch>
 //------------------------------------------------------------------------------
 // This file is part of the XRootD software suite.
 //
@@ -27,39 +28,31 @@
 #ifdef __APPLE__
 // Macros to translate Linux xattr function names to macOS equivalents
 #define getxattr(path, name, value, size) \
-    getxattr(path, name, value, size, 0, 0)
+  getxattr(path, name, value, size, 0, 0)
 
 #define lgetxattr(path, name, value, size) \
-    getxattr(path, name, value, size, 0, XATTR_NOFOLLOW)
+  getxattr(path, name, value, size, 0, XATTR_NOFOLLOW)
 
-#define fgetxattr(fd, name, value, size) \
-    fgetxattr(fd, name, value, size)
+#define fgetxattr(fd, name, value, size) fgetxattr(fd, name, value, size)
 
 #define setxattr(path, name, value, size, flags) \
-    setxattr(path, name, value, size, 0, flags)
+  setxattr(path, name, value, size, 0, flags)
 
 #define lsetxattr(path, name, value, size, flags) \
-    setxattr(path, name, value, size, 0, XATTR_NOFOLLOW)
+  setxattr(path, name, value, size, 0, XATTR_NOFOLLOW)
 
 #define fsetxattr(fd, name, value, size, flags) \
-    fsetxattr(fd, name, value, size, flags)
+  fsetxattr(fd, name, value, size, flags)
 
-#define removexattr(path, name) \
-    removexattr(path, name, 0)
+#define removexattr(path, name) removexattr(path, name, 0)
 
-#define lremovexattr(path, name) \
-    removexattr(path, name, XATTR_NOFOLLOW)
+#define lremovexattr(path, name) removexattr(path, name, XATTR_NOFOLLOW)
 
-#define fremovexattr(fd, name) \
-    fremovexattr(fd, name)
+#define fremovexattr(fd, name) fremovexattr(fd, name)
 
-#define listxattr(path, list, size) \
-    listxattr(path, list, size, 0)
+#define listxattr(path, list, size) listxattr(path, list, size, 0)
 
-#define llistxattr(path, list, size) \
-    listxattr(path, list, size, XATTR_NOFOLLOW)
+#define llistxattr(path, list, size) listxattr(path, list, size, XATTR_NOFOLLOW)
 
-#define flistxattr(fd, list, size) \
-    flistxattr(fd, list, size)
+#define flistxattr(fd, list, size) flistxattr(fd, list, size)
 #endif
-

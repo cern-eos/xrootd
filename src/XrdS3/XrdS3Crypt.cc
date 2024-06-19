@@ -1,11 +1,32 @@
+//------------------------------------------------------------------------------
+// Copyright (c) 2024 by European Organization for Nuclear Research (CERN)
+// Author: Mano Segransan / CERN EOS Project <andreas.joachim.peters@cern.ch>
+//------------------------------------------------------------------------------
+// This file is part of the XRootD software suite.
 //
-// Created by segransm on 11/3/23.
+// XRootD is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
 //
+// XRootD is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with XRootD.  If not, see <http://www.gnu.org/licenses/>.
+//
+// In applying this licence, CERN does not waive the privileges and immunities
+// granted to it by virtue of its status as an Intergovernmental Organization
+// or submit itself to any jurisdiction.
+//------------------------------------------------------------------------------
 
 //------------------------------------------------------------------------------
 #include "XrdS3Crypt.hh"
 //------------------------------------------------------------------------------
 #include <openssl/evp.h>
+
 #include <exception>
 #include <stdexcept>
 //------------------------------------------------------------------------------
@@ -17,7 +38,7 @@ namespace S3 {
 //! \brief SHA256 implementation using OpenSSL
 //------------------------------------------------------------------------------
 S3Crypt::S3SHA256::S3SHA256() {
-  md = (EVP_MD*)EVP_sha256();
+  md = (EVP_MD *)EVP_sha256();
   if (md == nullptr) {
     throw std::bad_alloc();
   }
@@ -86,7 +107,7 @@ S3Crypt::S3SHA256::~S3SHA256() {
 void S3Crypt::S3SHA256::Init() { EVP_DigestInit_ex2(ctx, nullptr, nullptr); }
 
 #endif
-  
+
 //------------------------------------------------------------------------------
 //! \brief Update the digest
 //! @param src The source buffer

@@ -20,7 +20,7 @@
 // In applying this licence, CERN does not waive the privileges and immunities
 // granted to it by virtue of its status as an Intergovernmental Organization
 // or submit itself to any jurisdiction.
-//------------------------------------------------------------------------------
+//--------------------------å----------------------------------------------------
 
 //------------------------------------------------------------------------------
 #include "XrdS3Api.hh"
@@ -28,10 +28,10 @@
 #include <tinyxml2.h>
 //------------------------------------------------------------------------------
 #include "XrdCks/XrdCksCalcmd5.hh"
+#include "XrdS3.hh"
 #include "XrdS3Auth.hh"
 #include "XrdS3ErrorResponse.hh"
 #include "XrdS3Response.hh"
-#include "XrdS3.hh"
 //------------------------------------------------------------------------------
 
 namespace S3 {

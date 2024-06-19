@@ -23,84 +23,85 @@
 //------------------------------------------------------------------------------
 
 //------------------------------------------------------------------------------
-#include <mutex>
-#include <stdio.h>
 #include <stdarg.h>
+#include <stdio.h>
+
+#include <mutex>
 //------------------------------------------------------------------------------
 #include "XrdSys/XrdSysError.hh"
 //------------------------------------------------------------------------------
 
 #pragma once
 namespace S3 {
-  //------------------------------------------------------------------------------
-  //! \brief enum defining logging levels
-  //------------------------------------------------------------------------------
-  enum LogMask {
-                DEBUG = 0x01,
-		INFO = 0x02,
-                WARN = 0x04,
-                ERROR = 0x08,
-                ALL = 0xff
-  };
+//------------------------------------------------------------------------------
+//! \brief enum defining logging levels
+//------------------------------------------------------------------------------
+enum LogMask {
+  DEBUG = 0x01,
+  INFO = 0x02,
+  WARN = 0x04,
+  ERROR = 0x08,
+  ALL = 0xff
+};
 
-  //------------------------------------------------------------------------------
-  //! \brief class to log from S3 plug-in
-  //------------------------------------------------------------------------------
-  class S3Log {
-  public:
-    S3Log(XrdSysError& mErr) : mLog(&mErr), traceId(0) {}
-    S3Log() {}
-    virtual ~S3Log() {}
+//------------------------------------------------------------------------------
+//! \brief class to log from S3 plug-in
+//------------------------------------------------------------------------------
+class S3Log {
+ public:
+  S3Log(XrdSysError& mErr) : mLog(&mErr), traceId(0) {}
+  S3Log() {}
+  virtual ~S3Log() {}
 
-    std::string LogString(int c)  {
-      switch (c) {
+  std::string LogString(int c) {
+    switch (c) {
       case DEBUG:
-	return "| DEBUG |";
+        return "| DEBUG |";
       case INFO:
-	return "| INFO  |";
+        return "| INFO  |";
       case WARN:
-	return "| REQU  |";
+        return "| REQU  |";
       case ERROR:
-	return "| ERROR |";
+        return "| ERROR |";
       default:
-      return "| INIT  |";
-      }
-    };
-
-    std::string newTrace() {
-      std::lock_guard<std::mutex> guard(logMutex); 
-      traceId++;
-      std::stringstream ss;
-      ss << "[req:" << std::setw(8) << std::setfill('0') << std::hex << traceId << "]";
-      return ss.str();
+        return "| INIT  |";
     }
-    
-    //! \brief initialize logging
-    void Init(XrdSysError* log) { mLog = log; }
-    
-    //! \brief log message
-    std::string
-    Log(S3::LogMask mask, const char* unit, const char* msg, ...)
-    {
-      std::lock_guard<std::mutex> guard(logMutex);
-      va_list args;
-      va_start(args, msg);
-      vsnprintf(logBuffer, sizeof(logBuffer), msg, args);
-      va_end(args);
-      std::string tag = std::string("X") + LogString(mask) + std::string(" ") + unit;
-      int l = 48-tag.size();
-      for ( auto i=0 ; i<l; ++i) {
-	tag += " ";
-      }
-
-      mLog->Log( (int) mask, tag.c_str() , logBuffer );
-      return std::string(logBuffer);
-    }
-
-  private:
-    XrdSysError* mLog;
-    char logBuffer[65535]; 
-    std::mutex logMutex;
-    uint64_t traceId;
   };
-}
+
+  std::string newTrace() {
+    std::lock_guard<std::mutex> guard(logMutex);
+    traceId++;
+    std::stringstream ss;
+    ss << "[req:" << std::setw(8) << std::setfill('0') << std::hex << traceId
+       << "]";
+    return ss.str();
+  }
+
+  //! \brief initialize logging
+  void Init(XrdSysError* log) { mLog = log; }
+
+  //! \brief log message
+  std::string Log(S3::LogMask mask, const char* unit, const char* msg, ...) {
+    std::lock_guard<std::mutex> guard(logMutex);
+    va_list args;
+    va_start(args, msg);
+    vsnprintf(logBuffer, sizeof(logBuffer), msg, args);
+    va_end(args);
+    std::string tag =
+        std::string("X") + LogString(mask) + std::string(" ") + unit;
+    int l = 48 - tag.size();
+    for (auto i = 0; i < l; ++i) {
+      tag += " ";
+    }
+
+    mLog->Log((int)mask, tag.c_str(), logBuffer);
+    return std::string(logBuffer);
+  }
+
+ private:
+  XrdSysError* mLog;
+  char logBuffer[65535];
+  std::mutex logMutex;
+  uint64_t traceId;
+};
+}  // namespace S3

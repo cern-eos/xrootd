@@ -33,12 +33,11 @@
 #include "XrdS3Api.hh"
 #include "XrdS3Auth.hh"
 #include "XrdS3Crypt.hh"
+#include "XrdS3Log.hh"
 #include "XrdS3Router.hh"
 #include "XrdS3Utils.hh"
-#include "XrdS3Log.hh"
 #include "XrdSys/XrdSysError.hh"
 //------------------------------------------------------------------------------
-
 
 namespace S3 {
 //------------------------------------------------------------------------------
@@ -58,10 +57,10 @@ class S3Handler : public XrdHttpExtHandler {
   // Abstract method in the base class, but does not seem to be used
   int Init(const char *cfgfile) override { return 0; }
 
-  static S3Handler* sInstance;
-  static S3Log* Logger() { return sInstance->GetLogger(); }
+  static S3Handler *sInstance;
+  static S3Log *Logger() { return sInstance->GetLogger(); }
 
-  S3Log* GetLogger() { return &mLog; }
+  S3Log *GetLogger() { return &mLog; }
 
   Context ctx;
 

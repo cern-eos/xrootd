@@ -119,4 +119,3 @@ class XrdS3Req : protected XrdHttpExtReq {
 using HandlerFunc = std::function<int(XrdS3Req &)>;
 
 }  // namespace S3
-

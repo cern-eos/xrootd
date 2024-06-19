@@ -24,11 +24,11 @@
 
 #pragma once
 #include <cstdint>
-#include <string>
-#include <vector>
 #include <map>
 #include <memory>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "XrdS3Auth.hh"
 #include "XrdS3ObjectStore.hh"
@@ -46,9 +46,10 @@ namespace S3 {
 class S3Api {
  public:
   S3Api() = default;
-  S3Api(const std::string &config_path, const std::string &region, const std::string &service,
-        const std::string &mtpu_path)
-    : objectStore(config_path, mtpu_path), auth(config_path, region, service) {}
+  S3Api(const std::string &config_path, const std::string &region,
+        const std::string &service, const std::string &mtpu_path)
+      : objectStore(config_path, mtpu_path),
+        auth(config_path, region, service) {}
 
   ~S3Api() = default;
 
@@ -310,10 +311,9 @@ class S3Api {
   }
 
  private:
-  S3Log* mLog;
+  S3Log *mLog;
   S3ObjectStore objectStore;
   S3Auth auth;
 };
 
 }  // namespace S3
-

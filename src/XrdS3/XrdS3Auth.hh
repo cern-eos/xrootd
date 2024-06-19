@@ -25,16 +25,17 @@
 #pragma once
 
 //------------------------------------------------------------------------------
+#include <pwd.h>
+#include <sys/types.h>
+
 #include <set>
 #include <shared_mutex>
 #include <string>
 #include <vector>
-#include <sys/types.h>
-#include <pwd.h>
 //------------------------------------------------------------------------------
-#include "XrdS3ErrorResponse.hh"
 #include "XrdS3Action.hh"
 #include "XrdS3Crypt.hh"
+#include "XrdS3ErrorResponse.hh"
 #include "XrdS3Req.hh"
 
 //------------------------------------------------------------------------------
@@ -88,11 +89,11 @@ class S3Auth {
       // translate username
       struct passwd *pwd = getpwnam(id.c_str());
       if (pwd == nullptr) {
-	uid=99;
-	gid=99;
+        uid = 99;
+        gid = 99;
       } else {
-	uid = pwd->pw_uid;
-	gid = pwd->pw_gid;
+        uid = pwd->pw_uid;
+        gid = pwd->pw_gid;
       }
     }
   };
@@ -162,5 +163,3 @@ class S3Auth {
 };
 
 }  // namespace S3
-
-

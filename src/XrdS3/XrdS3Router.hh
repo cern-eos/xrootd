@@ -91,8 +91,7 @@ class S3Route {
 //------------------------------------------------------------------------------
 class S3Router {
  public:
-  explicit S3Router(HandlerFunc fn)
-    : not_found_handler(std::move(fn)){};
+  explicit S3Router(HandlerFunc fn) : not_found_handler(std::move(fn)){};
 
   ~S3Router() = default;
 
@@ -107,5 +106,3 @@ class S3Router {
 };
 
 }  // namespace S3
-
-

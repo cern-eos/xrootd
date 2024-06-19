@@ -24,6 +24,7 @@
 
 //------------------------------------------------------------------------------
 #include "XrdS3Router.hh"
+
 #include "XrdS3.hh"
 //------------------------------------------------------------------------------
 #include <chrono>
@@ -154,7 +155,8 @@ bool S3Route::MatchMap(
 //! \param route the route
 //------------------------------------------------------------------------------
 void S3Router::AddRoute(S3Route &route) {
-  S3::S3Handler::Logger()->Log(S3::ALL, "Router", "registered route: %s", route.GetName().c_str());
+  S3::S3Handler::Logger()->Log(S3::ALL, "Router", "registered route: %s",
+                               route.GetName().c_str());
   routes.push_back(route);
 }
 
@@ -166,7 +168,9 @@ void S3Router::AddRoute(S3Route &route) {
 int S3Router::ProcessReq(XrdS3Req &req) {
   for (const auto &route : routes) {
     if (route.Match(req)) {
-      S3::S3Handler::Logger()->Log(S3::DEBUG, "Router", "found matching route for req: %s", route.GetName().c_str());
+      S3::S3Handler::Logger()->Log(S3::DEBUG, "Router",
+                                   "found matching route for req: %s",
+                                   route.GetName().c_str());
       auto start = std::chrono::high_resolution_clock::now();
       int rc = route.Handler()(req);
       auto end = std::chrono::high_resolution_clock::now();
@@ -174,11 +178,17 @@ int S3Router::ProcessReq(XrdS3Req &req) {
       double seconds = duration.count();
       std::ostringstream oss;
       oss << std::fixed << std::setprecision(3) << seconds;
-      S3::S3Handler::Logger()->Log(S3::WARN, "Router", "%s [t=%s] [id=%s] [bucket=%s] [object=%s] [v=%s] retc=%d", req.trace.c_str(), oss.str().c_str(), req.id.c_str(), req.bucket.c_str(), req.object.c_str(), req.Verb().c_str(), rc);
+      S3::S3Handler::Logger()->Log(
+          S3::WARN, "Router",
+          "%s [t=%s] [id=%s] [bucket=%s] [object=%s] [v=%s] retc=%d",
+          req.trace.c_str(), oss.str().c_str(), req.id.c_str(),
+          req.bucket.c_str(), req.object.c_str(), req.Verb().c_str(), rc);
       return rc;
     }
   }
-  S3::S3Handler::Logger()->Log(S3::ERROR, "Router", "unable to find matching route for req: %s.", req.uri_path.c_str());
+  S3::S3Handler::Logger()->Log(S3::ERROR, "Router",
+                               "unable to find matching route for req: %s.",
+                               req.uri_path.c_str());
   return not_found_handler(req);
 }
 

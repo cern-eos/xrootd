@@ -290,7 +290,8 @@ std::string MergeHeaders(const std::map<std::string, std::string> &headers) {
   return res.substr(0, res.empty() ? 0 : res.length() - 2);
 }
 
-int XrdS3Req::S3Response(int code, const std::map<std::string, std::string> &headers,
+int XrdS3Req::S3Response(int code,
+                         const std::map<std::string, std::string> &headers,
                          const std::string &body) {
   std::string headers_str = MergeHeaders(headers);
 
@@ -298,7 +299,8 @@ int XrdS3Req::S3Response(int code, const std::map<std::string, std::string> &hea
                         body.size());
 }
 
-int XrdS3Req::S3Response(int code, const std::map<std::string, std::string> &headers,
+int XrdS3Req::S3Response(int code,
+                         const std::map<std::string, std::string> &headers,
                          const char *body, long long size) {
   std::string headers_str = MergeHeaders(headers);
 

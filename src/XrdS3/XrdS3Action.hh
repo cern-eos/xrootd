@@ -128,5 +128,4 @@ enum class Action {
   WriteGetObjectResponse,
 };
 
-}  // namespace S
-
+}  // namespace S3

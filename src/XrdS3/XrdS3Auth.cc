@@ -4,10 +4,12 @@
 
 //------------------------------------------------------------------------------
 #include "XrdS3Auth.hh"
+
 #include "XrdS3.hh"
 //------------------------------------------------------------------------------
 #include <fcntl.h>
 #include <sys/xattr.h>
+
 #include <algorithm>
 #include <utility>
 //------------------------------------------------------------------------------
@@ -237,7 +239,9 @@ S3Error S3Auth::VerifySigV4(XrdS3Req &req) {
       AWS4_ALGORITHM, req.date, canonical_request_hash, sig.credentials);
 
   const auto signature = GetSignature(key, sig.credentials, string_to_sign);
-  S3::S3Handler::Logger()->Log(S3::DEBUG, "VerifySignature", "sign=%s calc-sign=%s", sig.signature.c_str(), signature.c_str());
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "VerifySignature",
+                               "sign=%s calc-sign=%s", sig.signature.c_str(),
+                               signature.c_str());
 
   if (signature == sig.signature) {
     return S3Error::None;
@@ -413,7 +417,7 @@ S3Auth::S3Auth(const std::filesystem::path &path, std::string region,
     std::string access_key_id = entry->d_name;
 
     auto filepath = keystore / access_key_id;
-    
+
     auto user_id = S3Utils::GetXattr(filepath, "user");
     if (user_id.empty()) {
       continue;
