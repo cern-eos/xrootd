@@ -26,10 +26,10 @@
 #include "XrdCl/XrdClFile.hh"
 #include "XrdCl/XrdClXRootDResponses.hh"
 /*----------------------------------------------------------------------------*/
-#include <mutex>
 #include <condition_variable>
+#include <mutex>
+#include <atomic>
 /*----------------------------------------------------------------------------*/
-
 
 namespace XrdCl {
 
@@ -39,25 +39,25 @@ class JCacheOpenHandler : public XrdCl::ResponseHandler
 // ---------------------------------------------------------------------- //
 {
 public:
-  JCacheOpenHandler() : ready(false), pFile(nullptr), t2open(0) {}  
-  JCacheOpenHandler(XrdCl::JCacheFile* file) 
-    : ready(false), pFile(file), t2open(0) {
-      creationTime = std::chrono::steady_clock::now();
-    }
+  JCacheOpenHandler() : ready(false), pFile(nullptr), t2open(0) {}
+  JCacheOpenHandler(XrdCl::JCacheFile *file)
+      : ready(false), pFile(file), t2open(0) {
+    creationTime = std::chrono::steady_clock::now();
+  }
 
   virtual ~JCacheOpenHandler() {}
 
-  void HandleResponseWithHosts(XrdCl::XRootDStatus* pStatus,
-			       XrdCl::AnyObject* pResponse,
-			       XrdCl::HostList* pHostList);  
+  void HandleResponseWithHosts(XrdCl::XRootDStatus *pStatus,
+                               XrdCl::AnyObject *pResponse,
+                               XrdCl::HostList *pHostList);
 
-  XrdCl::XRootDStatus Wait();    
-  bool ready;  
+  XrdCl::XRootDStatus Wait();
+  bool ready;
 
-  double GetTimeToOpen() {return t2open;}
+  double GetTimeToOpen() { return t2open; }
 
 private:
-  XrdCl::JCacheFile* pFile;
+  XrdCl::JCacheFile *pFile;
   XrdCl::XRootDStatus mStatus;
   std::mutex mtx;
   std::condition_variable cv;

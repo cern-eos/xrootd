@@ -51,56 +51,75 @@ public:
       JCacheFile::SetCache(itc != config->end() ? itc->second : "");
 
       auto itsz = config->find("size");
-      JCacheFile::SetSize(itsz != config->end() ? std::stoll(std::string(itsz->second),0,10) : 0);
+      JCacheFile::SetSize(itsz != config->end()
+                              ? std::stoll(std::string(itsz->second), 0, 10)
+                              : 0);
 
       auto itv = config->find("vector");
-      JCacheFile::SetVector(itv != config->end() ? (itv->second == "true") || (itv->second == "1")
+      JCacheFile::SetVector(itv != config->end() ? (itv->second == "true") ||
+                                                       (itv->second == "1")
                                                  : false);
       auto itj = config->find("journal");
-      JCacheFile::SetJournal(itj != config->end() ? (itj->second == "true") || (itj->second == "1")
+      JCacheFile::SetJournal(itj != config->end() ? (itj->second == "true") ||
+                                                        (itj->second == "1")
                                                   : true);
       auto ita = config->find("async");
-      JCacheFile::SetAsync(ita != config->end() ? (ita->second == "true") || (ita->second == "1")
-                                                  : false);
+      JCacheFile::SetAsync(ita != config->end()
+                               ? (ita->second == "true") || (ita->second == "1")
+                               : false);
       auto itb = config->find("bypass");
-      JCacheFile::SetBypass(itb != config->end() ? (itb->second == "true") || (itb->second == "1")
-                                                  : false);
+      JCacheFile::SetBypass(itb != config->end() ? (itb->second == "true") ||
+                                                       (itb->second == "1")
+                                                 : false);
       auto itjson = config->find("json");
       JCacheFile::SetJsonPath(itjson != config->end() ? itjson->second : "");
 
       auto its = config->find("summary");
-      JCacheFile::SetSummary(its != config->end() ? (its->second == "true") || (its->second == "1")
+      JCacheFile::SetSummary(its != config->end() ? (its->second == "true") ||
+                                                        (its->second == "1")
                                                   : true);
       auto itsi = config->find("stats");
-      JCacheFile::SetStatsInterval(itsi != config->end() ? std::stoll(std::string(itsi->second),0,10) : 0);
-
+      JCacheFile::SetStatsInterval(
+          itsi != config->end() ? std::stoll(std::string(itsi->second), 0, 10)
+                                : 0);
 
       if (const char *v = getenv("XRD_JCACHE_CACHE")) {
         JCacheFile::SetCache((std::string(v).length()) ? std::string(v) : "");
       }
 
       if (const char *v = getenv("XRD_JCACHE_SIZE")) {
-        JCacheFile::SetSize((std::string(v).length()) ? std::stoll(std::string(v),0,10) : 0);
+        JCacheFile::SetSize(
+            (std::string(v).length()) ? std::stoll(std::string(v), 0, 10) : 0);
       }
 
       if (const char *v = getenv("XRD_JCACHE_SUMMARY")) {
-        JCacheFile::SetSummary(((std::string(v) == "true") || (std::string(v) == "1")) ? true : false);
+        JCacheFile::SetSummary(
+            ((std::string(v) == "true") || (std::string(v) == "1")) ? true
+                                                                    : false);
       }
 
       if (const char *v = getenv("XRD_JCACHE_JOURNAL")) {
-        JCacheFile::SetJournal(((std::string(v) == "true") || (std::string(v) == "1")) ? true : false);
+        JCacheFile::SetJournal(
+            ((std::string(v) == "true") || (std::string(v) == "1")) ? true
+                                                                    : false);
       }
 
       if (const char *v = getenv("XRD_JCACHE_VECTOR")) {
-        JCacheFile::SetVector(((std::string(v) == "true") || (std::string(v) == "1")) ? true : false);
+        JCacheFile::SetVector(
+            ((std::string(v) == "true") || (std::string(v) == "1")) ? true
+                                                                    : false);
       }
 
       if (const char *v = getenv("XRD_JCACHE_ASYNC")) {
-        JCacheFile::SetAsync(((std::string(v) == "true") || (std::string(v) == "1")) ? true : false);
+        JCacheFile::SetAsync(
+            ((std::string(v) == "true") || (std::string(v) == "1")) ? true
+                                                                    : false);
       }
 
       if (const char *v = getenv("XRD_JCACHE_BYPASS")) {
-        JCacheFile::SetBypass(((std::string(v) == "true") || (std::string(v) == "1")) ? true : false);
+        JCacheFile::SetBypass(
+            ((std::string(v) == "true") || (std::string(v) == "1")) ? true
+                                                                    : false);
       }
 
       if (const char *v = getenv("XRD_JCACHE_JSON")) {
@@ -109,7 +128,8 @@ public:
       }
 
       if (const char *v = getenv("XRD_JCACHE_STATS")) {
-        JCacheFile::SetStatsInterval((std::string(v).length()) ? std::stoll(std::string(v),0,10) : 0);
+        JCacheFile::SetStatsInterval(
+            (std::string(v).length()) ? std::stoll(std::string(v), 0, 10) : 0);
       }
 
       Log *log = DefaultEnv::GetLog();

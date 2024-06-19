@@ -81,7 +81,7 @@ public:
 
   // base class interface
   int attach(const std::string &path, uint64_t mtime, uint64_t mtime_nsec,
-             uint64_t size, bool ifexists=false);
+             uint64_t size, bool ifexists = false);
   int detach();
   int unlink();
 
@@ -105,7 +105,7 @@ public:
     return jheader.filesize;
   }
 
-   off_t getHeaderMtime() {
+  off_t getHeaderMtime() {
     std::lock_guard<std::mutex> guard(mtx);
     return jheader.mtime;
   }

@@ -81,6 +81,7 @@ public:
       }
     }
     handler->HandleResponse(pStatus, pResponse);
+    delete this;
   }
 
   XrdCl::ResponseHandler *handler;

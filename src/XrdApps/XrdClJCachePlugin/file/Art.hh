@@ -50,7 +50,7 @@ public:
     minValue = 0;
 
     // we round the axis to clean 100
-    maxValue = (int)(maxValue+9) / 10 * 10;
+    maxValue = (int)(maxValue + 9) / 10 * 10;
 
     const int plotHeight = 10;  // Number of lines in the plot
     const int plotWidth = 40;   // Width of the plot in characters

@@ -32,10 +32,10 @@
 #include "cleaner/Cleaner.hh"
 #include "file/Art.hh"
 #include "file/TimeBench.hh"
+#include "handler/XrdClJCacheOpenHandler.hh"
 #include "handler/XrdClJCachePgReadHandler.hh"
 #include "handler/XrdClJCacheReadHandler.hh"
 #include "handler/XrdClJCacheReadVHandler.hh"
-#include "handler/XrdClJCacheOpenHandler.hh"
 #include "vector/XrdClVectorCache.hh"
 /*----------------------------------------------------------------------------*/
 #include <atomic>
@@ -223,7 +223,7 @@ public:
   static void SetJsonPath(const std::string &path) { sJsonPath = path; }
   static void SetSummary(const bool &value) { sEnableSummary = value; }
   static void SetBypass(const bool &value) { sEnableBypass = value; }
-  static void SetSize(uint64_t size) { sCleaner.SetSize(size,sCachePath); }
+  static void SetSize(uint64_t size) { sCleaner.SetSize(size, sCachePath); }
   static void SetAsync(bool async) { sOpenAsync = async; }
 
   //----------------------------------------------------------------------------
@@ -252,12 +252,7 @@ public:
   //! @brief cleaner instance
   static JCache::Cleaner sCleaner;
 
-   enum State {
-    CLOSED = 0,
-    OPENING,
-    OPEN,
-    FAILED
-  };
+  enum State { CLOSED = 0, OPENING, OPEN, FAILED };
   //! @brief openstate
   std::atomic<int> mOpenState;
 
@@ -274,7 +269,7 @@ private:
   //! @brief boolean to track if file is open
   bool mIsOpen;
   //! @brief async open handler
-  JCacheOpenHandler* pOpenHandler;
+  JCacheOpenHandler *pOpenHandler;
   //! @brief pointer to the remote file
   XrdCl::File *pFile;
   //! @brief boolean if file open is async

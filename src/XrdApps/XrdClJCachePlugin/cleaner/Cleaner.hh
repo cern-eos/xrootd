@@ -51,14 +51,14 @@ public:
           bool scan, size_t interval)
       : lowWatermark(lowWatermark), highWatermark(highWatermark), subtree(path),
         scan(scan), interval(interval), stopFlag(false) {
-          mLog = XrdCl::DefaultEnv::GetLog();
-        }
+    mLog = XrdCl::DefaultEnv::GetLog();
+  }
 
-   Cleaner()
-      : lowWatermark(0), highWatermark(0), subtree(""),
-        scan(true), interval(60), stopFlag(false) {
-          mLog = XrdCl::DefaultEnv::GetLog();
-        }
+  Cleaner()
+      : lowWatermark(0), highWatermark(0), subtree(""), scan(true),
+        interval(60), stopFlag(false) {
+    mLog = XrdCl::DefaultEnv::GetLog();
+  }
 
   // Method to start the cleaning process in a separate thread
   void run() {
@@ -79,22 +79,22 @@ public:
   ~Cleaner() { stop(); }
 
   // Method to Define Cleaner size
-  void SetSize(uint64_t size, const std::string& path) {
+  void SetSize(uint64_t size, const std::string &path) {
     stop();
-    if (size > 1024ll*1024ll*1024ll) {
+    if (size > 1024ll * 1024ll * 1024ll) {
       subtree = path;
       highWatermark = size;
       lowWatermark = size * 0.9;
       run();
     } else {
-      mLog->Error(1, "JCache:Cleaner : the size given to the cleaner is less than 1GB - cleaning is disabled!");
+      mLog->Error(1, "JCache:Cleaner : the size given to the cleaner is less "
+                     "than 1GB - cleaning is disabled!");
     }
   }
 
-  // Method to set the scan option (true means scan, false means don't scan but use statfs!)
-  void SetScan(bool sc) {
-    scan = sc;
-  }
+  // Method to set the scan option (true means scan, false means don't scan but
+  // use statfs!)
+  void SetScan(bool sc) { scan = sc; }
 
 private:
   // Private methods
@@ -132,7 +132,7 @@ private:
       auto duration =
           std::chrono::duration_cast<std::chrono::seconds>(end - start);
 
-      if ( (size_t)duration.count() < interval) {
+      if ((size_t)duration.count() < interval) {
         auto s = std::chrono::seconds(interval) - duration;
         std::this_thread::sleep_for(s);
       }

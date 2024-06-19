@@ -21,32 +21,29 @@
 // granted to it by virtue of its status as an Intergovernmental Organization
 // or submit itself to any jurisdiction.
 
-
 /*----------------------------------------------------------------------------*/
 
 /*----------------------------------------------------------------------------*/
-#include "file/XrdClJCacheFile.hh"
 #include "handler/XrdClJCacheOpenHandler.hh"
+#include "file/XrdClJCacheFile.hh"
 /*----------------------------------------------------------------------------*/
 
 
 namespace XrdCl {
 // ---------------------------------------------------------------------- //
-void 
-JCacheOpenHandler::HandleResponseWithHosts(XrdCl::XRootDStatus* pStatus,
-			                                     XrdCl::AnyObject* pResponse,
-			                                     XrdCl::HostList* pHostList) {
+void JCacheOpenHandler::HandleResponseWithHosts(XrdCl::XRootDStatus *pStatus,
+                                                XrdCl::AnyObject *pResponse,
+                                                XrdCl::HostList *pHostList) {
 
-   
   openedTime = std::chrono::steady_clock::now();
   std::chrono::duration<double> topen = openedTime - creationTime;
   t2open = topen.count();
 
-  if (pHostList) {                                         
+  if (pHostList) {
     delete pHostList;
     pHostList = nullptr;
   }
-  // Response shoud be nullptr in general                                                                                                                                
+  // Response shoud be nullptr in general
   if (pResponse) {
     delete pResponse;
     pResponse = nullptr;
@@ -62,8 +59,7 @@ JCacheOpenHandler::HandleResponseWithHosts(XrdCl::XRootDStatus* pStatus,
   cv.notify_one(); // Notify Wait()
 }
 
-XRootDStatus
-JCacheOpenHandler::Wait() {
+XRootDStatus JCacheOpenHandler::Wait() {
   // quick bypass, we know we have opened
   if (pFile && pFile->mOpenState == JCacheFile::OPEN)
     return mStatus;
@@ -73,6 +69,6 @@ JCacheOpenHandler::Wait() {
   // Wait until `ready` becomes true
   cv.wait(lock, [this] { return this->ready; });
   return mStatus;
-} 
+}
 
 } // namespace XrdCl

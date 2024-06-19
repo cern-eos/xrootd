@@ -26,14 +26,13 @@
 #include "Journal.hh"
 /*----------------------------------------------------------------------------*/
 #include <algorithm>
+#include <cerrno>
+#include <cstring>
 #include <fcntl.h>
 #include <iostream>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <iostream>
-#include <cstring>
-#include <cerrno>
 /*----------------------------------------------------------------------------*/
 
 //------------------------------------------------------------------------------
@@ -61,7 +60,8 @@ Journal::~Journal() {
 
     lock.l_type = F_UNLCK; // Unlock the file
     if (fcntl(fd, F_SETLK, &lock) == -1) {
-        std::cerr << "error: failed to unlock journal: " << std::strerror(errno) << std::endl;
+      std::cerr << "error: failed to unlock journal: " << std::strerror(errno)
+                << std::endl;
     }
 
     int rc = close(fd);
@@ -79,7 +79,7 @@ Journal::~Journal() {
 //------------------------------------------------------------------------------
 void Journal::read_jheader() {
   jheader_t fheader;
-  bool exists=false;
+  bool exists = false;
   auto hr = ::pread64(fd, &fheader, sizeof(jheader), 0);
   if ((hr > 0) &&
       ((hr != sizeof(jheader)) || (fheader.magic != JOURNAL_MAGIC))) {
@@ -90,7 +90,7 @@ void Journal::read_jheader() {
     return;
   }
 
-  exists = (hr==sizeof(jheader));
+  exists = (hr == sizeof(jheader));
 
   // TODO: understand why the mtime is +-1s
   if (jheader.mtime) {
@@ -100,16 +100,17 @@ void Journal::read_jheader() {
           (fheader.mtime_nsec != jheader.mtime_nsec) ||
           (jheader.filesize && (fheader.filesize != jheader.filesize))) {
         std::cerr << "warning: remote file change detected - purging path:"
-                 << path << std::endl;
-       std::cerr << fheader.mtime << ":" << jheader.mtime << " "
-                 << fheader.mtime_nsec << ":" << jheader.mtime_nsec << " "
-                 << fheader.filesize << ":" << jheader.filesize << std::endl;
+                  << path << std::endl;
+        std::cerr << fheader.mtime << ":" << jheader.mtime << " "
+                  << fheader.mtime_nsec << ":" << jheader.mtime_nsec << " "
+                  << fheader.filesize << ":" << jheader.filesize << std::endl;
         reset();
         return;
       }
     }
   } else {
-    // we assume the contents referenced in the header is ok to allow disconnected ops
+    // we assume the contents referenced in the header is ok to allow
+    // disconnected ops
     jheader.mtime = fheader.mtime;
     jheader.filesize = fheader.filesize;
   }
@@ -217,14 +218,15 @@ int Journal::attach(const std::string &lpath, uint64_t mtime,
 
       if (fcntl(fd, F_SETLK, &lock) == -1) {
         if (errno == EACCES || errno == EAGAIN) {
-          std::cerr << "error: journal file is already locked by another process."
-                    << std::endl;
+          std::cerr
+              << "error: journal file is already locked by another process."
+              << std::endl;
           close(fd);
           fd = -1;
           return -errno;
         } else {
-          std::cerr << "error: failed to lock journal file: " << std::strerror(errno)
-                    << std::endl;
+          std::cerr << "error: failed to lock journal file: "
+                    << std::strerror(errno) << std::endl;
           close(fd);
           fd = -1;
           return -errno;

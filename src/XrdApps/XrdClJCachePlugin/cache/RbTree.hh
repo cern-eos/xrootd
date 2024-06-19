@@ -354,7 +354,7 @@ protected:
 
   template <typename PTR> // make it a template so it works both for constant
                           // and mutable pointers
-                          static PTR &find_in(const K &key, PTR &node) {
+  static PTR &find_in(const K &key, PTR &node) {
     if (!node) {
       return null_node;
     }
@@ -372,7 +372,7 @@ protected:
 
   template <typename PTR> // make it a template so it works both for constant
                           // and mutable pointers
-                          static PTR &find_min(PTR &node) {
+  static PTR &find_min(PTR &node) {
     if (!node) {
       return null_node;
     }
@@ -386,7 +386,7 @@ protected:
 
   template <typename PTR> // make it a template so it works both for constant
                           // and mutable pointers
-                          static PTR &find_successor(PTR &node) {
+  static PTR &find_successor(PTR &node) {
     if (!node) {
       return null_node;
     }

@@ -47,13 +47,13 @@ namespace JCache {
 struct CacheStats {
   CacheStats(bool doe = false)
       : bytesRead(0), bytesReadV(0), bytesCached(0), bytesCachedV(0),
-        readOps(0), readVOps(0), readVreadOps(0), nreadfiles(0), totaldatasize(0),
-        dumponexit(doe), peakrate(0) {
+        readOps(0), readVOps(0), readVreadOps(0), nreadfiles(0),
+        totaldatasize(0), dumponexit(doe), peakrate(0) {
     // Get the current real time
     struct timeval now;
     gettimeofday(&now, nullptr);
     startTime = now.tv_sec + now.tv_usec / 1000000.0;
-    dumperInterval=0;
+    dumperInterval = 0;
   }
 
   ~CacheStats() {
@@ -82,7 +82,8 @@ struct CacheStats {
         XrdCl::JCacheFile::sStats.persistToJson(jsonpath, name);
       }
       if (XrdCl::JCacheFile::sEnableSummary) {
-        std::cerr << CacheStats::GlobalStats(XrdCl::JCacheFile::sStats, XrdCl::JCacheFile::sEnableBypass);
+        std::cerr << CacheStats::GlobalStats(XrdCl::JCacheFile::sStats,
+                                             XrdCl::JCacheFile::sEnableBypass);
       }
       std::vector<uint64_t> bins = XrdCl::JCacheFile::sStats.bench.GetBins(40);
       JCache::Art art;
@@ -102,7 +103,7 @@ struct CacheStats {
   }
 
   void Reset() {
-    bytesRead = 0 ;
+    bytesRead = 0;
     bytesReadV = 0;
     bytesCached = 0;
     bytesCachedV = 0;
@@ -287,16 +288,16 @@ struct CacheStats {
           << std::endl;
       oss << "# JCache : cache read     hit rate  : " << std::fixed
           << std::setprecision(2) << (!sStats.ReadOpBytes() ? "\033[9m" : "")
-          << sStats.HitRate() << " %" << (!sStats.ReadOpBytes() ? "\033[0m" : "")
-          << std::endl;
+          << sStats.HitRate() << " %"
+          << (!sStats.ReadOpBytes() ? "\033[0m" : "") << std::endl;
       oss << "# JCache : cache readv    hit rate  : " << std::fixed
           << std::setprecision(2) << (!sStats.ReadVOpBytes() ? "\033[9m" : "")
-          << sStats.HitRateV() << " %" << (!sStats.ReadOpBytes() ? "\033[0m" : "")
-          << std::endl;
+          << sStats.HitRateV() << " %"
+          << (!sStats.ReadOpBytes() ? "\033[0m" : "") << std::endl;
     }
     oss << "# "
-            "-------------------------------------------------------------------"
-            "---- #"
+           "-------------------------------------------------------------------"
+           "---- #"
         << std::endl;
 
     oss << "# JCache : total bytes    read      : "
@@ -321,8 +322,8 @@ struct CacheStats {
         << std::endl;
     oss << "# JCache : open unique f. read      : " << sStats.UniqueUrls()
         << std::endl;
-    oss << "# JCache : time to open files (s)   : " << std::setprecision(3) << sStats.opentime.load()
-        << std::endl;
+    oss << "# JCache : time to open files (s)   : " << std::setprecision(3)
+        << sStats.opentime.load() << std::endl;
     oss << "# "
            "-------------------------------------------------------------------"
            "---- #"
@@ -369,7 +370,7 @@ struct CacheStats {
   std::atomic<uint64_t> readVreadOps;
   std::atomic<uint64_t> nreadfiles;
   std::atomic<uint64_t> totaldatasize;
-  std::atomic<double>   opentime;
+  std::atomic<double> opentime;
 
   std::atomic<bool> dumponexit;
   std::set<std::string> urls;
@@ -386,26 +387,30 @@ struct CacheStats {
   std::thread dumperThread;
   std::atomic<bool> stopFlag;
 
-
   // Loop to regulary dump the statistics and to reset global counters
-  static void dumper(CacheStats* stats) {
+  static void dumper(CacheStats *stats) {
     while (!stats->stopFlag.load()) {
       if (stats->dumperInterval) {
-        std::this_thread::sleep_for(std::chrono::seconds(stats->dumperInterval));
+        std::this_thread::sleep_for(
+            std::chrono::seconds(stats->dumperInterval));
       } else {
         break;
       }
       if (XrdCl::JCacheFile::sEnableSummary) {
         XrdCl::JCacheFile::sStats.GetTimes();
         XrdCl::JCacheFile::sStats.bytes_per_second =
-          XrdCl::JCacheFile::sStats.bench.GetBins((int)(XrdCl::JCacheFile::sStats.realTime));
-        XrdCl::JCacheFile::sStats.peakrate =
-          *(std::max_element(XrdCl::JCacheFile::sStats.bytes_per_second.begin(),
+            XrdCl::JCacheFile::sStats.bench.GetBins(
+                (int)(XrdCl::JCacheFile::sStats.realTime));
+        XrdCl::JCacheFile::sStats.peakrate = *(
+            std::max_element(XrdCl::JCacheFile::sStats.bytes_per_second.begin(),
                              XrdCl::JCacheFile::sStats.bytes_per_second.end()));
         if (XrdCl::JCacheFile::sStats.realTime < 1) {
-          XrdCl::JCacheFile::sStats.peakrate = XrdCl::JCacheFile::sStats.ReadBytes() / XrdCl::JCacheFile::sStats.realTime;
+          XrdCl::JCacheFile::sStats.peakrate =
+              XrdCl::JCacheFile::sStats.ReadBytes() /
+              XrdCl::JCacheFile::sStats.realTime;
         }
-        std::string st = CacheStats::GlobalStats(XrdCl::JCacheFile::sStats, XrdCl::JCacheFile::sEnableBypass);
+        std::string st = CacheStats::GlobalStats(
+            XrdCl::JCacheFile::sStats, XrdCl::JCacheFile::sEnableBypass);
         std::cerr << st << std::endl;
       }
     }

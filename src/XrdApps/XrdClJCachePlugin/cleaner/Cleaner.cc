@@ -67,8 +67,9 @@ long long Cleaner::getDirectorySize(const fs::path &directory, bool scan) {
     struct statfs stat;
 
     if (statfs(directory.c_str(), &stat) != 0) {
-      mLog->Error(1,"JCache:Cleaner: failed to get directory size using statfs.");
-      return 0; 
+      mLog->Error(1,
+                  "JCache:Cleaner: failed to get directory size using statfs.");
+      return 0;
     }
   }
   return totalSize;
@@ -108,8 +109,10 @@ void Cleaner::cleanDirectory(const fs::path &directory, long long highWatermark,
   long long currentSize = getDirectorySize(directory);
   if (currentSize <= highWatermark) {
     /*----------------------------------------------------------------------------*/
-    mLog->Info(1,"JCache:Cleaner: Directory size is within the limit (%lu/%lu). No action needed.",
-    currentSize, highWatermark);
+    mLog->Info(1,
+               "JCache:Cleaner: Directory size is within the limit (%lu/%lu). "
+               "No action needed.",
+               currentSize, highWatermark);
     return;
   }
 
@@ -130,12 +133,13 @@ void Cleaner::cleanDirectory(const fs::path &directory, long long highWatermark,
       std::error_code ec;
       fs::remove_all(parentDir, ec);
       if (ec) {
-        mLog->Error(1, "JCache::Cleaner: error deleting directory '%s'", parentDir.c_str());
+        mLog->Error(1, "JCache::Cleaner: error deleting directory '%s'",
+                    parentDir.c_str());
       }
-      mLog->Info(1, "JCache:Cleaner : deleted '%s' (Size: %lu bytes)", filePath.c_str(),
-      fileSize);
+      mLog->Info(1, "JCache:Cleaner : deleted '%s' (Size: %lu bytes)",
+                 filePath.c_str(), fileSize);
     } catch (const std::exception &e) {
-      mLog->Error(1,"JCache::Cleaner error deleting '%'", filePath.c_str());
+      mLog->Error(1, "JCache::Cleaner error deleting '%'", filePath.c_str());
     }
   }
 }
