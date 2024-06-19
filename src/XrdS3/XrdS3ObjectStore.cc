@@ -105,10 +105,7 @@ S3Error S3ObjectStore::SetMetadata(
                                  "%s:=%s on %s", meta.first.c_str(),
                                  meta.second.c_str(), object.c_str());
     if (S3Utils::SetXattr(object, meta.first, meta.second, 0)) {
-      S3::S3Handler::Logger()->Log(
-          S3::ERROR, "ObjectStore::SetMetaData", "failed to set %s:=%s on %s",
-          meta.first.c_str(), meta.second.c_str(), object.c_str());
-      std::cerr << "SetMetaData failed on " << object << std::endl;
+      S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::SetMetaData", "failed to set %s:=%s on %s", meta.first.c_str(), meta.second.c_str(), object.c_str());
       return S3Error::InternalError;
     }
   }
@@ -962,11 +959,7 @@ S3Error S3ObjectStore::UploadPartOptimized(XrdS3Req &req,
 
   XrdPosix_Close(fd);
 
-  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::UploadPartOptimized",
-                               "tmp-path:%s upload complete", tmp_path.c_str(),
-                               offset);
-  std::cerr << "finished " << std::endl;
-
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::UploadPartOptimized", "tmp-path:%s upload complete", tmp_path.c_str(), offset);
   if (error != S3Error::None) {
     return error;
   }
@@ -983,7 +976,6 @@ S3Error S3ObjectStore::UploadPartOptimized(XrdS3Req &req,
   const auto md5hex = '"' + S3Utils::HexEncode(md5) + '"';
   std::map<std::string, std::string> metadata;
 
-  std::cerr << "part " << part_number << " etag " << md5hex << std::endl;
   auto prefix = "part" + std::to_string(part_number) + '.';
   metadata.insert({prefix + "etag", md5hex});
   headers.insert({"ETag", md5hex});
@@ -1297,7 +1289,6 @@ ListObjectsInfo S3ObjectStore::ListObjectsV2(
       owner = S3Utils::GetXattr(root / object, "owner");
     }
 
-    std::cerr << "owner: " << owner << std::endl;
     if (!stat((root / object).c_str(), &buf)) {
       return ObjectInfo{object, S3Utils::GetXattr(root / object, "etag"),
                         buf.st_mtim.tv_sec, std::to_string(buf.st_size), owner};
@@ -1382,8 +1373,6 @@ ListObjectsInfo S3ObjectStore::ListObjectsCommon(
   }
 
   auto fullpath = bucket.path;
-  std::cerr << "list fullpath=" << fullpath << std::endl;
-
   struct BasicPath {
     std::string base;
     std::string name;
@@ -1761,14 +1750,8 @@ bool S3ObjectStore::CompleteOptimizedMultipartUpload(
     p += ",";
   }
   p.pop_back();
-  S3::S3Handler::Logger()->Log(S3::INFO,
-                               "ObjectStore::CompleteOptimizedMultipartUpload",
-                               "final-path:%s tmp-path:%s parts:%s",
-                               final_path.c_str(), tmp_path.c_str(), p.c_str());
-  for (auto i : parts) {
-    std::cerr << i.str() << std::endl;
-  }
-
+  S3::S3Handler::Logger()->Log(S3::INFO, "ObjectStore::CompleteOptimizedMultipartUpload", "final-path:%s tmp-path:%s parts:%s",
+			       final_path.c_str(), tmp_path.c_str(), p.c_str());
   size_t e = 1;
 
   for (const auto &[etag, _, n, __] : parts) {
@@ -1989,14 +1972,8 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
   }
 
   if (fd < 0) {
-    S3::S3Handler::Logger()->Log(
-        S3::ERROR, "ObjectStore::CompleteMultipartUpload",
-        "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d "
-        "opt-path:%s final-path:%s final-path:%s failed to open tmp-path:%s!",
-        bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(),
-        upload_path.c_str(), optimized.length() ? 1 : 0, opt_path.c_str(),
-        final_path.c_str(), tmp_path.c_str());
-    std::cerr << "internal error opening final file" << std::endl;
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CompleteMultipartUpload", "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d opt-path:%s final-path:%s final-path:%s failed to open tmp-path:%s!",
+				 bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str(), optimized.length()?1:0, opt_path.c_str(), final_path.c_str(), tmp_path.c_str());
     return S3Error::InternalError;
   }
 
