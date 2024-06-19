@@ -1,5 +1,7 @@
 # XRDS3
 
+<img width="200" alt="Screenshot 2024-06-19 at 18 33 42" src="https://github.com/cern-eos/xrootd/assets/2655845/42a53fb6-c799-4169-8c48-4bc46db5a30d">
+
 ## Configuration
 
 - Add the following fields to the /etc/xrootd.conf file:
