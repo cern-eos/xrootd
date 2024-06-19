@@ -4,6 +4,7 @@
 
 //------------------------------------------------------------------------------
 #include "XrdS3Auth.hh"
+#include "XrdS3.hh"
 //------------------------------------------------------------------------------
 #include <fcntl.h>
 #include <sys/xattr.h>
@@ -236,9 +237,7 @@ S3Error S3Auth::VerifySigV4(XrdS3Req &req) {
       AWS4_ALGORITHM, req.date, canonical_request_hash, sig.credentials);
 
   const auto signature = GetSignature(key, sig.credentials, string_to_sign);
-  ctx->log->Emsg("VerifySignature", "calculated signature:", signature.c_str());
-  ctx->log->Emsg("VerifySignature",
-                 "  received signature:", sig.signature.c_str());
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "VerifySignature", "sign=%s calc-sign=%s", sig.signature.c_str(), signature.c_str());
 
   if (signature == sig.signature) {
     return S3Error::None;

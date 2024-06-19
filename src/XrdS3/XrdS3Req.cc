@@ -53,6 +53,7 @@ XrdS3Req::XrdS3Req(Context *ctx, XrdHttpExtReq &req)
   }
 
   valid = true;
+  trace = S3::S3Handler::Logger()->newTrace();
 };
 
 int XrdS3Req::ParseReq() {
@@ -95,6 +96,7 @@ int XrdS3Req::ParseReq() {
     bucket.erase(pos);
   }
 
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "Request", verb.c_str());
   if (verb == "GET") {
     method = Get;
   } else if (verb == "HEAD") {

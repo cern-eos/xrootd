@@ -576,11 +576,11 @@ bool S3Handler::ParseConfig(const char *config, XrdOucEnv &env) {
       }
       mConfig.trace = val;
       mErr.setMsgMask(0);
-      if (!strcmp(val, "all"))          {mErr.setMsgMask(mErr.getMsgMask() | LogMask::ALL);}
-      else if (!strcmp(val, "error"))   {mErr.setMsgMask(mErr.getMsgMask() | LogMask::ERROR);}
-      else if (!strcmp(val, "warning")) {mErr.setMsgMask(mErr.getMsgMask() | LogMask::WARN);}
-      else if (!strcmp(val, "info"))    {mErr.setMsgMask(mErr.getMsgMask() | LogMask::INFO);}
-      else if (!strcmp(val, "debug"))   {mErr.setMsgMask(mErr.getMsgMask() | LogMask::DEBUG);}
+      if (!strcmp(val, "all"))          {mErr.setMsgMask(LogMask::ALL);}
+      else if (!strcmp(val, "error"))   {mErr.setMsgMask(LogMask::ERROR);}
+      else if (!strcmp(val, "warning")) {mErr.setMsgMask(LogMask::ERROR | LogMask::WARN);}
+      else if (!strcmp(val, "info"))    {mErr.setMsgMask(LogMask::ERROR | LogMask::WARN | LogMask::INFO);}
+      else if (!strcmp(val, "debug"))   {mErr.setMsgMask(LogMask::ERROR | LogMask::WARN | LogMask::INFO | LogMask::DEBUG);}
       else if (!strcmp(val, "none"))    {mErr.setMsgMask(0);}
       else {
         std::cerr << "error: s3.trace encountered an unknown directive: " << val << std::endl;

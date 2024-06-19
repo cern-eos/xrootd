@@ -696,6 +696,7 @@ int S3Api::ListObjectsV2Handler(S3::XrdS3Req& req) {
   bool encode_values;
   int max_keys;
 
+  std::cerr << "HANDLING LISTING" << std::endl;
   RET_ON_ERROR(ParseCommonQueryParams(req.query, delimiter, encode_values,
                                       max_keys, prefix))
 
@@ -720,6 +721,7 @@ int S3Api::ListObjectsV2Handler(S3::XrdS3Req& req) {
     }
   }
 
+  std::cerr << "calling object store list objects v2" << std::endl;
   auto objectinfo =
       objectStore.ListObjectsV2(bucket, prefix, continuation_token, delimiter,
                                 max_keys, fetch_owner, start_after);

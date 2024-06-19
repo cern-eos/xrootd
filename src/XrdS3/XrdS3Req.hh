@@ -81,6 +81,7 @@ class XrdS3Req : protected XrdHttpExtReq {
   std::string uri_path;
   struct tm date {};
   std::string id;
+  std::string trace;
   std::vector<unsigned char> md5;
 
   std::map<std::string, std::string> query;
@@ -90,6 +91,7 @@ class XrdS3Req : protected XrdHttpExtReq {
   static S3Error ValidatePath(const std::string &path);
   bool ParseMd5Header();
   bool ParseContentLengthHeader();
+  std::string Verb() { return verb; }
 
   int Ok();
   int S3Response(int code);

@@ -30,6 +30,11 @@
 #include <set>
 #include <tuple>
 #include <vector>
+#include <iostream>
+#include <string>
+#include <unordered_map>
+#include <mutex>
+#include <memory>
 
 #include "XrdPosix/XrdPosixXrootd.hh"
 #include "XrdS3Auth.hh"
@@ -100,7 +105,8 @@ class S3ObjectStore {
     time_t LastModified() const { return last_modified; }
     ssize_t Read(size_t length, char **data);
     off_t Lseek(off_t offset, int whence);
-
+    std::string Name() const { return name; }
+    
     const std::map<std::string, std::string> &GetAttributes() const {
       return attributes;
     };
@@ -119,6 +125,60 @@ class S3ObjectStore {
     std::map<std::string, std::string> attributes{};
   };
 
+  class ExclusiveLocker {
+  public:
+    // Default constructor
+    ExclusiveLocker() = default;
+
+    // Copy constructor
+    ExclusiveLocker(const ExclusiveLocker& other) {
+    }
+    
+    virtual ~ExclusiveLocker() {}
+    
+    // Dummy Assignment operator
+    ExclusiveLocker& operator=(const ExclusiveLocker& other) {
+      return *this;
+    }
+    
+    // Function to acquire a lock for a given name
+    void lock(const std::string& name) {
+      std::unique_lock<std::mutex> map_lock(map_mutex_);
+      std::shared_ptr<std::mutex> mutex = getOrCreateMutex(name);
+      map_lock.unlock(); // Release the map lock before acquiring the object-specific lock
+      mutex->lock();
+    }
+    
+    // Function to release a lock for a given name
+    void unlock(const std::string& name) {
+      std::unique_lock<std::mutex> map_lock(map_mutex_);
+      auto it = mutex_map_.find(name);
+      if (it != mutex_map_.end()) {
+	it->second->unlock();
+	if (it->second.use_count() == 1) {
+	  // If this was the last reference, remove the entry from the map
+	  mutex_map_.erase(it);
+	}
+      }
+    }
+    
+  private:
+    std::unordered_map<std::string, std::shared_ptr<std::mutex>> mutex_map_;
+    std::mutex map_mutex_;
+    
+    // Function to get or create a mutex for a given name
+    std::shared_ptr<std::mutex> getOrCreateMutex(const std::string& name) {
+      auto it = mutex_map_.find(name);
+      if (it == mutex_map_.end()) {
+	auto mutex = std::make_shared<std::mutex>();
+	mutex_map_[name] = mutex;
+	return mutex;
+      } else {
+	return it->second;
+      }
+    }
+  };
+  
   S3Error CreateBucket(S3Auth &auth, S3Auth::Bucket bucket,
                        const std::string &_location);
   S3Error DeleteBucket(S3Auth &auth, const S3Auth::Bucket &bucket);
@@ -180,6 +240,12 @@ class S3ObjectStore {
     time_t last_modified;
     size_t part_number;
     size_t size;
+    std::string str() {
+      return "# " + std::to_string(part_number) + " size: " + std::to_string( size ) + " etag: " +etag + " modified: " + std::to_string(last_modified);
+    }
+    std::string nstr() {
+      return std::to_string(part_number);
+    }
   };
 
   std::vector<MultipartUploadInfo> ListMultipartUploads(
@@ -202,14 +268,16 @@ class S3ObjectStore {
                                   const std::string &upload_id,
                                   const std::vector<PartInfo> &parts);
 
- private:
+  static ExclusiveLocker s_exclusive_locker;
+
+private:
   static bool ValidateBucketName(const std::string &name);
 
   std::filesystem::path config_path;
   std::filesystem::path user_map;
-
   std::filesystem::path mtpu_path;
 
+  
   ListObjectsInfo ListObjectsCommon(
       const S3Auth::Bucket &bucket, std::string prefix,
       const std::string &marker, char delimiter, int max_keys,
@@ -232,7 +300,7 @@ class S3ObjectStore {
 
   bool KeepOptimize(const std::filesystem::path &upload_path,
                     size_t part_number, unsigned long size,
-                    const std::string &tmp_path, size_t part_size);
+                    const std::string &tmp_path, size_t part_size, std::vector<std::string> &parts);
   [[nodiscard]] static S3Error ValidateMultipartUpload(
       const std::string &upload_path, const std::string &key);
   S3Error DeleteMultipartUpload(const S3Auth::Bucket &bucket,

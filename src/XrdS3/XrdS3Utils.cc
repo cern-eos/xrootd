@@ -30,6 +30,7 @@
 #include <cstring>
 #include <iomanip>
 #include <sstream>
+#include <iostream>
 //------------------------------------------------------------------------------
 #include "XrdPosix/XrdPosixExtern.hh"
 //------------------------------------------------------------------------------
@@ -310,14 +311,13 @@ std::string S3Utils::GetXattr(const std::filesystem::path &path,
 // TODO: Replace with the real XrdPosix_Getxattr once implemented.
 #include "XrdS3XAttr.hh"
 #define XrdPosix_Getxattr getxattr
-  
   auto ret =
       XrdPosix_Getxattr(path.c_str(), ("user.s3." + key).c_str(), nullptr, 0);
 
   if (ret == -1) {
     return {};
   }
-
+  
   // Add a terminating '\0'
   res.resize(ret + 1);
   XrdPosix_Getxattr(path.c_str(), ("user.s3." + key).c_str(), res.data(),
@@ -347,7 +347,7 @@ int S3Utils::SetXattr(const std::filesystem::path &path, const std::string &key,
 //------------------------------------------------------------------------------
 bool S3Utils::IsDirEmpty(const std::filesystem::path &path) {
   auto dir = XrdPosix_Opendir(path.c_str());
-
+  
   if (dir == nullptr) {
     return false;
   }

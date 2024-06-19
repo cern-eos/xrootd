@@ -26,6 +26,9 @@
 #include "XrdS3Router.hh"
 #include "XrdS3.hh"
 //------------------------------------------------------------------------------
+#include <chrono>
+#include <sstream>
+//------------------------------------------------------------------------------
 
 namespace S3 {
 
@@ -164,8 +167,14 @@ int S3Router::ProcessReq(XrdS3Req &req) {
   for (const auto &route : routes) {
     if (route.Match(req)) {
       S3::S3Handler::Logger()->Log(S3::DEBUG, "Router", "found matching route for req: %s", route.GetName().c_str());
+      auto start = std::chrono::high_resolution_clock::now();
       int rc = route.Handler()(req);
-      S3::S3Handler::Logger()->Log(S3::INFO, "Router", "request returned: %d", rc);
+      auto end = std::chrono::high_resolution_clock::now();
+      std::chrono::duration<double> duration = end - start;
+      double seconds = duration.count();
+      std::ostringstream oss;
+      oss << std::fixed << std::setprecision(3) << seconds;
+      S3::S3Handler::Logger()->Log(S3::WARN, "Router", "%s [t=%s] [id=%s] [bucket=%s] [object=%s] [v=%s] retc=%d", req.trace.c_str(), oss.str().c_str(), req.id.c_str(), req.bucket.c_str(), req.object.c_str(), req.Verb().c_str(), rc);
       return rc;
     }
   }

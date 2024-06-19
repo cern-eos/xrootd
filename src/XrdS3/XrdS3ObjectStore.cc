@@ -44,6 +44,8 @@
 #include "XrdS3.hh"
 #include "XrdS3ScopedFsId.hh"
 //------------------------------------------------------------------------------
+S3::S3ObjectStore::ExclusiveLocker S3::S3ObjectStore::s_exclusive_locker;
+//------------------------------------------------------------------------------
 
 namespace S3 {
 //------------------------------------------------------------------------------
@@ -98,7 +100,10 @@ S3Error S3ObjectStore::SetMetadata(
     const std::string &object,
     const std::map<std::string, std::string> &metadata) {
   for (const auto &meta : metadata) {
+    S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::SetMetaData", "%s:=%s on %s", meta.first.c_str(), meta.second.c_str(), object.c_str());
     if (S3Utils::SetXattr(object, meta.first, meta.second, 0)) {
+      S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::SetMetaData", "failed to set %s:=%s on %s", meta.first.c_str(), meta.second.c_str(), object.c_str());
+      std::cerr << "SetMetaData failed on " << object << std::endl;
       return S3Error::InternalError;
     }
   }
@@ -112,6 +117,7 @@ S3Error S3ObjectStore::SetMetadata(
 //------------------------------------------------------------------------------
 std::vector<std::string> S3ObjectStore::GetPartsNumber(
     const std::string &path) {
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::GetPartsNumber", "%s", path.c_str());
   auto p = S3Utils::GetXattr(path, "parts");
 
   if (p.empty()) {
@@ -134,7 +140,9 @@ std::vector<std::string> S3ObjectStore::GetPartsNumber(
 S3Error S3ObjectStore::SetPartsNumbers(const std::string &path,
                                        std::vector<std::string> &parts) {
   auto p = S3Utils::stringJoin(',', parts);
-  if (setxattr(path.c_str(), "user.parts", p.c_str(), p.size(), 0)) {
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::SetPartsNumber", "%s : %s", path.c_str(), p.c_str());
+
+  if (S3Utils::SetXattr(path.c_str(), "parts", p, 0)) {
     return S3Error::InternalError;
   }
   return S3Error::None;
@@ -149,6 +157,8 @@ S3Error S3ObjectStore::SetPartsNumbers(const std::string &path,
 //------------------------------------------------------------------------------
 S3Error S3ObjectStore::AddPartAttr(const std::string &object,
                                    size_t part_number) {
+  s_exclusive_locker.lock(object);
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::AddPartAttr", "%s : %u", object.c_str(), part_number);
   auto parts = GetPartsNumber(object);
 
   auto n = std::to_string(part_number);
@@ -156,6 +166,7 @@ S3Error S3ObjectStore::AddPartAttr(const std::string &object,
     parts.push_back(n);
     return SetPartsNumbers(object, parts);
   }
+  s_exclusive_locker.unlock(object);
   return S3Error::None;
 }
 
@@ -168,6 +179,7 @@ S3Error S3ObjectStore::AddPartAttr(const std::string &object,
 //------------------------------------------------------------------------------
 S3Error S3ObjectStore::CreateBucket(S3Auth &auth, S3Auth::Bucket bucket,
                                     const std::string &_location) {
+  S3::S3Handler::Logger()->Log(S3::INFO, "ObjectStore::CreateBucket", "%s => %s", bucket.name.c_str(), _location.c_str());
   if (!ValidateBucketName(bucket.name)) {
     return S3Error::InvalidBucketName;
   }
@@ -182,9 +194,13 @@ S3Error S3ObjectStore::CreateBucket(S3Auth &auth, S3Auth::Bucket bucket,
   }
 
   auto userInfoBucket = user_map / bucket.owner.id / bucket.name;
+
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::CreateBucket", "bucket-path:%s : user-info:%s", bucket.path.c_str(), userInfoBucket.c_str());
+  
   auto fd = XrdPosix_Open(userInfoBucket.c_str(), O_CREAT | O_EXCL | O_WRONLY,
                           S_IRWXU | S_IRWXG);
   if (fd <= 0) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CreateBucket", "bucket-path:%s failed to open user-info:%s", bucket.path.c_str(), userInfoBucket.c_str());
     auth.DeleteBucketInfo(bucket);
     return S3Error::InternalError;
   }
@@ -192,12 +208,14 @@ S3Error S3ObjectStore::CreateBucket(S3Auth &auth, S3Auth::Bucket bucket,
 
   if (S3Utils::SetXattr(userInfoBucket, "createdAt",
                         std::to_string(std::time(nullptr)), XATTR_CREATE)) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CreateBucket", "bucket-path:%s failed to set creation time at user-info:%s", bucket.path.c_str(), userInfoBucket.c_str());
     auth.DeleteBucketInfo(bucket);
     XrdPosix_Unlink(userInfoBucket.c_str());
     return S3Error::InternalError;
   }
 
   if (XrdPosix_Mkdir((mtpu_path / bucket.name).c_str(), S_IRWXU | S_IRWXG)) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CreateBucket", "bucket-path:%s failed to create temporary multipart upload directory %s", bucket.path.c_str(), (mtpu_path/bucket.name).c_str());
     auth.DeleteBucketInfo(bucket);
     XrdPosix_Unlink(userInfoBucket.c_str());
     return S3Error::InternalError;
@@ -210,6 +228,7 @@ S3Error S3ObjectStore::CreateBucket(S3Auth &auth, S3Auth::Bucket bucket,
     mkdir_retc = XrdPosix_Mkdir(bucket.path.c_str(), S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
   }
   if (mkdir_retc) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CreateBucket", "failed to create bucket-path:%s", bucket.path.c_str());
     auth.DeleteBucketInfo(bucket);
     XrdPosix_Unlink(userInfoBucket.c_str());
     XrdPosix_Rmdir((mtpu_path / bucket.name).c_str());
@@ -244,12 +263,13 @@ std::pair<std::string, std::string> BaseDir(std::string p) {
 //------------------------------------------------------------------------------
 S3Error S3ObjectStore::DeleteBucket(S3Auth &auth,
                                     const S3Auth::Bucket &bucket) {
-
+  S3::S3Handler::Logger()->Log(S3::INFO, "ObjectStore::DeleteBucket", "bucket-name:%s owner(%u:%u)", bucket.name.c_str(), bucket.owner.uid, bucket.owner.gid);
   {
     // Check the backend directory with the users filesystem id
     ScopedFsId scope(bucket.owner.uid,bucket.owner.gid);
 
     if (!S3Utils::IsDirEmpty(bucket.path)) {
+      S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::DeleteBucket", "error bucket-name:%s is not empty!", bucket.name.c_str());
       return S3Error::BucketNotEmpty;
     }
   }
@@ -265,17 +285,18 @@ S3Error S3ObjectStore::DeleteBucket(S3Auth &auth,
       if (entry->d_name[0] == '.') {
         return;
       }
-
+      // TODO: error handling
       XrdPosix_Unlink((dir_name / entry->d_name).c_str());
     };
 
     S3Utils::DirIterator(dir_name, rm_files);
-
+    // TODO: error handling
     XrdPosix_Rmdir((upload_path / entry->d_name).c_str());
   };
 
   S3Utils::DirIterator(upload_path, rm_mtpu_uploads);
 
+  // TODO: error handling
   XrdPosix_Rmdir(bucket.path.c_str());
   XrdPosix_Rmdir(upload_path.c_str());
   auth.DeleteBucketInfo(bucket);
@@ -304,11 +325,13 @@ S3ObjectStore::Object::~Object() {
 //------------------------------------------------------------------------------
 S3Error S3ObjectStore::Object::Init(const std::filesystem::path &p,
 uid_t uid, gid_t gid) {
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::Object::Init", "object-path=%s owner(%u:%u)", p.c_str(), uid, gid);
   struct stat buf;
 
   // Do the backend operations with the users filesystem id
   ScopedFsId scope(uid, gid);
   if (XrdPosix_Stat(p.c_str(), &buf) || S_ISDIR(buf.st_mode)) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::Object::Init", "no such object - object-path=%s owner(%u:%u)", p.c_str(), uid, gid);
     return S3Error::NoSuchKey;
   }
 
@@ -349,6 +372,7 @@ uid_t uid, gid_t gid) {
 //! \return Number of bytes read
 //------------------------------------------------------------------------------
 ssize_t S3ObjectStore::Object::Read(size_t length, char **ptr) {
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::Object::Read", "object-path=%s owner(%u:%u) length=%u", name.c_str(), uid, gid, length);
   if (!init) {
     return 0;
   }
@@ -374,6 +398,7 @@ ssize_t S3ObjectStore::Object::Read(size_t length, char **ptr) {
 //! \return Offset
 //------------------------------------------------------------------------------
 off_t S3ObjectStore::Object::Lseek(off_t offset, int whence) {
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::Object::Seek", "object-path=%s owner(%u:%u) offset=%lu whence:%d", name.c_str(), uid, gid, offset, whence);
   if (!init) {
     return -1;
   }
@@ -409,8 +434,10 @@ S3Error S3ObjectStore::DeleteObject(const S3Auth::Bucket &bucket,
   std::string base, obj;
 
   auto full_path = bucket.path / key;
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::DeleteObject", "object-path=%s", full_path.c_str());
 
   if (XrdPosix_Unlink(full_path.c_str())) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::DeleteObject", "failed to delete object-path=%s", full_path.c_str());
     return S3Error::NoSuchKey;
   }
 
@@ -429,6 +456,7 @@ S3Error S3ObjectStore::DeleteObject(const S3Auth::Bucket &bucket,
 //------------------------------------------------------------------------------
 std::vector<S3ObjectStore::BucketInfo> S3ObjectStore::ListBuckets(
     const std::string &id) const {
+  S3::S3Handler::Logger()->Log(S3::INFO, "ObjectStore::ListBuckets", "id:%s", id.c_str());
   std::vector<BucketInfo> buckets;
   auto get_entry = [this, &buckets, &id](dirent *entry) {
     if (entry->d_name[0] == '.') {
@@ -437,6 +465,10 @@ std::vector<S3ObjectStore::BucketInfo> S3ObjectStore::ListBuckets(
 
     auto created_at =
         S3Utils::GetXattr(user_map / id / entry->d_name, "createdAt");
+
+    if (created_at.empty()) {
+      created_at = "0";
+    }
 
     buckets.push_back(BucketInfo{entry->d_name, created_at});
   };
@@ -459,9 +491,10 @@ ListObjectsInfo S3ObjectStore::ListObjectVersions(
     const S3Auth::Bucket &bucket, const std::string &prefix,
     const std::string &key_marker, const std::string &version_id_marker,
     const char delimiter, int max_keys) {
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::ListObjectVersions", "bucket:%s prefix:%s marker:%s vmarker:%s delimt=%c max-keys:%d",
+			       bucket.name.c_str(), prefix.c_str(), key_marker.c_str(), version_id_marker.c_str(), delimiter, max_keys);
   auto f = [](const std::filesystem::path &root, const std::string &object) {
     struct stat buf;
-
     if (!stat((root / object).c_str(), &buf)) {
       return ObjectInfo{object, S3Utils::GetXattr(root / object, "etag"),
                         buf.st_mtim.tv_sec, std::to_string(buf.st_size),
@@ -486,10 +519,12 @@ ListObjectsInfo S3ObjectStore::ListObjectVersions(
 S3Error S3ObjectStore::CopyObject(const S3Auth::Bucket &bucket,
                                   const std::string &key, Object &source_obj,
                                   const Headers &reqheaders, Headers &headers) {
+  S3::S3Handler::Logger()->Log(S3::INFO, "ObjectStore::CopyObject", "bucket:%s key:%s src=:%s", bucket.name.c_str(), key.c_str(), source_obj.Name().c_str());
   auto final_path = bucket.path / key;
 
   struct stat buf;
   if (!XrdPosix_Stat(final_path.c_str(), &buf) && S_ISDIR(buf.st_mode)) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CopyObject", "target:%s is directory => bucket:%s key:%s src=:%s", final_path.c_str(), bucket.name.c_str(), source_obj.Name().c_str());
     return S3Error::ObjectExistAsDir;
   }
 
@@ -501,15 +536,17 @@ S3Error S3ObjectStore::CopyObject(const S3Auth::Bucket &bucket,
                                S_IRWXU | S_IRWXG);
 
   if (err == ENOTDIR) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CopyObject", "target:%s exists already=> bucket:%s key:%s src=:%s", final_path.c_str(), bucket.name.c_str(), source_obj.Name().c_str());
     return S3Error::ObjectExistInObjectPath;
   } else if (err != 0) {
     return S3Error::InternalError;
   }
 
   auto fd = XrdPosix_Open(tmp_path.c_str(), O_CREAT | O_EXCL | O_WRONLY,
-                          S_IRWXU | S_IRWXG);
+                          S_IRWXU | S_IRGRP);
 
   if (fd < 0) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CopyObject", "target:%s failed to create => bucket:%s key:%s src=:%s", final_path.c_str(), bucket.name.c_str(), source_obj.Name().c_str());
     S3Utils::RmPath(final_path.parent_path(), bucket.path);
     return S3Error::InternalError;
   }
@@ -524,9 +561,11 @@ S3Error S3ObjectStore::CopyObject(const S3Auth::Bucket &bucket,
   while ((i = source_obj.Read(len, &ptr)) > 0) {
     len -= i;
     xs.Update(ptr, i);
+    // TODO: error handling
     XrdPosix_Write(fd, ptr, i);
   }
 
+  // TODO: error handling
   XrdPosix_Close(fd);
 
   char *fxs = xs.Final();
@@ -560,6 +599,7 @@ S3Error S3ObjectStore::CopyObject(const S3Auth::Bucket &bucket,
     return error;
   }
 
+  // TODO: error handling
   XrdPosix_Rename(tmp_path.c_str(), final_path.c_str());
 
   return error;
@@ -586,24 +626,35 @@ S3Error S3ObjectStore::CopyObject(const S3Auth::Bucket &bucket,
 bool S3ObjectStore::KeepOptimize(const std::filesystem::path &upload_path,
                                  size_t part_number, unsigned long size,
                                  const std::string &tmp_path,
-                                 size_t part_size) {
+                                 size_t part_size, std::vector<std::string>& parts) {
+  // for the time being we disable optimized uploads
+  
+  return false;
+  auto p = S3Utils::stringJoin(',', parts);  
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::KeepOptimize", "upload-path:%s part:%u size:%lu tmp-path=%s, part-size:%u, parts:%s",
+			       upload_path.c_str(), part_number, size, tmp_path.c_str(), part_size, p.c_str());
   size_t last_part_size;
   try {
     last_part_size =
         std::stoul(S3Utils::GetXattr(upload_path, "last_part_size"));
   } catch (std::exception &) {
+    S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::KeepOptimize", "disabling - last_part_size is not set");
     return false;
   }
 
+  if (last_part_size == 0 && part_number != 1) {
+    S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::KeepOptimize", "disabling - last_part_size is 0 and part_number is not 1 !");
+    return false;
+  }
+  
   if (part_size == 0) {
     S3Utils::SetXattr(upload_path, "part_size", std::to_string(size),
                       XATTR_REPLACE);
     S3Utils::SetXattr(upload_path, "last_part_size", std::to_string(size),
                       XATTR_REPLACE);
+    S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::KeepOptimize", "setting part_size:%u last_part_size:%u", size, size);
     return true;
   }
-
-  auto parts = GetPartsNumber(tmp_path);
 
   size_t last_part_number = 0;
   for (auto p : parts) {
@@ -652,6 +703,7 @@ bool S3ObjectStore::KeepOptimize(const std::filesystem::path &upload_path,
 S3Error ReadBufferAt(XrdS3Req &req, XrdCksCalcmd5 &md5XS,
                      S3Crypt::S3SHA256 &sha256XS, int fd,
                      unsigned long length) {
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::ReadBufferAt", "fd:%d length:%lu", fd, length);
   int buflen = 0;
   unsigned long readlen = 0;
   char *ptr;
@@ -691,6 +743,7 @@ std::pair<S3Error, size_t> ReadBufferIntoFile(XrdS3Req &req,
                                               S3Crypt::S3SHA256 &sha256XS,
                                               int fd, bool chunked,
                                               unsigned long size) {
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::ReadBufferIntoFile", "fd:%d size:%lu chunked:%d", fd, size, chunked);  
 #define PUT_LIMIT 5000000000
   auto reader = [&req, &md5XS, &sha256XS, fd](unsigned long length) {
     return ReadBufferAt(req, md5XS, sha256XS, fd, length);
@@ -747,13 +800,16 @@ struct FileUploadResult {
 //------------------------------------------------------------------------------
 FileUploadResult FileUploader(XrdS3Req &req, bool chunked, size_t size,
                               std::filesystem::path &path) {
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::FileUploader", "%s path:%s chunked:%d size:%lu", req.trace.c_str(), path.c_str(), chunked, size);
   auto fd = XrdPosix_Open(path.c_str(), O_CREAT | O_EXCL | O_WRONLY,
-                          S_IRWXU | S_IRGRP | S_IXGRP);
+                          S_IRWXU | S_IRGRP);
 
   if (fd < 0) {
     if ( errno == 13) {
+      S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::FileUploader", "access denied : errno:13 path:%s chunked:%d size:%lu", path.c_str(), chunked, size);
       return FileUploadResult{S3Error::AccessDenied, {}, {}, {}};
     } else {
+      S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::FileUploader", "internal error : errno:%d path:%s chunked:%d size:%lu", errno, path.c_str(), chunked, size);
       return FileUploadResult{S3Error::InternalError, {}, {}, {}};
     }
   }
@@ -805,9 +861,12 @@ S3Error S3ObjectStore::UploadPartOptimized(XrdS3Req &req,
                                            const std::string &tmp_path,
                                            size_t part_size, size_t part_number,
                                            size_t size, Headers &headers) {
+  S3::S3Handler::Logger()->Log(S3::INFO, "ObjectStore::UploadPartOptimized", "%s tmp-path:%s part-size:%u part-number:%u size:%u", req.trace.c_str(),
+			       tmp_path.c_str(), part_size, part_number, size);
   auto fd = XrdPosix_Open(tmp_path.c_str(), O_WRONLY);
 
   if (fd < 0) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::UploadPartOptimized", "failed to open tmp-path:%s errno:%d", tmp_path.c_str(), errno);
     return S3Error::InternalError;
   }
 
@@ -818,13 +877,18 @@ S3Error S3ObjectStore::UploadPartOptimized(XrdS3Req &req,
 
   long long offset = (long long)part_size * (part_number - 1);
 
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::UploadPartOptimized", "tmp-path:%s computed offset:%lld", tmp_path.c_str(), offset);
   XrdPosix_Lseek(fd, offset, SEEK_SET);
 
+  // TODO: error handling
   auto [error, final_size] =
       ReadBufferIntoFile(req, md5XS, sha256XS, fd, false, size);
 
   XrdPosix_Close(fd);
 
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::UploadPartOptimized", "tmp-path:%s upload complete", tmp_path.c_str(), offset);
+  std::cerr << "finished " << std::endl;
+  
   if (error != S3Error::None) {
     return error;
   }
@@ -833,12 +897,14 @@ S3Error S3ObjectStore::UploadPartOptimized(XrdS3Req &req,
   std::vector<unsigned char> md5(md5f, md5f + 16);
 
   if (!req.md5.empty() && req.md5 != md5) {
+    S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::UploadPartOptimized", "bad digest - tmp-path:%s", tmp_path.c_str());
     return S3Error::BadDigest;
   }
 
   const auto md5hex = '"' + S3Utils::HexEncode(md5) + '"';
   std::map<std::string, std::string> metadata;
 
+  std::cerr << "part " << part_number << " etag " << md5hex << std::endl;
   auto prefix = "part" + std::to_string(part_number) + '.';
   metadata.insert({prefix + "etag", md5hex});
   headers.insert({"ETag", md5hex});
@@ -869,16 +935,36 @@ S3Error S3ObjectStore::UploadPart(XrdS3Req &req, const std::string &upload_id,
                                   size_t part_number, unsigned long size,
                                   bool chunked, Headers &headers) {
   auto upload_path = mtpu_path / req.bucket / upload_id;
-
+  
+  S3::S3Handler::Logger()->Log(S3::INFO, "ObjectStore::UploadPart", "%s upload-id:%s part-number:%u size:%lu chunked:%d", req.trace.c_str(),
+			       upload_id.c_str(), part_number, size, chunked);
+      
   auto err = ValidateMultipartUpload(upload_path, req.object);
   if (err != S3Error::None) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::UploadPart", "validation failed - upload-id:%s part-number:%u size:%lu chunked:%d",
+				 upload_id.c_str(), part_number, size, chunked);
     return err;
   }
 
   auto optimized = S3Utils::GetXattr(upload_path, "optimized");
+  uid_t uid;
+  gid_t gid;
+  
+  try {
+    uid = std::stoul(S3Utils::GetXattr(upload_path, "uid"));
+    gid = std::stoul(S3Utils::GetXattr(upload_path, "gid"));
+  } catch (std::exception &) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::UploadPart", "get attributes for (uid,gid) failed  - upload-id:%s part-number:%u size:%lu chunked:%d",
+				 upload_id.c_str(), part_number, size, chunked);
+    
+    return S3Error::InternalError;
+  }
 
   // Chunked uploads disables optimizations as we do not know the part size.
   if (chunked && !optimized.empty()) {
+    S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::UploadPart", "disabling optimization for chunked uploads - upload-id:%s part-number:%u size:%lu chunked:%d",
+				 upload_id.c_str(), part_number, size, chunked);
+	
     S3Utils::SetXattr(upload_path, "optimized", "", XATTR_REPLACE);
   }
 
@@ -889,12 +975,23 @@ S3Error S3ObjectStore::UploadPart(XrdS3Req &req, const std::string &upload_id,
     try {
       part_size = std::stoul(S3Utils::GetXattr(upload_path, "part_size"));
     } catch (std::exception &) {
+      S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::UploadPart", "failed to get 'part_size' attribute on '%s' - upload-id:%s part-number:%u size:%lu chunked:%d",
+				   upload_path.c_str(), upload_id.c_str(), part_number, size, chunked);
+
       return S3Error::InternalError;
     }
-    if (KeepOptimize(upload_path, part_number, size, tmp_path, part_size)) {
-      return UploadPartOptimized(req, tmp_path, part_size, part_number, size,
-                                 headers);
+    {
+      std::vector<std::string> parts;
+      parts = GetPartsNumber(upload_path);
+      if (KeepOptimize(upload_path, part_number, size, tmp_path, part_size, parts)) {
+	ScopedFsId scope(uid, gid);
+	return UploadPartOptimized(req, tmp_path, part_size, part_number, size,
+				   headers);
+      }
     }
+    S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::UploadPart", "disabling optimization - upload-id:%s part-number:%u size:%lu chunked:%d",
+				 upload_id.c_str(), part_number, size, chunked);
+
     S3Utils::SetXattr(upload_path, "optimized", "", XATTR_REPLACE);
   }
 
@@ -917,9 +1014,14 @@ S3Error S3ObjectStore::UploadPart(XrdS3Req &req, const std::string &upload_id,
 
   error = SetMetadata(tmp_path, metadata);
   if (error != S3Error::None) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::UploadPart", "error setting meta-data - unlinking path:%s - upload-id:%s part-number:%u size:%lu chunked:%d",
+				 tmp_path.c_str(), upload_id.c_str(), part_number, size, chunked);
     XrdPosix_Unlink(tmp_path.c_str());
   }
 
+  // TODO: handle error
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::UploadPart", "rename s:'%s'=>d:'%s' - upload-id:%s part-number:%u size:%lu chunked:%d",
+			       tmp_path.c_str(), final_path.c_str(), upload_id.c_str(), part_number, size, chunked);
   XrdPosix_Rename(tmp_path.c_str(), final_path.c_str());
   return error;
 }
@@ -939,10 +1041,11 @@ S3Error S3ObjectStore::PutObject(XrdS3Req &req, const S3Auth::Bucket &bucket,
   ScopedFsId scope(bucket.owner.uid,bucket.owner.gid);
   auto final_path = bucket.path / req.object;
 
-  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore", "PutObject: uid=%u gid=%u path=%s chuncked=%d size=%lu", bucket.owner.uid, bucket.owner.gid, bucket.path.c_str(), chunked, size);
+  S3::S3Handler::Logger()->Log(S3::INFO, "ObjectStore::PutObject", "%s path:%s object-path:%s owner(%u:%u), chunked:%d size:%lu", req.trace.c_str(), bucket.path.c_str(), final_path.c_str(), bucket.owner.uid, bucket.owner.gid, chunked, size);
 
   struct stat buf;
   if (!XrdPosix_Stat(final_path.c_str(), &buf) && S_ISDIR(buf.st_mode)) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::PutObject", "path:%s is a directory", final_path.c_str());
     return S3Error::ObjectExistAsDir;
   }
 
@@ -952,10 +1055,12 @@ S3Error S3ObjectStore::PutObject(XrdS3Req &req, const S3Auth::Bucket &bucket,
        std::to_string(std::time(nullptr)) + std::to_string(std::rand()));
 
   auto err = S3Utils::makePath((char *)final_path.parent_path().c_str(),
-                               S_IRWXU | S_IRWXG);
+                               S_IRWXU | S_IRGRP);
   if (err == ENOTDIR) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::PutObject", "object exists in object path -  path:%s", final_path.c_str());
     return S3Error::ObjectExistInObjectPath;
   } else if (err != 0) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::PutObject", "internal error makeing parent : path:%s", final_path.c_str());
     return S3Error::InternalError;
   }
 
@@ -963,6 +1068,7 @@ S3Error S3ObjectStore::PutObject(XrdS3Req &req, const S3Auth::Bucket &bucket,
       FileUploader(req, chunked, size, tmp_path);
 
   if (error != S3Error::None) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::PutObject", "upload to path:%s failed - unlink path:%s", tmp_path.c_str(), tmp_path.c_str());
     XrdPosix_Unlink(tmp_path.c_str());
     S3Utils::RmPath(final_path.parent_path(), bucket.path);
     return error;
@@ -994,11 +1100,13 @@ S3Error S3ObjectStore::PutObject(XrdS3Req &req, const S3Auth::Bucket &bucket,
   }
   error = SetMetadata(tmp_path, metadata);
   if (error != S3Error::None) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::PutObject", "setting meta-data on path:%s failed - unlink path:%s", tmp_path.c_str(), tmp_path.c_str());
     XrdPosix_Unlink(tmp_path.c_str());
     S3Utils::RmPath(final_path.parent_path(), bucket.path);
     return error;
   }
 
+  // TODO: error handling
   XrdPosix_Rename(tmp_path.c_str(), final_path.c_str());
 
   return error;
@@ -1017,10 +1125,17 @@ S3ObjectStore::DeleteObjects(const S3Auth::Bucket &bucket,
   std::vector<ErrorObject> error;
 
   for (const auto &o : objects) {
+    S3::S3Handler::Logger()->Log(S3::INFO, "ObjectStore::DeleteObjects", "bucket:%s object:%s",bucket.name.c_str(), o.key.c_str());
     auto err = DeleteObject(bucket, o.key);
     if (err == S3Error::None || err == S3Error::NoSuchKey) {
+      if (err == S3Error::None) {
+	S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::DeleteObjects", "deleted bucket:%s object:%s",bucket.name.c_str(), o.key.c_str());
+      } else {
+	S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::DeleteObjects", "no such key - bucket:%s object:%s",bucket.name.c_str(), o.key.c_str());
+      }
       deleted.push_back({o.key, o.version_id, false, ""});
     } else {
+      S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::DeleteObjects", "internal error when delting bucket:%s object:%s",bucket.name.c_str(), o.key.c_str());
       error.push_back({S3Error::InternalError, o.key, "", o.version_id});
     }
   }
@@ -1042,8 +1157,12 @@ ListObjectsInfo S3ObjectStore::ListObjectsV2(
     const S3Auth::Bucket &bucket, const std::string &prefix,
     const std::string &continuation_token, const char delimiter, int max_keys,
     bool fetch_owner, const std::string &start_after) {
-  auto f = [fetch_owner](const std::filesystem::path &root,
-                         const std::string &object) {
+
+    S3::S3Handler::Logger()->Log(S3::INFO, "ObjectStore::ListObjectsV2", "bucket:%s prefix:%s cont-token:%s delimiter:%c max-keys:%d fetch-owner:%d start-after:%s",
+				 bucket.name.c_str(), prefix.c_str(), continuation_token.c_str(), delimiter, max_keys, fetch_owner, start_after.c_str());
+				 
+    auto f = [fetch_owner](const std::filesystem::path &root,
+			   const std::string &object) {
     struct stat buf;
 
     std::string owner;
@@ -1051,6 +1170,7 @@ ListObjectsInfo S3ObjectStore::ListObjectsV2(
       owner = S3Utils::GetXattr(root / object, "owner");
     }
 
+    std::cerr << "owner: " << owner << std::endl;
     if (!stat((root / object).c_str(), &buf)) {
       return ObjectInfo{object, S3Utils::GetXattr(root / object, "etag"),
                         buf.st_mtim.tv_sec, std::to_string(buf.st_size), owner};
@@ -1077,6 +1197,9 @@ ListObjectsInfo S3ObjectStore::ListObjects(const S3Auth::Bucket &bucket,
                                            const std::string &prefix,
                                            const std::string &marker,
                                            const char delimiter, int max_keys) {
+  S3::S3Handler::Logger()->Log(S3::INFO, "ObjectStore::ListObjects", "bucket:%s prefix:%s marker:%s delimiter:%c max-keys:%d",
+			       bucket.name.c_str(), prefix.c_str(), marker.c_str(), delimiter, max_keys);
+  
   auto f = [](const std::filesystem::path &root, const std::string &object) {
     struct stat buf;
 
@@ -1113,7 +1236,9 @@ ListObjectsInfo S3ObjectStore::ListObjectsCommon(
     const std::function<ObjectInfo(const std::filesystem::path &,
                                    const std::string &)> &f) {
   std::string basedir;
-
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::ListObjectsCommon", "bucket:%s prefix:%s marker:%s delimiter:%c max-keys:%d get-version:%d",
+			       bucket.name.c_str(), prefix.c_str(), marker.c_str(), delimiter, max_keys, get_versions);
+  
   if (prefix == "/" || max_keys == 0) {
     return {};
   }
@@ -1125,7 +1250,8 @@ ListObjectsInfo S3ObjectStore::ListObjectsCommon(
   }
 
   auto fullpath = bucket.path;
-
+  std::cerr << "list fullpath=" << fullpath << std::endl;
+  
   struct BasicPath {
     std::string base;
     std::string name;
@@ -1232,6 +1358,7 @@ ListObjectsInfo S3ObjectStore::ListObjectsCommon(
 //------------------------------------------------------------------------------
 std::pair<std::string, S3Error> S3ObjectStore::CreateMultipartUpload(
     const S3Auth::Bucket &bucket, const std::string &key) {
+  S3::S3Handler::Logger()->Log(S3::INFO, "ObjectStore::CreateMultipartUpload", "bucket:%s key:%s", bucket.name.c_str(), key.c_str());
   // TODO: Metadata uploaded with the create multipart upload operation is not
   //  saved to the final file.
 
@@ -1244,24 +1371,40 @@ std::pair<std::string, S3Error> S3ObjectStore::CreateMultipartUpload(
       ("." + final_path.filename().string() + "." +
        std::to_string(std::time(nullptr)) + std::to_string(std::rand()));
 
+  auto pp = mtpu_path / bucket.name ; 
   auto p = mtpu_path / bucket.name / upload_id;
-  XrdPosix_Mkdir(p.c_str(), S_IRWXU | S_IRWXG);
 
-  auto err = S3Utils::makePath((char *)final_path.parent_path().c_str(),
-                               S_IRWXU | S_IRWXG);
 
-  if (err == ENOTDIR) {
-    return {{}, S3Error::ObjectExistInObjectPath};
-  } else if (err != 0) {
-    return {{}, S3Error::InternalError};
-  }
-
-  auto fd = XrdPosix_Open(tmp_path.c_str(), O_CREAT | O_EXCL | O_WRONLY,
-                          S_IRWXU | S_IRWXG);
-
-  if (fd < 0) {
-    S3Utils::RmPath(final_path.parent_path(), bucket.path);
-    return {{}, S3Error::InternalError};
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::CreateMultipartUpload", "bucket:%s key:%s tmp-upload-path:%s final-path:%s",
+			       bucket.name.c_str(), key.c_str(), p.c_str(), final_path.c_str());
+  // TODO: error handling
+  XrdPosix_Mkdir(pp.c_str(), S_IRWXU | S_IRGRP);
+  XrdPosix_Mkdir(p.c_str(), S_IRWXU | S_IRGRP);
+  
+  {
+    // we have to do this as the owner of the bucket
+    ScopedFsId scope(bucket.owner.uid,bucket.owner.gid);
+    auto err = S3Utils::makePath((char *)final_path.parent_path().c_str(),
+				 S_IRWXU | S_IRGRP);
+    
+    if (err == ENOTDIR) {
+      S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CreateMultipartUpload", "bucket:%s key:%s object exists in path:%s",
+				   bucket.name.c_str(), key.c_str(), final_path.c_str());
+      return {{}, S3Error::ObjectExistInObjectPath};
+    } else if (err != 0) {
+      S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CreateMultipartUpload", "internal error - bucket:%s key:%s tmp-upload-path:%s final-path:%s",
+				   bucket.name.c_str(), key.c_str(), p.c_str(), final_path.c_str());
+      return {{}, S3Error::InternalError};
+    }
+  
+    auto fd = XrdPosix_Open(tmp_path.c_str(), O_CREAT | O_EXCL | O_WRONLY,
+			    S_IRWXU | S_IRGRP);
+    
+    if (fd < 0) {
+      S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CreateMultipartUpload", "bucket:%s key:%s failed to create tmp-upload-path:%s", bucket.name.c_str(), key.c_str(), tmp_path.c_str());
+      S3Utils::RmPath(final_path.parent_path(), bucket.path);
+      return {{}, S3Error::InternalError};
+    }
   }
 
   S3Utils::SetXattr(p, "key", key, XATTR_CREATE);
@@ -1269,7 +1412,10 @@ std::pair<std::string, S3Error> S3ObjectStore::CreateMultipartUpload(
   S3Utils::SetXattr(p, "tmp", tmp_path, XATTR_CREATE);
   S3Utils::SetXattr(p, "part_size", "0", XATTR_CREATE);
   S3Utils::SetXattr(p, "last_part_size", "0", XATTR_CREATE);
+  S3Utils::SetXattr(p, "uid" , std::to_string(bucket.owner.uid).c_str(), XATTR_CREATE);
+  S3Utils::SetXattr(p, "gid" , std::to_string(bucket.owner.gid).c_str(), XATTR_CREATE);
 
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::CreateMultipartUpload", "bucket:%s key:%s upload-id:%s", bucket.name.c_str(), key.c_str(), upload_id.c_str());
   return {upload_id, S3Error::None};
 }
 
@@ -1282,6 +1428,7 @@ std::vector<S3ObjectStore::MultipartUploadInfo>
 S3ObjectStore::ListMultipartUploads(const std::string &bucket) {
   auto upload_path = mtpu_path / bucket;
 
+  S3::S3Handler::Logger()->Log(S3::INFO, "ObjectStore::ListMultipartUpload", "bucket:%s upload-path:%s", bucket.c_str(), upload_path.c_str());
   std::vector<MultipartUploadInfo> uploads;
   auto parse_upload = [upload_path, &uploads](dirent *entry) {
     if (entry->d_name[0] == '.') {
@@ -1308,6 +1455,8 @@ S3ObjectStore::ListMultipartUploads(const std::string &bucket) {
 S3Error S3ObjectStore::AbortMultipartUpload(const S3Auth::Bucket &bucket,
                                             const std::string &key,
                                             const std::string &upload_id) {
+  S3::S3Handler::Logger()->Log(S3::INFO, "ObjectStore::AbortMultipartUpload", "bucket:%s key:%s upload-id:%s", bucket.name.c_str(), key.c_str(), upload_id.c_str());
+
   auto upload_path = mtpu_path / bucket.name / upload_id;
   auto tmp_path = S3Utils::GetXattr(upload_path, "tmp");
   auto err = DeleteMultipartUpload(bucket, key, upload_id);
@@ -1315,6 +1464,7 @@ S3Error S3ObjectStore::AbortMultipartUpload(const S3Auth::Bucket &bucket,
     return err;
   }
 
+  // TODO: error handling
   XrdPosix_Unlink(tmp_path.c_str());
   S3Utils::RmPath(std::filesystem::path(tmp_path), bucket.path);
 
@@ -1333,6 +1483,8 @@ S3Error S3ObjectStore::DeleteMultipartUpload(const S3Auth::Bucket &bucket,
                                              const std::string &upload_id) {
   auto upload_path = mtpu_path / bucket.name / upload_id;
 
+  S3::S3Handler::Logger()->Log(S3::INFO, "ObjectStore::DeleteMultipartUpload", "bucket:%s key:%s upload-id:%s", bucket.name.c_str(), key.c_str(), upload_id.c_str());
+
   auto err = ValidateMultipartUpload(upload_path, key);
   if (err != S3Error::None) {
     return err;
@@ -1342,12 +1494,13 @@ S3Error S3ObjectStore::DeleteMultipartUpload(const S3Auth::Bucket &bucket,
     if (entry->d_name[0] == '.') {
       return;
     }
-
+    // TODO: error handling
     XrdPosix_Unlink((upload_path / entry->d_name).c_str());
   };
 
   S3Utils::DirIterator(upload_path, rm_files);
 
+  // TODO: error handling
   XrdPosix_Rmdir(upload_path.c_str());
 
   return S3Error::None;
@@ -1361,6 +1514,8 @@ S3Error S3ObjectStore::DeleteMultipartUpload(const S3Auth::Bucket &bucket,
 //------------------------------------------------------------------------------
 S3Error S3ObjectStore::ValidateMultipartUpload(const std::string &upload_path,
                                                const std::string &key) {
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::ValidateMultipartUpload", "key:%s upload-path:%s",key.c_str(), upload_path.c_str());
+
   struct stat buf;
 
   if (XrdPosix_Stat(upload_path.c_str(), &buf)) {
@@ -1369,6 +1524,7 @@ S3Error S3ObjectStore::ValidateMultipartUpload(const std::string &upload_path,
 
   auto upload_key = S3Utils::GetXattr(upload_path, "key");
   if (upload_key != key) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::ValidateMultipartUpload", "key:%s upload-key:%s - keys do not match - invalid request",key.c_str(), upload_key.c_str());
     return S3Error::InvalidRequest;
   }
 
@@ -1387,8 +1543,12 @@ S3ObjectStore::ListParts(const std::string &bucket, const std::string &key,
                          const std::string &upload_id) {
   auto upload_path = mtpu_path / bucket / upload_id;
 
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::ListParts", "bucket:%s key:%s upload-id:%s upload-path:%s",
+			       bucket.c_str(), key.c_str(), upload_id.c_str(), upload_path.c_str());
   auto err = ValidateMultipartUpload(upload_path, key);
   if (err != S3Error::None) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::ListParts", "bucket:%s key:%s upload-id:%s upload-path:%s validation failed",
+				 bucket.c_str(), key.c_str(), upload_id.c_str(), upload_path.c_str());
     return {err, {}};
   }
 
@@ -1401,6 +1561,7 @@ S3ObjectStore::ListParts(const std::string &bucket, const std::string &key,
     auto etag = S3Utils::GetXattr(upload_path / entry->d_name, "etag");
 
     struct stat buf;
+    // TODO: error handling
     XrdPosix_Stat((upload_path / entry->d_name).c_str(), &buf);
 
     unsigned long n;
@@ -1430,24 +1591,49 @@ S3ObjectStore::ListParts(const std::string &bucket, const std::string &key,
 bool S3ObjectStore::CompleteOptimizedMultipartUpload(
     const std::filesystem::path &final_path,
     const std::filesystem::path &tmp_path, const std::vector<PartInfo> &parts) {
+  std::string p;
+  for (auto i:parts) {
+    p += i.nstr();
+    p += ",";
+  }
+  p.pop_back();
+  S3::S3Handler::Logger()->Log(S3::INFO, "ObjectStore::CompleteOptimizedMultipartUpload", "final-path:%s tmp-path:%s parts:%s",
+			       final_path.c_str(), tmp_path.c_str(), p.c_str());
+  for (auto i:parts) {
+    std::cerr << i.str() << std::endl;
+  }
+  
   size_t e = 1;
+  
   for (const auto &[etag, _, n, __] : parts) {
+    S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::CompleteOptimizedMultipartUpload", "final-path:%s tmp-path:%s part:%d etag:%s",
+				 final_path.c_str(), tmp_path.c_str(), n, etag.c_str());
     if (e != n) {
+      S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CompleteOptimizedMultipartUpload", "final-path:%s tmp-path:%s part:%d etag:%s e!=n",
+				   final_path.c_str(), tmp_path.c_str(), n, etag.c_str());
       return false;
     }
 
     e++;
     auto id = "part" + std::to_string(n);
     if (S3Utils::GetXattr(tmp_path, id + ".start").empty()) {
+      S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CompleteOptimizedMultipartUpload", "final-path:%s tmp-path:%s part:%d etag:%s '.start' attribute is empty",
+				   final_path.c_str(), tmp_path.c_str(), n, etag.c_str());
       return false;
     }
-
+    
     if (S3Utils::GetXattr(tmp_path, id + ".etag") != etag) {
+      S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CompleteOptimizedMultipartUpload", "final-path:%s tmp-path:%s part:%d etag:%s '.etag' attribute is empty",
+					 final_path.c_str(), tmp_path.c_str(), n, etag.c_str());
       return false;
     }
   }
 
+  // TODO: error handling
   XrdPosix_Rename(tmp_path.c_str(), final_path.c_str());
+  S3::S3Handler::Logger()->Log(S3::INFO, "ObjectStore::CompleteOptimizedMultipartUpload", "final-path:%s tmp-path:%s parts:%s has been successfully finalized",
+			       final_path.c_str(), tmp_path.c_str(), p.c_str());
+  
   return true;
 }
 
@@ -1464,9 +1650,19 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
     XrdS3Req &req, const S3Auth::Bucket &bucket, const std::string &key,
     const std::string &upload_id, const std::vector<PartInfo> &parts) {
   auto upload_path = mtpu_path / req.bucket / upload_id;
+  std::string p;
+  for (auto i:parts) {
+    p += i.nstr();
+    p += ",";
+  }
+  p.pop_back();
 
+  S3::S3Handler::Logger()->Log(S3::INFO, "ObjectStore::CompleteMultipartUpload", "%s bucket:%s key:%s upload-id:%s parts:%s upload-path:%s",
+			       req.trace.c_str(), bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str());
   auto err = ValidateMultipartUpload(upload_path, req.object);
   if (err != S3Error::None) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CompleteMultipartUpload", "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s didn't get validated",
+				 bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str());
     return err;
   }
 
@@ -1474,54 +1670,82 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
   auto opt_path = S3Utils::GetXattr(upload_path, "tmp");
 
   auto optimized = S3Utils::GetXattr(upload_path, "optimized");
+  
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::CompleteMultipartUpload", "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d opt-path:%s final-path:%s",
+			       bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str(), optimized.length()?1:0, opt_path.c_str(), final_path.c_str());
+
   // Check if we are able to complete the multipart upload with only a mv
   // operation.
-  if (!optimized.empty() &&
-      CompleteOptimizedMultipartUpload(final_path, opt_path, parts)) {
-    return DeleteMultipartUpload(bucket, key, upload_id);
-  }
-  // Otherwise we will need to concatenate parts
-
-  // First check that all the parts are in order.
-  // We first check if a file named partN exists in the multipart upload dir,
-  // then check if it exists in the optimized upload tmp path.
-  size_t max = 0;
-  struct stat buf;
-  for (const auto &[etag, _, n, __] : parts) {
-    if (n <= max) {
-      return S3Error::InvalidPartOrder;
+  if (!optimized.empty()) {
+    ScopedFsId scope(bucket.owner.uid,bucket.owner.gid);
+    if (!CompleteOptimizedMultipartUpload(final_path, opt_path, parts)) {
+      return DeleteMultipartUpload(bucket, key, upload_id);
     }
-    max = n;
+  } else {
+    // Otherwise we will need to concatenate parts
+    
+    // First check that all the parts are in order.
+    // We first check if a file named partN exists in the multipart upload dir,
+    // then check if it exists in the optimized upload tmp path.
+    size_t max = 0;
+    struct stat buf;
+    for (const auto &[etag, _, n, __] : parts) {
+      if (n <= max) {
+	S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CompleteMultipartUpload", "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d opt-path:%s final-path:%s invalid part ordering",
+				     bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str(), optimized.length()?1:0, opt_path.c_str(), final_path.c_str());
+	return S3Error::InvalidPartOrder;
+      }
+      max = n;
+      
+      auto path = upload_path / std::to_string(n);
+      // TODO: error handling
+      if (XrdPosix_Stat(path.c_str(), &buf)) {
+	auto id = "part" + std::to_string(n);
+	if (S3Utils::GetXattr(opt_path, id + ".start").empty()) {
+	  S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CompleteMultipartUpload", "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d opt-path:%s final-path:%s invalid part .start attribute",
+				       bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str(), optimized.length()?1:0, opt_path.c_str(), final_path.c_str());
+		
+	  return S3Error::InvalidPart;
+	}
+	if (S3Utils::GetXattr(opt_path, id + ".etag") != etag) {
+	  S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CompleteMultipartUpload", "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d opt-path:%s final-path:%s invalid part .etag attribute",
+				       bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str(), optimized.length()?1:0, opt_path.c_str(), final_path.c_str());
 
-    auto path = upload_path / std::to_string(n);
-    if (XrdPosix_Stat(path.c_str(), &buf)) {
-      auto id = "part" + std::to_string(n);
-      if (S3Utils::GetXattr(opt_path, id + ".start").empty()) {
-        return S3Error::InvalidPart;
-      }
-      if (S3Utils::GetXattr(opt_path, id + ".etag") != etag) {
-        return S3Error::InvalidPart;
-      }
-    } else {
-      if (S3Utils::GetXattr(path, "etag") != etag) {
-        return S3Error::InvalidPart;
+	  return S3Error::InvalidPart;
+	}
+      } else {
+	if (S3Utils::GetXattr(path, "etag") != etag) {
+	  S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CompleteMultipartUpload", "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d opt-path:%s final-path:%s invalid .etag attribute",
+				       bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str(), optimized.length()?1:0, opt_path.c_str(), final_path.c_str());
+	  return S3Error::InvalidPart;
+	}
       }
     }
   }
+
 
   {
     // Check if the final file exists in the backend and is a directory
     ScopedFsId scope(bucket.owner.uid,bucket.owner.gid);
-
+    struct stat buf;
     if (!XrdPosix_Stat(final_path.c_str(), &buf)) {
       if (S_ISDIR(buf.st_mode)) {
+	S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CompleteMultipartUpload", "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d opt-path:%s final-path:%s final-path is a directory!",
+				     bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str(), optimized.length()?1:0, opt_path.c_str(), final_path.c_str());
         return S3Error::ObjectExistAsDir;
       }
     } else {
-      return S3Error::AccessDenied;
+      if (errno != ENOENT) {
+	S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CompleteMultipartUpload", "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d opt-path:%s final-path:%s final-path cannot be accessed!",
+				     bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str(), optimized.length()?1:0, opt_path.c_str(), final_path.c_str());
+	return S3Error::AccessDenied;
+      }
     }
   }
-
+  
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::CompleteMultipartUpload", "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d opt-path:%s final-path:%s copying parts to final destination via tempfile+rename ...",
+			       bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str(), optimized.length()?1:0, opt_path.c_str(), final_path.c_str());
+    
   // Then we copy all the parts into a tmp file, which will be renamed to the
   // final file.
   auto tmp_path = bucket.path /
@@ -1532,12 +1756,19 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
   {
     // The temp file has to created using the filesystem id of the owner
     ScopedFsId scope(bucket.owner.uid,bucket.owner.gid);
-    fd = XrdPosix_Open(tmp_path.c_str(), O_CREAT | O_EXCL | O_WRONLY);
+    fd = XrdPosix_Open(tmp_path.c_str(), O_CREAT | O_EXCL | O_WRONLY, S_IRWXU | S_IRGRP);
   }
 
   if (fd < 0) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CompleteMultipartUpload", "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d opt-path:%s final-path:%s final-path:%s failed to open tmp-path:%s!",
+				 bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str(), optimized.length()?1:0, opt_path.c_str(), final_path.c_str(), tmp_path.c_str());
+    std::cerr << "internal error opening final file" << std::endl;
     return S3Error::InternalError;
   }
+
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::CompleteMultipartUpload", "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d opt-path:%s final-path:%s starting checksummming ...",
+			       bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str(), optimized.length()?1:0, opt_path.c_str(), final_path.c_str());
+    
 
   XrdCksCalcmd5 xs;
   xs.Init();
@@ -1547,9 +1778,12 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
 
   ssize_t opt_len;
   try {
+    ScopedFsId scope(bucket.owner.uid,bucket.owner.gid);
     opt_len = std::stol(S3Utils::GetXattr(opt_path, "part_size"));
   } catch (std::exception &) {
-    return S3Error::InternalError;
+    S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::CompleteMultipartUpload", "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d opt-path:%s final-path:%s part size not set on opt-path:%s!",
+				 bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str(), optimized.length()?1:0, opt_path.c_str(), final_path.c_str(), opt_path.c_str());
+    opt_len = 0;
   }
 
   char *ptr;
@@ -1557,10 +1791,12 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
   for (const auto &part : parts) {
     Object obj;
 
-    if (obj.Init(upload_path / std::to_string(part.part_number),bucket.owner.uid, bucket.owner.gid) !=
+    if (obj.Init(upload_path / std::to_string(part.part_number),geteuid(), getegid()) !=
         S3Error::None) {
-      // use the optimized part
+      S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::CompleteMultipartUpload", "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d opt-path:%s final-path:%s using optimized part %s ...",
+				   bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str(), optimized.length()?1:0, opt_path.c_str(), final_path.c_str(), (upload_path / std::to_string(part.part_number)).c_str());
 
+      // use the optimized part
       ssize_t start;
 
       try {
@@ -1587,6 +1823,8 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
         XrdPosix_Write(fd, ptr, i);
       }
     } else {
+      S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::CompleteMultipartUpload", "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d opt-path:%s final-path:%s using temporary part ...",
+				   bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str(), optimized.length()?1:0, opt_path.c_str(), final_path.c_str());
       ssize_t len = obj.GetSize();
       ssize_t i = 0;
 
@@ -1596,17 +1834,24 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
           XrdPosix_Close(fd);
           XrdPosix_Unlink(tmp_path.c_str());
           S3Utils::RmPath(final_path.parent_path(), bucket.path);
+	  S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CompleteMultipartUpload", "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d opt-path:%s final-path:%s read error on temporary part ...",
+				       bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str(), optimized.length()?1:0, opt_path.c_str(), final_path.c_str());
           return S3Error::InternalError;
         }
         len -= i;
         xs.Update(ptr, i);
+	// TODO: error handling
         XrdPosix_Write(fd, ptr, i);
+	S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::CompleteMultipartUpload", "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d opt-path:%s final-path:%s writing part ...",
+				     bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str(), optimized.length()?1:0, opt_path.c_str(), final_path.c_str());
       }
     }
   }
 
   XrdPosix_Close(fd);
 
+  S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::CompleteMultipartUpload", "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d opt-path:%s final-path:%s finalizing checksum ...",
+			       bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str(), optimized.length()?1:0, opt_path.c_str(), final_path.c_str()); 
   char *fxs = xs.Final();
   std::vector<unsigned char> md5(fxs, fxs + 16);
   auto md5hex = '"' + S3Utils::HexEncode(md5) + '"';
@@ -1614,95 +1859,34 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
 
   metadata.insert({"etag", md5hex});
 
-  S3Error error = SetMetadata(tmp_path, metadata);
-  if (error != S3Error::None) {
-    XrdPosix_Unlink(tmp_path.c_str());
-    S3Utils::RmPath(final_path.parent_path(), bucket.path);
-    return error;
+  {
+    ScopedFsId scope(bucket.owner.uid,bucket.owner.gid);
+    S3Error error = SetMetadata(tmp_path, metadata);
+    if (error != S3Error::None) {
+      S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CompleteMultipartUpload", "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d opt-path:%s final-path:%s error setting metadata on tmp-path:%s",
+				   bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str(), optimized.length()?1:0, opt_path.c_str(), final_path.c_str(), tmp_path.c_str());
+      // TODO: error handling
+      XrdPosix_Unlink(tmp_path.c_str());
+      S3Utils::RmPath(final_path.parent_path(), bucket.path);
+      return error;
+      }
   }
 
   {
+    S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::CompleteMultipartUpload", "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d opt-path:%s final-path:%s renaming %s => %s",
+				 bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str(), optimized.length()?1:0, opt_path.c_str(), final_path.c_str(), tmp_path.c_str(), final_path.c_str());
     // Rename using the owner filesystem id
     ScopedFsId scope(bucket.owner.uid,bucket.owner.gid);
+    // TODO: error handling
     XrdPosix_Rename(tmp_path.c_str(), final_path.c_str());
+    // TODO: error handling
+    XrdPosix_Unlink(opt_path.c_str());
   }
-
-  XrdPosix_Unlink(opt_path.c_str());
+  
   DeleteMultipartUpload(bucket, key, upload_id);
-
+    S3::S3Handler::Logger()->Log(S3::INFO, "ObjectStore::CompleteMultipartUpload", "%s bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d opt-path:%s final-path:%s multipart upload complete!",
+				 req.trace.c_str(), bucket.name.c_str(), key.c_str(), upload_id.c_str(), p.c_str(), upload_path.c_str(), optimized.length()?1:0, opt_path.c_str(), final_path.c_str());
   return S3Error::None;
-  //  if (upload->second.optimized) {
-  //    auto it = upload->second.parts.end();
-  //    size_t e = 1;
-  //    for (const auto &[etag, _, n, __] : parts) {
-  //      if (e != n) {
-  //        throw std::runtime_error("Multipart is not continuous, todo!");
-  //      }
-  //      if ((it = upload->second.parts.find(n)) == upload->second.parts.end())
-  //      {
-  //        return S3Error::InvalidPart;
-  //      }
-  //      if (it->second.etag != etag) {
-  //        return S3Error::InvalidPart;
-  //      }
-  //      e++;
-  //    }
-  //    auto p = std::filesystem::path(path) / bucket / key;
-  //    create_directories(p.parent_path());
-  //
-  //    XrdCksCalcmd5 xs;
-  //    xs.Init();
-  //
-  //    auto fname = path / XRD_MULTIPART_UPLOAD_DIR / bucket / upload_id /
-  //    "file"; auto size = file_size(fname); auto fd = open(fname.c_str(),
-  //    O_RDONLY);
-  //
-  //    auto file_buffer = mmap(0, size, PROT_READ, MAP_SHARED, fd, 0);
-  //
-  //    xs.Update((const char *)file_buffer, size);
-  //
-  //    munmap(file_buffer, size);
-  //
-  //    char *fxs = xs.Final();
-  //    std::vector<unsigned char> md5(fxs, fxs + 16);
-  //    auto md5hex = '"' + S3Utils::HexEncode(md5) + '"';
-  //    std::map<std::string, std::string> metadata;
-  //
-  //    metadata.insert({"last-modified", std::to_string(std::time(nullptr))});
-  //    metadata.insert({"etag", md5hex});
-  //    // todo: add headers from create multipart upload
-  //
-  //    S3Error error = SetMetadata(fname, metadata);
-  //    if (error != S3Error::None) {
-  //      return error;
-  //    }
-  //
-  //    std::filesystem::rename(fname, p);
-  //    buploads->second.erase(upload);
-  //
-  //    return S3Error::None;
-  //  } else {
-  //    throw std::runtime_error("Not optimized mtpu not implemented");
-  //  }
-
-  //  auto it = parts.begin();
-  //  auto ret = S3Error::None;
-  //
-  //
-  //
-  //  auto validate_part = [&it, &parts, &ret](dirent *entry) {
-  //    if (ret != S3Error::None || entry->d_name[0] == '.') {
-  //      return;
-  //    }
-  //
-  //    if (it == parts.end()) {
-  //      ret = S3Error::InvalidPart;
-  //      return;
-  //    }
-  //
-  //
-  //
-  //  };
 }
 
 }  // namespace S3
