@@ -66,6 +66,7 @@ class S3Handler : public XrdHttpExtHandler {
 
  private:
   struct {
+    std::string vmp; // virtual mountpoints used in XrdPosix (sets XROOTD_VMP)
     std::string config_dir;
     std::string region;
     std::string service;

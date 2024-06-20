@@ -542,7 +542,15 @@ bool S3Handler::ParseConfig(const char *config, XrdOucEnv &env) {
                   LogMask::WARN);  // by default don't log so much
 
   while ((val = Config.GetMyFirstWord())) {
-    if (!strcmp("s3.config", val)) {
+    if (!strcmp("s3.vmp", val)) {
+      if (!(val = Config.GetWord())) {
+	Config.Close();
+	std::cerr << "error: s3.vmp value not defined" << std::endl;
+      }
+      mConfig.vmp = val;
+      // export the XrdPosix VMP configuration
+      setenv("XROOTD_VMP", mConfig.vmp.c_str(), 1);
+    } else if (!strcmp("s3.config", val)) {
       if (!(val = Config.GetWord())) {
         Config.Close();
         std::cerr << "error: s3.config value not defined" << std::endl;
