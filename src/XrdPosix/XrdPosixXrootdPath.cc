@@ -33,7 +33,6 @@
 #include <cstring>
 #include <strings.h>
 #include <sys/param.h>
-
 #include "XrdOuc/XrdOucName2Name.hh"
 #include "XrdOuc/XrdOucTokenizer.hh"
 #include "XrdPosix/XrdPosixTrace.hh"
@@ -65,7 +64,11 @@ extern bool             p2lSGI;
        ProtoTable       protoTab[ptEnts] = {{"root://",  7}, {"xroot://",  8},
                                             {"roots://", 8}, {"xroots://", 9}};
 }
-  
+
+
+thread_local std::string XrdPosixXrootPath::s_connect_user;
+thread_local std::string XrdPosixXrootPath::s_cgi;
+
 /******************************************************************************/
 /*         X r d P o s i x X r o o t P a t h   C o n s t r u c t o r          */
 /******************************************************************************/
@@ -318,10 +321,19 @@ char *XrdPosixXrootPath::URL(const char *path, char *buff, int blen)
 // Build the url
 //
    strcpy(buff, XrdPosixGlobals::protoTab[0].name);
+   if (!s_connect_user.empty()) {
+     // add a named connection
+     strcat(buff, s_connect_user.c_str());
+     strcat(buff, "@");
+   }
    strcat(buff, xpnow->server);
    strcat(buff, "/");
    if (xpnow->nath) {strcat(buff, xpnow->nath); path += xpnow->plen;}
    if (*path != '/') strcat(buff, "/");
    strcat(buff, path);
+   if (!s_cgi.empty()) {
+     strcat(buff, "?");
+     strcat(buff, s_cgi.c_str());
+   }
    return buff;
 }

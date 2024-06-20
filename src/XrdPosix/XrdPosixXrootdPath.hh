@@ -37,6 +37,8 @@ class XrdPosixXrootPath
 public:
 
 static bool AddProto(const char *proto);
+static thread_local std::string s_connect_user;
+static thread_local std::string s_cgi;
 
 void  CWD(const char *path);
 
