@@ -241,7 +241,7 @@ S3Error S3ObjectStore::CreateBucket(S3Auth &auth, S3Auth::Bucket bucket,
   int mkdir_retc = 0;
   {
     // Create the backend directory with the users filesystem id
-    ScopedFsId scop(bucket.owner.uid, bucket.owner.gid);
+    ScopedFsId scop(bucket.owner.uid, bucket.owner.gid, bucket.owner.id);
     mkdir_retc = XrdPosix_Mkdir(
         bucket.path.c_str(), S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
   }
@@ -287,7 +287,7 @@ S3Error S3ObjectStore::DeleteBucket(S3Auth &auth,
       bucket.name.c_str(), bucket.owner.uid, bucket.owner.gid);
   {
     // Check the backend directory with the users filesystem id
-    ScopedFsId scope(bucket.owner.uid, bucket.owner.gid);
+    ScopedFsId scope(bucket.owner.uid, bucket.owner.gid, bucket.owner.id);
 
     if (!S3Utils::IsDirEmpty(bucket.path)) {
       S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::DeleteBucket",
@@ -347,14 +347,14 @@ S3ObjectStore::Object::~Object() {
 //! \return S3Error::None if successful, S3Error::InternalError otherwise
 //------------------------------------------------------------------------------
 S3Error S3ObjectStore::Object::Init(const std::filesystem::path &p, uid_t uid,
-                                    gid_t gid) {
+                                    gid_t gid, const std::string id) {
   S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::Object::Init",
                                "object-path=%s owner(%u:%u)", p.c_str(), uid,
                                gid);
   struct stat buf;
 
   // Do the backend operations with the users filesystem id
-  ScopedFsId scope(uid, gid);
+  ScopedFsId scope(uid, gid, id);
   if (XrdPosix_Stat(p.c_str(), &buf) || S_ISDIR(buf.st_mode)) {
     S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::Object::Init",
                                  "no such object - object-path=%s owner(%u:%u)",
@@ -452,7 +452,8 @@ off_t S3ObjectStore::Object::Lseek(off_t offset, int whence) {
 //------------------------------------------------------------------------------
 S3Error S3ObjectStore::GetObject(const S3Auth::Bucket &bucket,
                                  const std::string &object, Object &obj) {
-  return obj.Init(bucket.path / object, bucket.owner.uid, bucket.owner.gid);
+  return obj.Init(bucket.path / object, bucket.owner.uid, bucket.owner.gid,
+                  bucket.owner.id);
 }
 
 //------------------------------------------------------------------------------
@@ -1024,10 +1025,12 @@ S3Error S3ObjectStore::UploadPart(XrdS3Req &req, const std::string &upload_id,
   auto optimized = S3Utils::GetXattr(upload_path, "optimized");
   uid_t uid;
   gid_t gid;
+  std::string id;
 
   try {
     uid = std::stoul(S3Utils::GetXattr(upload_path, "uid"));
     gid = std::stoul(S3Utils::GetXattr(upload_path, "gid"));
+    id = std::stoul(S3Utils::GetXattr(upload_path, "id"));
   } catch (std::exception &) {
     S3::S3Handler::Logger()->Log(
         S3::ERROR, "ObjectStore::UploadPart",
@@ -1069,7 +1072,7 @@ S3Error S3ObjectStore::UploadPart(XrdS3Req &req, const std::string &upload_id,
       parts = GetPartsNumber(upload_path);
       if (KeepOptimize(upload_path, part_number, size, tmp_path, part_size,
                        parts)) {
-        ScopedFsId scope(uid, gid);
+        ScopedFsId scope(uid, gid, id);
         return UploadPartOptimized(req, tmp_path, part_size, part_number, size,
                                    headers);
       }
@@ -1131,7 +1134,7 @@ S3Error S3ObjectStore::UploadPart(XrdS3Req &req, const std::string &upload_id,
 S3Error S3ObjectStore::PutObject(XrdS3Req &req, const S3Auth::Bucket &bucket,
                                  unsigned long size, bool chunked,
                                  Headers &headers) {
-  ScopedFsId scope(bucket.owner.uid, bucket.owner.gid);
+  ScopedFsId scope(bucket.owner.uid, bucket.owner.gid, bucket.owner.id);
   auto final_path = bucket.path / req.object;
 
   S3::S3Handler::Logger()->Log(
@@ -1507,7 +1510,7 @@ std::pair<std::string, S3Error> S3ObjectStore::CreateMultipartUpload(
 
   {
     // we have to do this as the owner of the bucket
-    ScopedFsId scope(bucket.owner.uid, bucket.owner.gid);
+    ScopedFsId scope(bucket.owner.uid, bucket.owner.gid, bucket.owner.id);
     auto err = S3Utils::makePath((char *)final_path.parent_path().c_str(),
                                  S_IRWXU | S_IRGRP);
 
@@ -1547,6 +1550,7 @@ std::pair<std::string, S3Error> S3ObjectStore::CreateMultipartUpload(
                     XATTR_CREATE);
   S3Utils::SetXattr(p, "gid", std::to_string(bucket.owner.gid).c_str(),
                     XATTR_CREATE);
+  S3Utils::SetXattr(p, "id", bucket.owner.id.c_str(), XATTR_CREATE);
 
   S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::CreateMultipartUpload",
                                "bucket:%s key:%s upload-id:%s",
@@ -1850,7 +1854,7 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
   // Check if we are able to complete the multipart upload with only a mv
   // operation.
   if (!optimized.empty()) {
-    ScopedFsId scope(bucket.owner.uid, bucket.owner.gid);
+    ScopedFsId scope(bucket.owner.uid, bucket.owner.gid, bucket.owner.id);
     if (!CompleteOptimizedMultipartUpload(final_path, opt_path, parts)) {
       return DeleteMultipartUpload(bucket, key, upload_id);
     }
@@ -1920,7 +1924,7 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
 
   {
     // Check if the final file exists in the backend and is a directory
-    ScopedFsId scope(bucket.owner.uid, bucket.owner.gid);
+    ScopedFsId scope(bucket.owner.uid, bucket.owner.gid, bucket.owner.id);
     struct stat buf;
     if (!XrdPosix_Stat(final_path.c_str(), &buf)) {
       if (S_ISDIR(buf.st_mode)) {
@@ -1966,7 +1970,7 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
   int fd = 0;
   {
     // The temp file has to created using the filesystem id of the owner
-    ScopedFsId scope(bucket.owner.uid, bucket.owner.gid);
+    ScopedFsId scope(bucket.owner.uid, bucket.owner.gid, bucket.owner.id);
     fd = XrdPosix_Open(tmp_path.c_str(), O_CREAT | O_EXCL | O_WRONLY,
                        S_IRWXU | S_IRGRP);
   }
@@ -1989,11 +1993,12 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
   xs.Init();
 
   Object optimized_obj;
-  optimized_obj.Init(opt_path, bucket.owner.uid, bucket.owner.gid);
+  optimized_obj.Init(opt_path, bucket.owner.uid, bucket.owner.gid,
+                     bucket.owner.id);
 
   ssize_t opt_len;
   try {
-    ScopedFsId scope(bucket.owner.uid, bucket.owner.gid);
+    ScopedFsId scope(bucket.owner.uid, bucket.owner.gid, bucket.owner.id);
     opt_len = std::stol(S3Utils::GetXattr(opt_path, "part_size"));
   } catch (std::exception &) {
     S3::S3Handler::Logger()->Log(
@@ -2012,7 +2017,7 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
     Object obj;
 
     if (obj.Init(upload_path / std::to_string(part.part_number), geteuid(),
-                 getegid()) != S3Error::None) {
+                 getegid(), "root") != S3Error::None) {
       S3::S3Handler::Logger()->Log(
           S3::DEBUG, "ObjectStore::CompleteMultipartUpload",
           "bucket:%s key:%s upload-id:%s parts;%s upload-path:%s optimized:%d "
@@ -2038,7 +2043,7 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
       ssize_t len = opt_len;
       while ((i = optimized_obj.Read(len, &ptr)) > 0) {
         if (len < i) {
-          ScopedFsId scope(bucket.owner.uid, bucket.owner.gid);
+          ScopedFsId scope(bucket.owner.uid, bucket.owner.gid, bucket.owner.id);
           XrdPosix_Close(fd);
           XrdPosix_Unlink(tmp_path.c_str());
           S3Utils::RmPath(final_path.parent_path(), bucket.path);
@@ -2061,7 +2066,7 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
 
       while ((i = obj.Read(len, &ptr)) > 0) {
         if (len < i) {
-          ScopedFsId scope(bucket.owner.uid, bucket.owner.gid);
+          ScopedFsId scope(bucket.owner.uid, bucket.owner.gid, bucket.owner.id);
           XrdPosix_Close(fd);
           XrdPosix_Unlink(tmp_path.c_str());
           S3Utils::RmPath(final_path.parent_path(), bucket.path);
@@ -2107,7 +2112,7 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
   metadata.insert({"etag", md5hex});
 
   {
-    ScopedFsId scope(bucket.owner.uid, bucket.owner.gid);
+    ScopedFsId scope(bucket.owner.uid, bucket.owner.gid, bucket.owner.id);
     S3Error error = SetMetadata(tmp_path, metadata);
     if (error != S3Error::None) {
       S3::S3Handler::Logger()->Log(
@@ -2133,7 +2138,7 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
         upload_path.c_str(), optimized.length() ? 1 : 0, opt_path.c_str(),
         final_path.c_str(), tmp_path.c_str(), final_path.c_str());
     // Rename using the owner filesystem id
-    ScopedFsId scope(bucket.owner.uid, bucket.owner.gid);
+    ScopedFsId scope(bucket.owner.uid, bucket.owner.gid, bucket.owner.id);
     // TODO: error handling
     XrdPosix_Rename(tmp_path.c_str(), final_path.c_str());
     // TODO: error handling

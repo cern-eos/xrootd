@@ -29,19 +29,24 @@
 
 #include <sys/fsuid.h>
 
+#include "XrdPosix/XrdPosixXrootdPath.hh"
+
 namespace S3 {
 
 //------------------------------------------------------------------------------
 //! Scoped fsuid and fsgid setter changing the fsuid and fsgid of the calling
 //! process to the given values during the lifetime of the object.
 //! On destruction the fsuid and fsgid are restored to their original values.
+//! Additional the class modifies thread local variables in XrdPosix to
+//! force named connections with fsuid/fsgid set during the authentcation
 //------------------------------------------------------------------------------
 class ScopedFsId {
  public:
   //----------------------------------------------------------------------------
   //! Constructor
   //----------------------------------------------------------------------------
-  ScopedFsId(uid_t fsuid_, gid_t fsgid_) : fsuid(fsuid_), fsgid(fsgid_) {
+  ScopedFsId(uid_t fsuid_, gid_t fsgid_, const std::string& user)
+      : fsuid(fsuid_), fsgid(fsgid_) {
     ok = true;
     prevFsuid = -1;
     prevFsgid = -1;
@@ -73,6 +78,15 @@ class ScopedFsId {
         return;
       }
     }
+    std::string cgi;
+    cgi += "&";
+    cgi += "xrdcl.secuid=";
+    cgi += std::to_string(fsuid);
+    cgi += "&";
+    cgi += "xrdcl.secgid=";
+    cgi += std::to_string(fsgid);
+    XrdPosixXrootPath::s_connect_user = user;
+    XrdPosixXrootPath::s_cgi = cgi;
   }
 
   //----------------------------------------------------------------------------
@@ -86,12 +100,14 @@ class ScopedFsId {
     if (prevFsgid >= 0) {
       setfsgid(prevFsgid);
     }
+    XrdPosixXrootPath::s_connect_user = "";
+    XrdPosixXrootPath::s_cgi = "";
   }
 
   bool IsOk() const { return ok; }
 
   static void Validate() {
-    ScopedFsId scope(geteuid() + 1, geteuid() + 1);
+    ScopedFsId scope(geteuid() + 1, geteuid() + 1, "root");
     if (!scope.IsOk()) {
       throw std::runtime_error(
           "XrdS3 misses the capability to set the filesystem IDs on the fly!");

@@ -98,7 +98,7 @@ class S3ObjectStore {
     Object() = default;
     ~Object();
 
-    S3Error Init(const std::filesystem::path &path, uid_t uid, gid_t gid);
+    S3Error Init(const std::filesystem::path &path, uid_t uid, gid_t gid, const std::string id);
 
     [[nodiscard]] ssize_t GetSize() const { return size; };
     [[nodiscard]] size_t BufferSize() const { return buffer_size; };
@@ -122,6 +122,7 @@ class S3ObjectStore {
     int fd{};
     uid_t uid;
     gid_t gid;
+    std::string id;
     std::map<std::string, std::string> attributes{};
   };
 
