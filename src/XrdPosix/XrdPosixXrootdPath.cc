@@ -77,6 +77,21 @@ XrdPosixXrootPath::XrdPosixXrootPath()
     : xplist(0),
       pBase(0)
 {
+  Init();
+}
+
+/******************************************************************************/
+/*         X r d P o s i x X r o o t P a t h   I n i t                        */
+/******************************************************************************/
+
+void
+XrdPosixXrootPath::Init()
+{
+   if (xplist) {
+     struct xpath *xpnow;
+     while((xpnow = xplist))
+        {xplist = xplist->next; delete xpnow;}
+   }
    XrdOucTokenizer thePaths(0);
    char *plist = 0, *colon = 0, *subs = 0, *lp = 0, *tp = 0;
    int aOK = 0;

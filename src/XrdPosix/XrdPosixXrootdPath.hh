@@ -50,7 +50,7 @@ char *URL(const char *path, char *buff, int blen);
 
       XrdPosixXrootPath();
      ~XrdPosixXrootPath();
-
+     void Init();
 private:
 
 struct xpath 
