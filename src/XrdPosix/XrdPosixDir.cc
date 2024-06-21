@@ -71,7 +71,19 @@ dirent64 *XrdPosixDir::nextEntry(dirent64 *dp)
    if (!dp) dp = myDirEnt;
    if (d_nlen > maxDlen) d_nlen = maxDlen;
 #ifndef __solaris__
-   dp->d_type   = DT_DIR;
+   if (dirEnt->GetStatInfo()) {
+     if (dirEnt->GetStatInfo()->TestFlags(XrdCl::StatInfo::IsDir)) {
+       dp->d_type = DT_DIR;
+     } else {
+       if (dirEnt->GetStatInfo()->TestFlags(XrdCl::StatInfo::Other)) {
+	 dp->d_type = DT_UNKNOWN;
+       } else {
+	 dp->d_type = DT_REG;
+       }
+     }
+   } else {
+     dp->d_type   = DT_DIR;
+   }
 #endif
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__GNU__) || (defined(__FreeBSD_kernel__) && defined(__GLIBC__))
    dp->d_fileno = nxtEnt;
