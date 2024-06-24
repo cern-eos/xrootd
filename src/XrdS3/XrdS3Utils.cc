@@ -442,7 +442,6 @@ S3Utils::ScanDir(const std::filesystem::path& fullpath, const std::filesystem::p
   std::map<std::string, BasicPath> sentries;
   // the filler function
   auto get_entry = [&sentries, &basepath](dirent *entry) {
-		     std::cerr << "scandir: " << entry->d_name << " basepath: " << basepath.string() << " type: " << (int)(entry->d_type) << std::endl;
 		     sentries[entry->d_name].name = entry->d_name;
 		     sentries[entry->d_name].base = basepath.string();
 		     sentries[entry->d_name].d_type = entry->d_type;
