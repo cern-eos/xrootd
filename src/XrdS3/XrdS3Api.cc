@@ -251,14 +251,15 @@ int S3Api::GetObjectHandler(S3::XrdS3Req& req) {
 
   std::map<std::string, std::string> headers = obj.GetAttributes();
   if (!S3Utils::MapHasKey(headers, "etag")) {
-    return req.S3ErrorResponse(S3Error::InternalError);
+    // TODO: for the time being we allow downloads without ETAGs, because existing files will just not have one!
+    //    return req.S3ErrorResponse(S3Error::InternalError);
   }
-
   std::string etag = headers["etag"];
   time_t last_modified = obj.LastModified();
 
   RET_ON_ERROR(
       ValidatePreconditions(etag, last_modified, req.lowercase_headers))
+
 
   ssize_t length = obj.GetSize();
   ssize_t start = 0;
@@ -305,7 +306,7 @@ int S3Api::GetObjectHandler(S3::XrdS3Req& req) {
     length = end - start;
   }
 
-  headers["last-modified"] = S3Utils::timestampToIso8016(last_modified);
+  headers["last-modified"] = S3Utils::timestampToRFC7231(last_modified);
 
   if (length == 0) {
     return req.S3Response(200, headers, nullptr, 0);
@@ -569,12 +570,12 @@ int S3Api::HeadObjectHandler(XrdS3Req& req) {
   std::map<std::string, std::string> headers = obj.GetAttributes();
 
   auto last_modified = obj.LastModified();
-
-  headers["last-modified"] = S3Utils::timestampToIso8016(last_modified);
-
   auto content_length = obj.GetSize();
 
-  return req.S3Response(200, headers, nullptr, (long long)content_length);
+  // content length is added in S3Response
+  headers["Last-Modified"] = S3Utils::timestampToRFC7231(last_modified);
+  headers["Accept-Ranges"] = "\"bytes\"";
+  return req.S3Response(200, headers, nullptr, content_length);
 }
 
 struct DeleteObjectsQuery {
@@ -696,7 +697,6 @@ int S3Api::ListObjectsV2Handler(S3::XrdS3Req& req) {
   bool encode_values;
   int max_keys;
 
-  std::cerr << "HANDLING LISTING" << std::endl;
   RET_ON_ERROR(ParseCommonQueryParams(req.query, delimiter, encode_values,
                                       max_keys, prefix))
 
@@ -721,7 +721,6 @@ int S3Api::ListObjectsV2Handler(S3::XrdS3Req& req) {
     }
   }
 
-  std::cerr << "calling object store list objects v2" << std::endl;
   auto objectinfo =
       objectStore.ListObjectsV2(bucket, prefix, continuation_token, delimiter,
                                 max_keys, fetch_owner, start_after);
