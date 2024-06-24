@@ -31,14 +31,26 @@
 #include <sstream>
 //------------------------------------------------------------------------------
 #include "XrdHttp/XrdHttpExtHandler.hh"
+#include "XrdCl/XrdClDefaultEnv.hh"
+#include "XrdCl/XrdClFileSystem.hh"
 #include "XrdOuc/XrdOucEnv.hh"
 #include "XrdOuc/XrdOucStream.hh"
 #include "XrdOuc/XrdOucString.hh"
+#include "XrdPosix/XrdPosixXrootdPath.hh"
 #include "XrdS3ErrorResponse.hh"
 #include "XrdS3Log.hh"
 #include "XrdS3ScopedFsId.hh"
 #include "XrdVersion.hh"
 //------------------------------------------------------------------------------
+
+
+extern XrdPosixXrootPath XrootPath;
+
+
+namespace XrdPosixGlobals
+{
+  extern XrdCl::DirListFlags::Flags dlFlag;
+};
 
 //------------------------------------------------------------------------------
 //! XRootD S3 plug-in implementation
@@ -548,8 +560,12 @@ bool S3Handler::ParseConfig(const char *config, XrdOucEnv &env) {
 	std::cerr << "error: s3.vmp value not defined" << std::endl;
       }
       mConfig.vmp = val;
+      // call listings in POSIX including stat information
+      XrdPosixGlobals::dlFlag |=XrdCl::DirListFlags::Stat;
       // export the XrdPosix VMP configuration
       setenv("XROOTD_VMP", mConfig.vmp.c_str(), 1);
+      // Reinitialize the mappings
+      XrootPath.Init();
     } else if (!strcmp("s3.config", val)) {
       if (!(val = Config.GetWord())) {
         Config.Close();
@@ -597,6 +613,11 @@ bool S3Handler::ParseConfig(const char *config, XrdOucEnv &env) {
       } else if (!strcmp(val, "debug")) {
         mErr.setMsgMask(LogMask::ERROR | LogMask::WARN | LogMask::INFO |
                         LogMask::DEBUG);
+      } else if (!strcmp(val, "paranoid")) {
+	mErr.setMsgMask(LogMask::ERROR | LogMask::WARN | LogMask::INFO |
+                        LogMask::DEBUG);
+	setenv((char*) "XRD_LOGLEVEL", "Dump", 1);
+	XrdCl::DefaultEnv::ReInitializeLogging();
       } else if (!strcmp(val, "none")) {
         mErr.setMsgMask(0);
       } else {
