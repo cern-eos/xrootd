@@ -388,7 +388,6 @@ S3Error S3ObjectStore::Object::Init(const std::filesystem::path &p, uid_t uid,
   // store the ownership
   this->uid = uid;
   this->gid = gid;
-
   return S3Error::None;
 }
 
@@ -1338,10 +1337,6 @@ ListObjectsInfo S3ObjectStore::ListObjects(const S3Auth::Bucket &bucket,
                            f);
 }
 
-// TODO: Replace with real XrdPosix_Scandir once implemented, or replace with
-//  custom function.
-#define XrdPosix_Scandir scandir
-
 //------------------------------------------------------------------------------
 //! \brief ListObjectsCommon - Common logic for listing objects
 //! \param bucket - The bucket to list the objects in
@@ -1376,30 +1371,22 @@ ListObjectsInfo S3ObjectStore::ListObjectsCommon(
   }
 
   auto fullpath = bucket.path;
-  struct BasicPath {
-    std::string base;
-    std::string name;
-    unsigned char d_type;
-  };
 
-  std::deque<BasicPath> entries;
+  std::vector<S3Utils::BasicPath> ent;
+  std::deque<S3Utils::BasicPath> entries;
 
-  struct dirent **ent = nullptr;
   int n;
-  if ((n = XrdPosix_Scandir((fullpath / basedir).c_str(), &ent, nullptr,
-                            alphasort)) < 0) {
+  // get full listing
+  if ((n = S3Utils::ScanDir((fullpath/basedir), basedir, ent)) <= 0) {
     return {};
   }
-  for (auto i = 0; i < n; i++) {
-    if (prefix.compare(0, prefix.size(), std::string(ent[i]->d_name), 0,
+  // filter for prefix
+  for ( auto i:ent ) {
+    if (prefix.compare(0, prefix.size(), i.name, 0,
                        prefix.size()) == 0) {
-      entries.push_back({basedir, ent[i]->d_name, ent[i]->d_type});
+      entries.push_back(i);
     }
-    free(ent[i]);
   }
-  free(ent);
-  ent = nullptr;
-
   ListObjectsInfo list{};
 
   while (!entries.empty()) {
@@ -1452,16 +1439,14 @@ ListObjectsInfo S3ObjectStore::ListObjectsCommon(
         continue;
       }
 
-      if ((n = scandir((fullpath / entry_path).c_str(), &ent, nullptr,
-                       alphasort)) < 0) {
+      std::vector<S3Utils::BasicPath> lent;
+      if ((n = S3Utils::ScanDir((fullpath / entry_path), entry_path, lent)) <= 0) {
         return {};
       }
       for (size_t i = n; i > 0; i--) {
-        entries.push_front(
-            {entry_path + '/', ent[i - 1]->d_name, ent[i - 1]->d_type});
-        free(ent[i - 1]);
+	S3Utils::BasicPath item(entry_path + '/', lent[i - 1].name, lent[i - 1].d_type);
+        entries.push_front(item);
       }
-      free(ent);
       continue;
     }
 
