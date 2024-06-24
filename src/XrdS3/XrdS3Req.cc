@@ -86,19 +86,35 @@ int XrdS3Req::ParseReq() {
     }
   }
 
-  // TODO: support virtual hosted request
-  bucket = uri_path.substr(1);
-  pos = bucket.find('/');
-  if (pos == std::string::npos) {
-    object = "";
+  // ------------------------------------------------------------------------
+  // - probe for virtual buckets
+  // - this uses some simplified assumptions that the host names are
+  //   like 's3eos.cern.ch' and virtual buckets are referenced as
+  //       'bucket.s3eos.cern.ch'
+  // - a hostname having more than two '.' seperators will be misinterpreted!
+  // ------------------------------------------------------------------------
+  auto vbucket = S3::S3Utils::getBucketName(lowercase_headers["host"]);
+  if (vbucket.empty()) {
+    // path-style URLs
+    bucket = uri_path.substr(1);
+    pos = bucket.find('/');
+    if (pos == std::string::npos) {
+      object = "";
+    } else {
+      object = bucket.substr(pos + 1);
+      bucket.erase(pos);
+    }
+    S3::S3Handler::Logger()->Log(S3::DEBUG, "Request", "[path-style] bucket:%s object:%s", bucket.c_str(), object.c_str());
   } else {
-    object = bucket.substr(pos + 1);
-    bucket.erase(pos);
+    // host-style URLs
+    bucket = vbucket;
+    object = uri_path.substr(1);
+    S3::S3Handler::Logger()->Log(S3::DEBUG, "Request", "[host-style] bucket:%s object:%s", bucket.c_str(), object.c_str());
   }
 
   S3::S3Handler::Logger()->Log(S3::DEBUG, "Request", verb.c_str());
   for (auto h:headers) {
-    S3::S3Handler::Logger()->Log(S3::DEBUG, "Request", "Header { %s:%s }", h.first.c_str(), h.second.c_str());
+    S3::S3Handler::Logger()->Log(S3::DEBUG, "Request", "[ %s : %s ]", h.first.c_str(), h.second.c_str());
   }
 
   if (verb == "GET") {
@@ -275,6 +291,8 @@ int XrdS3Req::S3ErrorResponse(S3Error err, const std::string &ressource,
   printer.AddElement("RequestId", request_id);
   printer.CloseElement();
 
+  S3::S3Handler::Logger()->Log(S3::ERROR, "S3ErrorResponse", printer.CStr());
+
   if (chunked) {
     return ChunkResp(printer.CStr(), printer.CStrSize() - 1);
   } else {
@@ -309,7 +327,7 @@ int XrdS3Req::S3Response(int code,
   std::string headers_str = MergeHeaders(headers);
 
   for (auto h:headers) {
-    S3::S3Handler::Logger()->Log(S3::DEBUG, "S3Response", "Header { %s:%s }", h.first.c_str(), h.second.c_str());
+    S3::S3Handler::Logger()->Log(S3::DEBUG, "S3Response", "[ %s : %s ]", h.first.c_str(), h.second.c_str());
   }
   return SendSimpleResp(code, nullptr, headers_str.c_str(), body, size);
 }
