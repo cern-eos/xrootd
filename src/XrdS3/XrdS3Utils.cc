@@ -211,28 +211,28 @@ bool S3Utils::MapEntryStartsWith(const std::map<std::string, std::string> &map,
 }
 
 //------------------------------------------------------------------------------
-//! string timestamp to iso8016 format
+//! string timestamp to iso8601 format
 //!
 //! @param t The timestamp to convert
 //! @return The converted timestamp
 //------------------------------------------------------------------------------
-std::string S3Utils::timestampToIso8016(const std::string &t) {
+std::string S3Utils::timestampToIso8601(const std::string &t) {
   try {
-    return timestampToIso8016(std::stol(t));
+    return timestampToIso8601(std::stol(t));
   } catch (std::exception &e) {
     return "";
   }
 }
 
 //------------------------------------------------------------------------------
-//! timestamp to iso8016 format
+//! timestamp to iso8601 format
 //!
 //! @param t The timestamp to convert
 //! @return The converted timestamp
 //------------------------------------------------------------------------------
-std::string S3Utils::timestampToIso8016(const time_t &t) {
+std::string S3Utils::timestampToIso8601(const time_t &t) {
   struct tm *date = gmtime(&t);
-  return timestampToIso8016(date);
+  return timestampToIso8601(date);
 }
 
 //------------------------------------------------------------------------------
@@ -241,12 +241,52 @@ std::string S3Utils::timestampToIso8016(const time_t &t) {
 //! @param t The timestamp to convert
 //! @return The converted timestamp
 //------------------------------------------------------------------------------
-std::string S3Utils::timestampToIso8016(const struct tm *t) {
+std::string S3Utils::timestampToIso8601(const struct tm *t) {
   char date_iso8601[17]{};
   if (!t || strftime(date_iso8601, 17, "%Y%m%dT%H%M%SZ", t) != 16) {
     return "";
   }
   return date_iso8601;
+}
+
+//------------------------------------------------------------------------------
+//! string timestamp to RFC7231 format
+//!
+//! @param t The timestamp to convert
+//! @return The converted timestamp
+//------------------------------------------------------------------------------
+std::string S3Utils::timestampToRFC7231(const std::string &t) {
+  try {
+    return timestampToRFC7231(std::stol(t));
+  } catch (std::exception &e) {
+    return "";
+  }
+}
+
+//------------------------------------------------------------------------------
+//! timestamp to RFC7231 format
+//!
+//! @param t The timestamp to convert
+//! @return The converted timestamp
+//------------------------------------------------------------------------------
+std::string S3Utils::timestampToRFC7231(const time_t &t) {
+  struct tm *date = gmtime(&t);
+  return timestampToRFC7231(date);
+}
+
+//------------------------------------------------------------------------------
+//! timestamp to iso8016 format
+//!
+//! @param t The timestamp to convert
+//! @return The converted timestamp
+//------------------------------------------------------------------------------
+std::string S3Utils::timestampToRFC7231(const struct tm *gmt) {
+
+  // Create a buffer to hold the formatted date string
+  char buffer[30];
+  // Format tm structure to RFC 7231 format
+  std::strftime(buffer, sizeof(buffer), "%a, %d %b %Y %H:%M:%S GMT", gmt);
+  return std::string(buffer);
 }
 
 //------------------------------------------------------------------------------
@@ -387,6 +427,32 @@ int S3Utils::DirIterator(const std::filesystem::path &path,
 
   XrdPosix_Closedir(dir);
   return 0;
+}
+
+//------------------------------------------------------------------------------
+//! Scandir using a DirIterator
+//!
+//! @param path the full path to scan
+//! @param the basepath to store into entries
+//! @param the vector with BasicPath entries to return
+//! @return number of items in directory
+//------------------------------------------------------------------------------
+int
+S3Utils::ScanDir(const std::filesystem::path& fullpath, const std::filesystem::path& basepath, std::vector<S3Utils::BasicPath>& entries) {
+  std::map<std::string, BasicPath> sentries;
+  // the filler function
+  auto get_entry = [&sentries, &basepath](dirent *entry) {
+		     std::cerr << "scandir: " << entry->d_name << " basepath: " << basepath.string() << " type: " << (int)(entry->d_type) << std::endl;
+		     sentries[entry->d_name].name = entry->d_name;
+		     sentries[entry->d_name].base = basepath.string();
+		     sentries[entry->d_name].d_type = entry->d_type;
+		   };
+  S3Utils::DirIterator(fullpath, get_entry);
+
+  for ( auto i:sentries ) {
+    entries.push_back(i.second);
+  }
+  return sentries.size();
 }
 
 }  // namespace S3

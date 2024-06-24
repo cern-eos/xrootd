@@ -33,6 +33,7 @@
 #include <functional>
 #include <iomanip>
 #include <map>
+#include <vector>
 #include <numeric>
 #include <sstream>
 #include <string>
@@ -128,9 +129,12 @@ class S3Utils {
     return it->second;
   }
 
-  static std::string timestampToIso8016(const std::string &t);
-  static std::string timestampToIso8016(const time_t &t);
-  static std::string timestampToIso8016(const tm *t);
+  static std::string timestampToIso8601(const std::string &t);
+  static std::string timestampToIso8601(const time_t &t);
+  static std::string timestampToIso8601(const tm *t);
+  static std::string timestampToRFC7231(const std::string &t);
+  static std::string timestampToRFC7231(const time_t &t);
+  static std::string timestampToRFC7231(const tm *t);
 
   static int makePath(char *path, mode_t mode);
 
@@ -145,6 +149,18 @@ class S3Utils {
 
   static int DirIterator(const std::filesystem::path &path,
                          const std::function<void(dirent *)> &f);
+
+  struct BasicPath {
+  public:
+    BasicPath(const std::string&b, const std::string&n, const char& d) :base(b), name(n), d_type(d){}
+    BasicPath() : d_type(0) {}
+    ~BasicPath() {}
+    std::string base;
+    std::string name;
+    unsigned char d_type;
+  };
+
+  static int ScanDir(const std::filesystem::path &path, const std::filesystem::path &basepath, std::vector<S3Utils::BasicPath>& entries);
 
  private:
   std::bitset<256> mEncoder;
