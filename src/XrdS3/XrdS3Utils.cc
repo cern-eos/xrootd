@@ -290,6 +290,22 @@ std::string S3Utils::timestampToRFC7231(const struct tm *gmt) {
 }
 
 //------------------------------------------------------------------------------
+//! extract bucket name out of virtual host
+//! @param FQHN
+//! @return the name of the bucket or an empty string
+//------------------------------------------------------------------------------
+std::string S3Utils::getBucketName(const std::string& host)
+{
+  auto ndot = std::count(host.begin(), host.end(), '.');
+  if ( ndot > 2)  {
+    // return bucket name
+    return host.substr(0, host.find('.'));
+  } else {
+    return "";
+  }
+}
+
+//------------------------------------------------------------------------------
 //! make a path
 //!
 //! @param path The path to create
