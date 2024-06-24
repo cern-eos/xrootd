@@ -2022,17 +2022,17 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
         return S3Error::InternalError;
       }
 
+      ScopedFsId scope(bucket.owner.uid, bucket.owner.gid, bucket.owner.id);
       optimized_obj.Lseek(start, SEEK_SET);
-
       ssize_t i = 0;
       ssize_t len = opt_len;
+
       while ((i = optimized_obj.Read(len, &ptr)) > 0) {
         if (len < i) {
-          ScopedFsId scope(bucket.owner.uid, bucket.owner.gid, bucket.owner.id);
           XrdPosix_Close(fd);
           XrdPosix_Unlink(tmp_path.c_str());
           S3Utils::RmPath(final_path.parent_path(), bucket.path);
-          return S3Error::InternalError;
+	  return S3Error::InternalError;
         }
         len -= i;
         xs.Update(ptr, i);
@@ -2051,7 +2051,6 @@ S3Error S3ObjectStore::CompleteMultipartUpload(
 
       while ((i = obj.Read(len, &ptr)) > 0) {
         if (len < i) {
-          ScopedFsId scope(bucket.owner.uid, bucket.owner.gid, bucket.owner.id);
           XrdPosix_Close(fd);
           XrdPosix_Unlink(tmp_path.c_str());
           S3Utils::RmPath(final_path.parent_path(), bucket.path);
