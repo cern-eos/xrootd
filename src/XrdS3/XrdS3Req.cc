@@ -97,6 +97,10 @@ int XrdS3Req::ParseReq() {
   }
 
   S3::S3Handler::Logger()->Log(S3::DEBUG, "Request", verb.c_str());
+  for (auto h:headers) {
+    S3::S3Handler::Logger()->Log(S3::DEBUG, "Request", "Header { %s:%s }", h.first.c_str(), h.second.c_str());
+  }
+
   if (verb == "GET") {
     method = Get;
   } else if (verb == "HEAD") {
@@ -304,6 +308,9 @@ int XrdS3Req::S3Response(int code,
                          const char *body, long long size) {
   std::string headers_str = MergeHeaders(headers);
 
+  for (auto h:headers) {
+    S3::S3Handler::Logger()->Log(S3::DEBUG, "S3Response", "Header { %s:%s }", h.first.c_str(), h.second.c_str());
+  }
   return SendSimpleResp(code, nullptr, headers_str.c_str(), body, size);
 }
 
