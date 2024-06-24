@@ -50,7 +50,7 @@ int ListBucketsResponse(XrdS3Req& req, const std::string& id,
     printer.OpenElement("Bucket");
     printer.AddElement("Name", bucket.name);
     printer.AddElement("CreationDate",
-                       S3Utils::timestampToIso8016(bucket.created));
+                       S3Utils::timestampToIso8601(bucket.created));
     printer.CloseElement();
   }
 
@@ -111,7 +111,7 @@ int ListObjectVersionsResponse(XrdS3Req& req, const std::string& bucket,
 
     printer.AddElement("Key", encoder(version.name));
     printer.AddElement("LastModified",
-                       S3Utils::timestampToIso8016(version.last_modified));
+                       S3Utils::timestampToIso8601(version.last_modified));
     printer.AddElement("Size", version.size);
     printer.AddElement("VersionId", "1");
     printer.CloseElement();
@@ -197,7 +197,7 @@ int ListObjectsV2Response(XrdS3Req& req, const std::string& bucket,
     printer.AddElement("ETag", object.etag);
     printer.AddElement("Key", encoder(object.name));
     printer.AddElement("LastModified",
-                       S3Utils::timestampToIso8016(object.last_modified));
+                       S3Utils::timestampToIso8601(object.last_modified));
     printer.AddElement("Size", object.size);
     if (fetch_owner) {
       printer.OpenElement("Owner");
@@ -243,7 +243,7 @@ int ListObjectsResponse(XrdS3Req& req, const std::string& bucket,
     printer.AddElement("ETag", object.etag);
     printer.AddElement("Key", encoder(object.name));
     printer.AddElement("LastModified",
-                       S3Utils::timestampToIso8016(object.last_modified));
+                       S3Utils::timestampToIso8601(object.last_modified));
     printer.AddElement("Size", object.size);
     printer.OpenElement("Owner");
 
@@ -340,7 +340,7 @@ int ListPartsResponse(XrdS3Req& req, const std::string& upload_id,
 
     printer.AddElement("ETag", etag);
     printer.AddElement("LastModified",
-                       S3Utils::timestampToIso8016(last_modified));
+                       S3Utils::timestampToIso8601(last_modified));
     printer.AddElement("PartNumber", (int64_t)part_number);
     printer.AddElement("Size", (int64_t)size);
 
