@@ -168,7 +168,7 @@ std::string S3Auth::GetStringToSign(const std::string &algorithm,
       S3Utils::stringJoin('/', scope.date, scope.region, scope.service,
                           std::string("aws4_request"));
 
-  std::string date_iso8601 = S3Utils::timestampToIso8016(&date);
+  std::string date_iso8601 = S3Utils::timestampToIso8601(&date);
 
   std::string string_to_sign =
       S3Utils::stringJoin('\n', algorithm, std::string(date_iso8601), scope_str,
