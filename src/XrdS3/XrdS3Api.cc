@@ -32,6 +32,7 @@
 #include "XrdS3Auth.hh"
 #include "XrdS3ErrorResponse.hh"
 #include "XrdS3Response.hh"
+#include "XrdS3ScopedFsId.hh"
 //------------------------------------------------------------------------------
 
 namespace S3 {
@@ -311,6 +312,8 @@ int S3Api::GetObjectHandler(S3::XrdS3Req& req) {
   if (length == 0) {
     return req.S3Response(200, headers, nullptr, 0);
   }
+
+  ScopedFsId scop(bucket.owner.uid, bucket.owner.gid, bucket.owner.id);
 
   if (obj.Lseek(start, SEEK_SET) == -1) {
     return req.S3ErrorResponse(S3Error::InternalError);
