@@ -32,6 +32,7 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <algorithm>
 //------------------------------------------------------------------------------
 #include "XrdPosix/XrdPosixExtern.hh"
 //------------------------------------------------------------------------------
