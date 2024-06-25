@@ -4,7 +4,7 @@ add_executable(xrdcl-unit-tests
   XrdClSocket.cc
   XrdClUtilsTest.cc
   XrdClVectorCache.cc
-  ../../src/XrdApps/XrdClJCachePlugin/XrdClVectorCache.cc
+  ../../src/XrdApps/XrdClJCachePlugin/vector/XrdClVectorCache.cc
   ../common/Server.cc
   ../common/Utils.cc
   ../common/TestEnv.cc
