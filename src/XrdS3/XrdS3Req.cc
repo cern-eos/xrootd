@@ -241,7 +241,7 @@ S3Error XrdS3Req::ValidatePath(const std::string &path) {
     return S3Error::None;
   }
 
-  if (path[path.size() - 1] == '/') {
+  if (path == "/") {
     return S3Error::InvalidObjectName;
   }
 
@@ -329,6 +329,7 @@ int XrdS3Req::S3Response(int code,
   for (auto h:headers) {
     S3::S3Handler::Logger()->Log(S3::DEBUG, "S3Response", "[ %s : %s ]", h.first.c_str(), h.second.c_str());
   }
+  //  S3::S3Handler::Logger()->Log(S3::DEBUG, "S3Response", "{ %s }", body);
   return SendSimpleResp(code, nullptr, headers_str.c_str(), body, size);
 }
 
