@@ -136,7 +136,7 @@ class S3Utils {
   static std::string timestampToRFC7231(const time_t &t);
   static std::string timestampToRFC7231(const tm *t);
 
-  static std::string getBucketName(const std::string& host);
+  static std::string getBucketName(std::string host);
   
   static int makePath(char *path, mode_t mode);
 
