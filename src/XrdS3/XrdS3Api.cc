@@ -1,3 +1,4 @@
+
 //------------------------------------------------------------------------------
 // Copyright (c) 2024 by European Organization for Nuclear Research (CERN)
 // Author: Mano Segransan / CERN EOS Project <andreas.joachim.peters@cern.ch>
@@ -444,18 +445,17 @@ int S3Api::ListObjectVersionsHandler(S3::XrdS3Req& req) {
 //------------------------------------------------------------------------------
 int S3Api::CopyObjectHandler(XrdS3Req& req) {
   VALIDATE_REQUEST(Action::CopyObject)
-
   auto source =
       req.ctx->utils.UriDecode(req.lowercase_headers["x-amz-copy-source"]);
-  auto pos = source.find('/');
+  auto pos = source.find('/',1);
   if (pos == std::string::npos) {
     return req.S3ErrorResponse(S3Error::InvalidArgument);
   }
   auto bucket_src = source.substr(0, pos);
   auto object_src = source.substr(pos + 1);
-
   auto [error, source_bucket] =
       auth.ValidateRequest(req, Action::GetObject, bucket_src, object_src);
+
   if (error != S3Error::None) {
     return req.S3ErrorResponse(error);
   }
@@ -467,9 +467,10 @@ int S3Api::CopyObjectHandler(XrdS3Req& req) {
   S3ObjectStore::Object obj;
   RET_ON_ERROR(objectStore.GetObject(source_bucket, object_src, obj))
 
-  if (!S3Utils::MapHasKey(obj.GetAttributes(), "etag")) {
-    return req.S3ErrorResponse(S3Error::InternalError);
-  }
+  // TODO: fix me, we disable this for the time being
+    //  if (!S3Utils::MapHasKey(obj.GetAttributes(), "etag")) {
+    //    return req.S3ErrorResponse(S3Error::InternalError);
+    //  }
 
   //  std::string etag = headers["etag"];
   //  time_t last_modified = std::stoul(headers["last-modified"]);
@@ -486,6 +487,7 @@ int S3Api::CopyObjectHandler(XrdS3Req& req) {
   Headers hd = {{"Content-Type", "application/xml"}};
   req.StartChunkedResp(200, hd);
 
+  std::cerr << "copyObject" << std::endl;
   std::map<std::string, std::string> headers;
   err = objectStore.CopyObject(bucket, req.object, obj, req.lowercase_headers,
                                headers);
@@ -546,7 +548,8 @@ int S3Api::PutObjectHandler(XrdS3Req& req) {
   }
 
   std::map<std::string, std::string> headers;
-  RET_ON_ERROR(objectStore.PutObject(req, bucket, length, chunked, headers))
+
+  RET_ON_ERROR(objectStore.PutObject(req, bucket, length, chunked, req.lowercase_headers))
 
   return req.S3Response(200, headers, "");
 }
@@ -577,7 +580,13 @@ int S3Api::HeadObjectHandler(XrdS3Req& req) {
 
   // content length is added in S3Response
   headers["Last-Modified"] = S3Utils::timestampToRFC7231(last_modified);
-  headers["Accept-Ranges"] = "\"bytes\"";
+  headers["Accept-Ranges"] = "bytes";
+
+  // add directory flag , if the object has a / in the end
+  if (obj.Directory()) {
+    headers["Content-Type"] = "application/x-directory";
+  }
+
   return req.S3Response(200, headers, nullptr, content_length);
 }
 

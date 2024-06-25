@@ -310,7 +310,6 @@ std::pair<S3Error, S3Auth::Bucket> S3Auth::ValidateRequest(
   if (err != S3Error::None) {
     return {err, {}};
   }
-
   return AuthorizeRequest(req, action, bucket, object);
 }
 

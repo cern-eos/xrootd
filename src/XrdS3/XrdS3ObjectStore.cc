@@ -355,13 +355,15 @@ S3Error S3ObjectStore::Object::Init(const std::filesystem::path &p, uid_t uid,
 
   // Do the backend operations with the users filesystem id
   ScopedFsId scope(uid, gid, id);
-  if (XrdPosix_Stat(p.c_str(), &buf) || S_ISDIR(buf.st_mode)) {
+  if (XrdPosix_Stat(p.c_str(), &buf)) {
     S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::Object::Init",
                                  "no such object - object-path=%s owner(%u:%u)",
                                  p.c_str(), uid, gid);
     return S3Error::NoSuchKey;
   }
 
+  // Flag directories
+  this->directory = S_ISDIR(buf.st_mode);
   std::vector<std::string> attrnames;
   std::vector<char> attrlist;
   auto attrlen = XrdPosix_Listxattr(p.c_str(), nullptr, 0);
@@ -464,16 +466,21 @@ S3Error S3ObjectStore::GetObject(const S3Auth::Bucket &bucket,
 S3Error S3ObjectStore::DeleteObject(const S3Auth::Bucket &bucket,
                                     const std::string &key) {
   std::string base, obj;
-
+  ScopedFsId scope(bucket.owner.uid, bucket.owner.gid, bucket.owner.id);
   auto full_path = bucket.path / key;
   S3::S3Handler::Logger()->Log(S3::DEBUG, "ObjectStore::DeleteObject",
                                "object-path=%s", full_path.c_str());
 
   if (XrdPosix_Unlink(full_path.c_str())) {
-    S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::DeleteObject",
-                                 "failed to delete object-path=%s",
-                                 full_path.c_str());
-    return S3Error::NoSuchKey;
+    if (errno == EISDIR) {
+      if (XrdPosix_Rmdir(full_path.c_str())) {
+	// TODO: error handling
+	S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::DeleteObject",
+				     "failed to delete object-path=%s",
+				     full_path.c_str());
+	return S3Error::NoSuchKey;
+      }
+    }
   }
 
   do {
@@ -564,7 +571,7 @@ S3Error S3ObjectStore::CopyObject(const S3Auth::Bucket &bucket,
   auto final_path = bucket.path / key;
 
   struct stat buf;
-  if (!XrdPosix_Stat(final_path.c_str(), &buf) && S_ISDIR(buf.st_mode)) {
+  if (!XrdPosix_Stat(final_path.c_str(), &buf)) {
     S3::S3Handler::Logger()->Log(
         S3::ERROR, "ObjectStore::CopyObject",
         "target:%s is directory => bucket:%s key:%s src=:%s",
@@ -575,6 +582,11 @@ S3Error S3ObjectStore::CopyObject(const S3Auth::Bucket &bucket,
   auto tmp_path =
       bucket.path / ("." + key + "." + std::to_string(std::time(nullptr)) +
                      std::to_string(std::rand()));
+
+  if (reqheaders.count("x-amz-metadata-directive") && reqheaders.at("x-amz-metadata-directive") == "REPLACE") {
+    // do the meta-data replacement
+    return S3Error::None;
+  }
 
   auto err = S3Utils::makePath((char *)final_path.parent_path().c_str(),
                                S_IRWXU | S_IRWXG);
@@ -1149,6 +1161,26 @@ S3Error S3ObjectStore::PutObject(XrdS3Req &req, const S3Auth::Bucket &bucket,
     return S3Error::ObjectExistAsDir;
   }
 
+  // special treatment for 'non-standard' directory creation
+  auto it = headers.find("content-type");
+  if (it != headers.end() && it->second == "application/x-directory") {
+    // this is a 'virtual 'directory creation request
+    auto err = S3Utils::makePath((char *)final_path.c_str(),
+				 S_IRWXU | S_IRGRP);
+    if (err == ENOTDIR) {
+      S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::PutObject",
+				   "object exists in object path -  path:%s",
+				   final_path.c_str());
+      return S3Error::ObjectExistInObjectPath;
+    } else if (err != 0) {
+      S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::PutObject",
+				   "internal error makeing parent : path:%s",
+				   final_path.c_str());
+      return S3Error::InternalError;
+    }
+    return S3Error::None;
+  }
+
   auto tmp_path =
       final_path.parent_path() /
       ("." + final_path.filename().string() + "." +
@@ -1375,6 +1407,7 @@ ListObjectsInfo S3ObjectStore::ListObjectsCommon(
   std::vector<S3Utils::BasicPath> ent;
   std::deque<S3Utils::BasicPath> entries;
 
+  ScopedFsId scope(bucket.owner.uid, bucket.owner.gid, bucket.owner.id);
   int n;
   // get full listing
   if ((n = S3Utils::ScanDir((fullpath/basedir), basedir, ent)) <= 0) {

@@ -106,6 +106,7 @@ class S3ObjectStore {
     ssize_t Read(size_t length, char **data);
     off_t Lseek(off_t offset, int whence);
     std::string Name() const { return name; }
+    bool Directory() const { return directory; }
 
     const std::map<std::string, std::string> &GetAttributes() const {
       return attributes;
@@ -123,6 +124,7 @@ class S3ObjectStore {
     uid_t uid;
     gid_t gid;
     std::string id;
+    bool directory;
     std::map<std::string, std::string> attributes{};
   };
 
