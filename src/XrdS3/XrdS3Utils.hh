@@ -33,10 +33,13 @@
 #include <functional>
 #include <iomanip>
 #include <map>
+#include <mutex>
+#include <atomic>
 #include <vector>
 #include <numeric>
 #include <sstream>
 #include <string>
+#include <json/json.h>
 //------------------------------------------------------------------------------
 
 namespace S3 {
@@ -164,7 +167,33 @@ class S3Utils {
 
   static int ScanDir(const std::filesystem::path &path, const std::filesystem::path &basepath, std::vector<S3Utils::BasicPath>& entries);
 
- private:
+
+  static std::atomic<bool> sFileAttributes;
+
+  class FileAttributes {
+  public:
+    FileAttributes(const std::string& changelogFile);
+
+    std::string getattr(const std::string& name);
+    void setattr(const std::string& name, const std::string& value, bool persist=false);
+    void persist();
+    std::vector<std::string> listattr();
+    void rmattr(const std::string& name);
+    void trimChangelog();
+
+  private:
+    std::map<std::string, std::string> attributes;
+    std::deque<std::string> changes;
+    std::string changelogFile;
+    std::mutex mutex;
+
+    void loadChangelog();
+    void saveChangelog(const std::string& action, const std::string& name, const std::string& value = "");
+    void saveChangeslog(const std::string& action);
+    void saveToTempFile(int tempFileDescriptor, const std::string& action, const std::string& name, const std::string& value = "");
+  };
+
+private:
   std::bitset<256> mEncoder;
   std::bitset<256> mObjectEncoder;
   unsigned char mDecoder[256];

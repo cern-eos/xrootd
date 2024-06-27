@@ -27,17 +27,21 @@
 //------------------------------------------------------------------------------
 #include <sys/stat.h>
 #include <sys/xattr.h>
-
+#include <sys/types.h>
+#include <fcntl.h>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <fstream>
 #include <algorithm>
 //------------------------------------------------------------------------------
 #include "XrdPosix/XrdPosixExtern.hh"
 //------------------------------------------------------------------------------
 
 namespace S3 {
+
+std::atomic<bool> S3Utils::sFileAttributes=false; // this indicates if we use native xattr (false) or xattr in hidden files
 
 //------------------------------------------------------------------------------
 //! Encode a string according to RFC 3986
@@ -475,6 +479,144 @@ S3Utils::ScanDir(const std::filesystem::path& fullpath, const std::filesystem::p
     entries.push_back(i.second);
   }
   return sentries.size();
+}
+
+S3Utils::FileAttributes::FileAttributes(const std::string& changelogFile) : changelogFile(changelogFile) {
+  loadChangelog();
+}
+
+std::string
+S3Utils::FileAttributes::getattr(const std::string& name) {
+  auto it = attributes.find(name);
+  if (it != attributes.end()) {
+    return it->second;
+  }
+  return "";
+}
+
+void
+S3Utils::FileAttributes::setattr(const std::string& name, const std::string& value, bool persist) {
+  attributes[name] = value;
+  if (persist) {
+    saveChangelog("set", name, value);
+  }
+}
+
+std::vector<std::string>
+S3Utils::FileAttributes::listattr() {
+  std::vector<std::string> keys;
+  for (const auto& pair : attributes) {
+    keys.push_back(pair.first);
+  }
+  return keys;
+}
+
+void
+S3Utils::FileAttributes::rmattr(const std::string& name) {
+  attributes.erase(name);
+  saveChangelog("remove", name);
+}
+
+void
+S3Utils::FileAttributes::trimChangelog() {
+  int tempFileDescriptor = open("temp_changelog.txt", O_CREAT | O_WRONLY | O_TRUNC, 0666);
+  if (tempFileDescriptor == -1) {
+    std::cerr << "Failed to open temporary changelog file." << std::endl;
+    return;
+  }
+  for (const auto& pair : attributes) {
+    saveToTempFile(tempFileDescriptor, "set", pair.first, pair.second);
+  }
+  close(tempFileDescriptor);
+  if (unlink(changelogFile.c_str()) == -1) {
+    std::cerr << "Failed to unlink original changelog file." << std::endl;
+    return;
+  }
+  if (rename("temp_changelog.txt", changelogFile.c_str()) == -1) {
+      std::cerr << "Failed to rename temporary changelog file." << std::endl;
+      return;
+  }
+}
+
+void
+S3Utils::FileAttributes::loadChangelog() {
+  int changelogFileDescriptor = open(changelogFile.c_str(), O_RDONLY);
+  if (changelogFileDescriptor == -1) {
+    std::cerr << "Failed to open changelog file." << std::endl;
+    return;
+  }
+
+  char buffer[4096];
+  ssize_t bytesRead;
+  std::string jsonBuffer;
+  while ((bytesRead = read(changelogFileDescriptor, buffer, sizeof(buffer) - 1)) > 0) {
+    buffer[bytesRead] = '\0';  // Null-terminate the buffer
+    jsonBuffer += buffer;
+  }
+
+  close(changelogFileDescriptor);
+
+  Json::CharReaderBuilder readerBuilder;
+  Json::CharReader* reader = readerBuilder.newCharReader();
+  Json::Value root;
+  std::string errs;
+  if (!reader->parse(jsonBuffer.c_str(), jsonBuffer.c_str() + jsonBuffer.length(), &root, &errs)) {
+    std::cerr << "Failed to parse changelog file: " << errs << std::endl;
+    delete reader;
+    return;
+  }
+
+  delete reader;
+
+  // Process parsed JSON data
+  for (const auto& entry : root) {
+    std::string action = entry["action"].asString();
+    std::string name = entry["name"].asString();
+    if (action == "set") {
+      std::string value = entry["value"].asString();
+      attributes[name] = value;
+    } else if (action == "remove") {
+      attributes.erase(name);
+    }
+  }
+}
+
+void
+S3Utils::FileAttributes::saveChangelog(const std::string& action, const std::string& name, const std::string& value) {
+  Json::Value entry;
+  entry["action"] = action;
+  entry["name"] = name;
+  if (!value.empty()) {
+    entry["value"] = value;
+  }
+  std::string entryStr = entry.toStyledString() + "\n";
+
+  int changelogFileDescriptor = open(changelogFile.c_str(), O_CREAT | O_WRONLY | O_APPEND, 0666);
+  if (changelogFileDescriptor == -1) {
+    std::cerr << "Failed to open changelog file." << std::endl;
+    return;
+  }
+
+  if (write(changelogFileDescriptor, entryStr.c_str(), entryStr.size()) == -1) {
+    std::cerr << "Failed to write to changelog file." << std::endl;
+  }
+
+  close(changelogFileDescriptor);
+}
+
+void
+S3Utils::FileAttributes::saveToTempFile(int tempFileDescriptor, const std::string& action, const std::string& name, const std::string& value) {
+  Json::Value entry;
+  entry["action"] = action;
+  entry["name"] = name;
+  if (!value.empty()) {
+    entry["value"] = value;
+  }
+  std::string entryStr = entry.toStyledString() + "\n";
+
+  if (write(tempFileDescriptor, entryStr.c_str(), entryStr.size()) == -1) {
+    std::cerr << "Failed to write to temporary changelog file." << std::endl;
+  }
 }
 
 }  // namespace S3
