@@ -566,6 +566,8 @@ bool S3Handler::ParseConfig(const char *config, XrdOucEnv &env) {
       setenv("XROOTD_VMP", mConfig.vmp.c_str(), 1);
       // Reinitialize the mappings
       XrootPath.Init();
+      // enable extended attributes in files
+      S3::S3Utils::sFileAttributes = true;
     } else if (!strcmp("s3.config", val)) {
       if (!(val = Config.GetWord())) {
         Config.Close();

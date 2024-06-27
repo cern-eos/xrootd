@@ -374,16 +374,27 @@ void S3Auth::DeleteBucketInfo(const S3Auth::Bucket &bucket) {
 
 S3Error S3Auth::CreateBucketInfo(const S3Auth::Bucket &bucket) {
   auto path = bucketInfoPath / bucket.name;
-  if (XrdPosix_Mkdir(path.c_str(), S_IRWXU | S_IRWXG)) {
+
+
+  auto fd = XrdPosix_Open(path.c_str(), O_CREAT | O_EXCL | O_WRONLY,
+	                  S_IRWXU | S_IRGRP);
+  if (fd <= 0) {
+    S3::S3Handler::Logger()->Log(S3::ERROR, "CreateBucketInfo",
+				 "failed to create %s", path.c_str());
     return S3Error::InternalError;
   }
+  XrdPosix_Close(fd);
 
   if (S3Utils::SetXattr(path, "path", bucket.path, XATTR_CREATE)) {
-    XrdPosix_Rmdir(path.c_str());
+    S3::S3Handler::Logger()->Log(S3::ERROR, "CreateBucketInfo",
+				 "failed to set path attribute on  %s", path.c_str());
+    XrdPosix_Unlink(path.c_str());
     return S3Error::InternalError;
   }
   if (S3Utils::SetXattr(path, "owner", bucket.owner.id, XATTR_CREATE)) {
-    XrdPosix_Rmdir(path.c_str());
+        S3::S3Handler::Logger()->Log(S3::ERROR, "CreateBucketInfo",
+				     "failed to set owner attribute on  %s", path.c_str());
+    XrdPosix_Unlink(path.c_str());
     return S3Error::InternalError;
   }
 

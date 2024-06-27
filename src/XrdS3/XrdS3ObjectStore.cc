@@ -58,8 +58,8 @@ S3ObjectStore::S3ObjectStore(const std::string &config, const std::string &mtpu)
     : config_path(config), mtpu_path(mtpu) {
   user_map = config_path / "users";
 
-  XrdPosix_Mkdir(user_map.c_str(), S_IRWXU | S_IRWXG);
-  XrdPosix_Mkdir(mtpu_path.c_str(), S_IRWXU | S_IRWXG);
+  XrdPosix_Mkdir(user_map.c_str(), S_IRWXU | S_IRGRP);
+  XrdPosix_Mkdir(mtpu_path.c_str(), S_IRWXU | S_IRGRP);
 }
 
 //------------------------------------------------------------------------------
@@ -190,9 +190,14 @@ S3Error S3ObjectStore::CreateBucket(S3Auth &auth, S3Auth::Bucket bucket,
     return S3Error::InvalidBucketName;
   }
 
+  auto defaultpath = GetUserDefaultBucketPath(bucket.owner.id);
+  if (defaultpath.empty()) {
+    // if no new bucket path is defined, we just don't allow automatic bucket creation
+    return S3Error::AccessDenied;
+  }
+
   bucket.path =
-      std::filesystem::path(GetUserDefaultBucketPath(bucket.owner.id)) /
-      bucket.name;
+    std::filesystem::path(defaultpath) / bucket.name;
 
   auto err = auth.CreateBucketInfo(bucket);
   if (err != S3Error::None) {
@@ -206,7 +211,7 @@ S3Error S3ObjectStore::CreateBucket(S3Auth &auth, S3Auth::Bucket bucket,
                                bucket.path.c_str(), userInfoBucket.c_str());
 
   auto fd = XrdPosix_Open(userInfoBucket.c_str(), O_CREAT | O_EXCL | O_WRONLY,
-                          S_IRWXU | S_IRWXG);
+                          S_IRWXU | S_IRGRP);
   if (fd <= 0) {
     S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CreateBucket",
                                  "bucket-path:%s failed to open user-info:%s",
@@ -227,7 +232,7 @@ S3Error S3ObjectStore::CreateBucket(S3Auth &auth, S3Auth::Bucket bucket,
     return S3Error::InternalError;
   }
 
-  if (XrdPosix_Mkdir((mtpu_path / bucket.name).c_str(), S_IRWXU | S_IRWXG)) {
+  if (XrdPosix_Mkdir((mtpu_path / bucket.name).c_str(), S_IRWXU | S_IRGRP)) {
     S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CreateBucket",
                                  "bucket-path:%s failed to create temporary "
                                  "multipart upload directory %s",
@@ -243,7 +248,7 @@ S3Error S3ObjectStore::CreateBucket(S3Auth &auth, S3Auth::Bucket bucket,
     // Create the backend directory with the users filesystem id
     ScopedFsId scop(bucket.owner.uid, bucket.owner.gid, bucket.owner.id);
     mkdir_retc = XrdPosix_Mkdir(
-        bucket.path.c_str(), S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
+        bucket.path.c_str(), S_IRWXU | S_IRGRP);
   }
   if (mkdir_retc) {
     S3::S3Handler::Logger()->Log(S3::ERROR, "ObjectStore::CreateBucket",
@@ -583,86 +588,98 @@ S3Error S3ObjectStore::CopyObject(const S3Auth::Bucket &bucket,
       bucket.path / ("." + key + "." + std::to_string(std::time(nullptr)) +
                      std::to_string(std::rand()));
 
-  if (reqheaders.count("x-amz-metadata-directive") && reqheaders.at("x-amz-metadata-directive") == "REPLACE") {
-    // do the meta-data replacement
-    return S3Error::None;
-  }
-
-  auto err = S3Utils::makePath((char *)final_path.parent_path().c_str(),
-                               S_IRWXU | S_IRWXG);
-
-  if (err == ENOTDIR) {
-    S3::S3Handler::Logger()->Log(
-        S3::ERROR, "ObjectStore::CopyObject",
-        "target:%s exists already=> bucket:%s key:%s src=:%s",
-        final_path.c_str(), bucket.name.c_str(), source_obj.Name().c_str());
-    return S3Error::ObjectExistInObjectPath;
-  } else if (err != 0) {
-    return S3Error::InternalError;
-  }
-
-  auto fd = XrdPosix_Open(tmp_path.c_str(), O_CREAT | O_EXCL | O_WRONLY,
-                          S_IRWXU | S_IRGRP);
-
-  if (fd < 0) {
-    S3::S3Handler::Logger()->Log(
-        S3::ERROR, "ObjectStore::CopyObject",
-        "target:%s failed to create => bucket:%s key:%s src=:%s",
-        final_path.c_str(), bucket.name.c_str(), source_obj.Name().c_str());
-    S3Utils::RmPath(final_path.parent_path(), bucket.path);
-    return S3Error::InternalError;
-  }
-
-  XrdCksCalcmd5 xs;
-  xs.Init();
-
-  char *ptr;
-
-  ssize_t len = source_obj.GetSize();
-  ssize_t i = 0;
-  while ((i = source_obj.Read(len, &ptr)) > 0) {
-    len -= i;
-    xs.Update(ptr, i);
-    // TODO: error handling
-    XrdPosix_Write(fd, ptr, i);
-  }
-
-  // TODO: error handling
-  XrdPosix_Close(fd);
-
-  char *fxs = xs.Final();
-  std::vector<unsigned char> md5(fxs, fxs + 16);
-
+  // inplace-copies are used to inject meta-data
+  bool inplacecopy = (source_obj.Name() == final_path);
   std::map<std::string, std::string> metadata = source_obj.GetAttributes();
-  auto md5hex = '"' + S3Utils::HexEncode(md5) + '"';
-  metadata["etag"] = md5hex;
-  headers.clear();
-  headers["ETag"] = md5hex;
 
+  if (!inplacecopy) {
+    // we need to copy the contents
+    auto err = S3Utils::makePath((char *)final_path.parent_path().c_str(),
+				 S_IRWXU | S_IRGRP);
+
+    if (err == ENOTDIR) {
+      S3::S3Handler::Logger()->Log(
+				   S3::ERROR, "ObjectStore::CopyObject",
+				   "target:%s exists already=> bucket:%s key:%s src=:%s",
+				   final_path.c_str(), bucket.name.c_str(), source_obj.Name().c_str());
+      return S3Error::ObjectExistInObjectPath;
+    } else if (err != 0) {
+      return S3Error::InternalError;
+    }
+
+    auto fd = XrdPosix_Open(tmp_path.c_str(), O_CREAT | O_EXCL | O_WRONLY,
+			    S_IRWXU | S_IRGRP);
+
+    if (fd < 0) {
+      S3::S3Handler::Logger()->Log(
+				   S3::ERROR, "ObjectStore::CopyObject",
+				   "target:%s failed to create => bucket:%s key:%s src=:%s",
+				   final_path.c_str(), bucket.name.c_str(), source_obj.Name().c_str());
+      S3Utils::RmPath(final_path.parent_path(), bucket.path);
+      return S3Error::InternalError;
+    }
+
+    XrdCksCalcmd5 xs;
+    xs.Init();
+
+    char *ptr;
+
+    ssize_t len = source_obj.GetSize();
+    ssize_t i = 0;
+    while ((i = source_obj.Read(len, &ptr)) > 0) {
+      len -= i;
+      xs.Update(ptr, i);
+      // TODO: error handling
+      XrdPosix_Write(fd, ptr, i);
+    }
+
+    // TODO: error handling
+    XrdPosix_Close(fd);
+
+    char *fxs = xs.Final();
+    std::vector<unsigned char> md5(fxs, fxs + 16);
+    auto md5hex = '"' + S3Utils::HexEncode(md5) + '"';
+    metadata["etag"] = md5hex;
+  }
+
+  headers.clear();
+  headers["ETag"] = metadata["etag"];
+
+  // evt. copy existing meta-data
   if (S3Utils::MapHasEntry(reqheaders, "x-amz-metadata-directive", "REPLACE")) {
     auto add_header = [&metadata, &reqheaders](const std::string &name) {
-      if (S3Utils::MapHasKey(reqheaders, name)) {
-        metadata[name] = reqheaders.find(name)->second;
-      }
-    };
+			if (S3Utils::MapHasKey(reqheaders, name)) {
+			  metadata[name] = reqheaders.find(name)->second;
+			}
+		      };
 
     add_header("cache-control");
     add_header("content-disposition");
     add_header("content-type");
 
+    // inject client-procided meta-data
+    for (const auto &hd : reqheaders) {
+      if (hd.first.substr(0, 11) == "x-amz-meta-") {
+	metadata.insert({hd.first, hd.second});
+      }
+    }
     //    metadata.insert({"last-modified",
     //    std::to_string(std::time(nullptr))});
   }
 
-  auto error = SetMetadata(tmp_path, metadata);
+  auto error = SetMetadata(inplacecopy?final_path:tmp_path, metadata);
   if (error != S3Error::None) {
-    XrdPosix_Unlink(tmp_path.c_str());
-    S3Utils::RmPath(final_path.parent_path(), bucket.path);
+    if (!inplacecopy) {
+      XrdPosix_Unlink(tmp_path.c_str());
+      S3Utils::RmPath(final_path.parent_path(), bucket.path);
+    }
     return error;
   }
 
-  // TODO: error handling
-  XrdPosix_Rename(tmp_path.c_str(), final_path.c_str());
+  if (inplacecopy) {
+    // TODO: error handling
+    XrdPosix_Rename(tmp_path.c_str(), final_path.c_str());
+  }
 
   return error;
 }
@@ -1228,9 +1245,7 @@ S3Error S3ObjectStore::PutObject(XrdS3Req &req, const S3Auth::Bucket &bucket,
   // (https://docs.aws.amazon.com/AmazonS3/latest/API/API_Object.html)
   metadata.insert({"etag", md5hex});
   headers.insert({"ETag", md5hex});
-  // TODO: Add metadata from other headers.
-  // TODO: Handle non asccii characters.
-  // (https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingMetadata.html)
+
   for (const auto &hd : req.lowercase_headers) {
     if (hd.first.substr(0, 11) == "x-amz-meta-") {
       metadata.insert({hd.first, hd.second});
