@@ -37,6 +37,7 @@ import pwd
 import ctypes
 import ctypes.util
 import errno
+import time
 
 def main():
     # Create the main parser
@@ -591,6 +592,8 @@ def handle_addbucket(args):
     try:
         os.setxattr(bucket_file, 'user.s3.owner', username.encode())
         os.setxattr(bucket_file, 'user.s3.path', bucketpath.encode())
+        current_timestamp = str(int(time.time()))
+        os.setxattr(user_bucket_file, "user.s3.createdAt", current_timestamp.encode());
         print(f"Info: Extended attributes set on '{bucket_file}': 'user.s3.owner'={username}, 'user.s3.path'={bucketpath}")
     except AttributeError:
         print("Info: Extended attributes are not supported on this platform.")
