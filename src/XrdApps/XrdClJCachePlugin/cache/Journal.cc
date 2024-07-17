@@ -137,20 +137,15 @@ int Journal::read_journal() {
   const size_t bufsize = sizeof(header_t);
   char buffer[bufsize];
   ssize_t bytesRead = 0, totalBytesRead = sizeof(jheader_t);
-  int64_t pos = 0;
-
-  ssize_t journalsize = lseek(fd, 0, SEEK_END);
 
   do {
     bytesRead = ::pread(fd, buffer, bufsize, totalBytesRead);
     if (bytesRead < (ssize_t)bufsize) {
-      if (bytesRead == 0 && (totalBytesRead == journalsize)) {
-        break;
-      } else {
+      if ( bytesRead ) {
         std::cerr << "warning: inconsistent journal found - purging path:"
                   << path << std::endl;
         reset();
-        return 0;
+        return cachesize; // sizeof (jheader_t) ;
       }
     }
     header_t *header = reinterpret_cast<header_t *>(buffer);
@@ -158,8 +153,7 @@ int Journal::read_journal() {
                    totalBytesRead);
     totalBytesRead += header->size; // size of the fragment
     totalBytesRead += bytesRead;    // size of the header
-  } while (pos < bytesRead);
-
+  } while (bytesRead);
   return totalBytesRead;
 }
 
@@ -390,7 +384,7 @@ int Journal::update_cache(std::vector<chunk_t> &updates) {
 
   for (auto &u : updates) {
     rc = ::pwrite(fd, u.buff, u.size,
-                  u.offset); // TODO is it safe to assume it will write it all
+                  u.offset+sizeof(jheader_t)); // TODO is it safe to assume it will write it all
 
     if (rc <= 0) {
       return errno;
@@ -495,9 +489,17 @@ int Journal::reset() {
   if (fd >= 0) {
     retc = ftruncate(fd, 0);
     retc |= write_jheader();
+    cachesize = sizeof(jheader_t);
   }
-  cachesize = 0;
   max_offset = 0;
+  jheader.magic = JOURNAL_MAGIC;
+  jheader.mtime = 0;
+  jheader.mtime_nsec = 0;
+  jheader.filesize = 0;
+  jheader.placeholder1 = 0;
+  jheader.placeholder2 = 0;
+  jheader.placeholder3 = 0;
+  jheader.placeholder4 = 0;
   return retc;
 }
 
