@@ -147,12 +147,13 @@ int Journal::read_journal() {
         reset();
         return cachesize; // sizeof (jheader_t) ;
       }
+    } else {
+      header_t *header = reinterpret_cast<header_t *>(buffer);
+      journal.insert(header->offset, header->offset + header->size,
+		     totalBytesRead);
+      totalBytesRead += header->size; // size of the fragment
+      totalBytesRead += bytesRead;    // size of the header
     }
-    header_t *header = reinterpret_cast<header_t *>(buffer);
-    journal.insert(header->offset, header->offset + header->size,
-                   totalBytesRead);
-    totalBytesRead += header->size; // size of the fragment
-    totalBytesRead += bytesRead;    // size of the header
   } while (bytesRead);
   return totalBytesRead;
 }
@@ -384,7 +385,7 @@ int Journal::update_cache(std::vector<chunk_t> &updates) {
 
   for (auto &u : updates) {
     rc = ::pwrite(fd, u.buff, u.size,
-                  u.offset+sizeof(jheader_t)); // TODO is it safe to assume it will write it all
+                  u.offset); // TODO is it safe to assume it will write it all
 
     if (rc <= 0) {
       return errno;
