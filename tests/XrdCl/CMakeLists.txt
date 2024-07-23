@@ -22,7 +22,7 @@ target_link_libraries(xrdcl-unit-tests
 )
 
 target_include_directories(xrdcl-unit-tests
-  PRIVATE ${CMAKE_SOURCE_DIR}/src ../common
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/XrdApps/XrdClJCachePlugin/ ../common
 )
 
 gtest_discover_tests(xrdcl-unit-tests TEST_PREFIX XrdCl::)

@@ -1,6 +1,6 @@
 #undef NDEBUG
 
-#include "XrdApps/XrdClJCachePlugin/XrdClVectorCache.hh"
+#include "XrdApps/XrdClJCachePlugin/vector/XrdClVectorCache.hh"
 #include "XrdSys/XrdSysPlatform.hh"
 
 #include <gtest/gtest.h>
@@ -31,9 +31,9 @@ TEST(VectorCacheTest, Store)
   }
   
   EXPECT_TRUE(bcmp(data, cdata, 100) != 0) << "Data not zeroed" << std::endl;
-  VectorCache cacheout ( chunks, name, data, prefix);
+  XrdCl::VectorCache cacheout ( chunks, name, data, prefix);
   EXPECT_TRUE(cacheout.store()) << "Failed to store vector read into cache" << std::endl;
-  VectorCache cachein ( chunks, name, cdata, prefix);
+  XrdCl::VectorCache cachein ( chunks, name, cdata, prefix);
   EXPECT_TRUE(cachein.retrieve()) << "Failed to retrieve vector read from cache" << std::endl;
   EXPECT_TRUE(bcmp(data, cdata, 100) == 0) << "Cached data is wrong" << std::endl;
   EXPECT_TRUE(truncate("/tmp/d1a4e9081bd37839e4b4f486ed8b13397ce9ffa0198edb586208d6b73e15b19a/3ec7dea73b7880fdce09e1c8f804054ae685e3dbda4d467c71ab2327ea5ad93e",99)==0) << "Failed to truncate cached file" << std::endl;
