@@ -318,6 +318,13 @@ struct CacheStats {
            "-------------------------------------------------------------------"
            "---- #"
         << std::endl;
+    oss << "# JCache : avg.  bytes    read      : " << (sStats.readOps.load()?(sStats.bytesCached.load() / sStats.readOps.load()):0.0) << std::endl;
+    oss << "# JCache : avg.  bytes    readv     : " << (sStats.readVOps.load()?(sStats.bytesCachedV.load() / sStats.readVOps.load()):0.0) << std::endl;
+    oss << "# "
+           "-------------------------------------------------------------------"
+           "---- #"
+        << std::endl;
+    
     oss << "# JCache : open files     read      : " << sStats.nreadfiles.load()
         << std::endl;
     oss << "# JCache : open unique f. read      : " << sStats.UniqueUrls()
