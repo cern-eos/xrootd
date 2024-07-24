@@ -34,6 +34,7 @@ stats = 0
 size = 0
 async = 0
 bypass = 0
+noapp =
 json =
 
 ```
@@ -52,7 +53,11 @@ json =
 > If you want to have the possiblity of detached/asynchronous open operation, then set ```async = 1```. The cache then relies on the filesize and modification times stored in the journal cache. This should only be used for WORM data. The advantage is that there is no need to wait for remote Open operations to finish during the attachment to the cache if there is already a journal entry for the requested file. So if all requests are already in the cache, there is not a single possibly slow remote operation in the IO path.
 
 > [!TIP]
-> If you want to benefit from the benchmarking statics you can switch the plug-to to bypass. In this case statistics is gathered but no file is written to the cache and not data is served from the cache.
+> If you want to benefit from the benchmarking statistics you can switch the plug-to to bypass. In this case statistics is gathered but no file is written to the cache and not data is served from the cache.
+
+> [!TIP]
+> If you want certain apps to not use the cache you can list the names of applications which are automatically enabling bypass e.g. ```noapp = xrdcp``` or ```noapp = xrdcp,eoscp```.
+> This will set the cache automatically to bypass for these applications.
 
 > [!NOTE]  
 > The easiest way to verifyt the plug-in functionning is to run with ```XRD_LOGLEVEL=Info``` since the plug-in will provide
