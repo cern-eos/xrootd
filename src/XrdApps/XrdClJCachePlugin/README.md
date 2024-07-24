@@ -34,6 +34,7 @@ stats = 0
 size = 0
 async = 0
 bypass = 0
+flat = false
 noapp =
 json =
 
@@ -59,6 +60,9 @@ json =
 > If you want certain apps to not use the cache you can list the names of applications which are automatically enabling bypass e.g. ```noapp = xrdcp``` or ```noapp = xrdcp,eoscp```.
 > This will set the cache automatically to bypass for these applications.
 
+> [!TIP]
+> By default JCache stores the cache journals under the same namespace hierarchy inside the cache directory as the remote path. If you set ```flat = 1``` it will store all journals in a flat structure under a directory named after the hex SHA256 value of the remote path. This approach creates however one directory per cached file under a the JCache directory - use with caution!
+
 > [!NOTE]  
 > The easiest way to verifyt the plug-in functionning is to run with ```XRD_LOGLEVEL=Info``` since the plug-in will provide
 > some startup information and also prints where a file is cached locally once it is attached.
@@ -73,6 +77,8 @@ XRD_JCACHE_JSON=directory-path-for-json|""
 XRD_JCACHE_SIZE=number-in-bytes
 XRD_JCACHE_ASYNC=true|false|1|0
 XRD_JCACHE_BYPASS=true|false|1|0
+XRD_JCACHE_NOAPP=xrdcp,...
+XRD_JCACHE_FLAT=true|false|1|0
 XRD_APPNAME=application-name-used-in-json-file
 ```
 > [!TIP]
