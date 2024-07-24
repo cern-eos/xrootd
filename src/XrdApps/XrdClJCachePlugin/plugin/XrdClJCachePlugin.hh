@@ -84,6 +84,11 @@ public:
           itsi != config->end() ? std::stoll(std::string(itsi->second), 0, 10)
                                 : 0);
 
+      auto itf = config->find("flat");
+      JCacheFile::SetFlatHierarchy(
+          itf != config->end() ? (itf->second == "true") || (itf->second == "1")
+                               : false);
+
       if (const char *v = getenv("XRD_JCACHE_CACHE")) {
         JCacheFile::SetCache((std::string(v).length()) ? std::string(v) : "");
       }
@@ -131,6 +136,12 @@ public:
       if (const char *v = getenv("XRD_JCACHE_STATS")) {
         JCacheFile::SetStatsInterval(
             (std::string(v).length()) ? std::stoll(std::string(v), 0, 10) : 0);
+      }
+
+      if (const char *v = getenv("XRD_JCACHE_FLAT")) {
+        JCacheFile::SetFlatHierarchy(
+            ((std::string(v) == "true") || (std::string(v) == "1")) ? true
+                                                                    : false);
       }
 
       Env *env = DefaultEnv::GetEnv();
