@@ -211,6 +211,9 @@ public:
   inline bool IsValid() { return true; }
 
   //----------------------------------------------------------------------------
+  //! @brief set the local cache path
+  //! @param path Local cache path
+  //----------------------------------------------------------------------------
   //! @brief set the local cache path and enable/disable journal/vector caches
   //! @param path Local cache path
   //! @param journal Enable/disable journal cache
@@ -225,6 +228,7 @@ public:
   static void SetBypass(const bool &value) { sEnableBypass = value; }
   static void SetSize(uint64_t size) { sCleaner.SetSize(size, sCachePath); }
   static void SetAsync(bool async) { sOpenAsync = async; }
+  static void SetFlatHierarchy(bool value) { sFlatHierarchy = value; }
 
   //----------------------------------------------------------------------------
   //! @brief static members pointing to cache settings
@@ -236,6 +240,8 @@ public:
   static bool sEnableBypass;
   static bool sEnableSummary;
   static bool sOpenAsync;
+  static bool sFlatHierarchy;
+
   static JournalManager sJournalManager;
 
   //! @brief set stats interval in seconds

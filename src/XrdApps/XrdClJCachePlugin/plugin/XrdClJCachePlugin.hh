@@ -67,6 +67,7 @@ public:
       JCacheFile::SetAsync(ita != config->end()
                                ? (ita->second == "true") || (ita->second == "1")
                                : false);
+
       auto itb = config->find("bypass");
       JCacheFile::SetBypass(itb != config->end() ? (itb->second == "true") ||
                                                        (itb->second == "1")
@@ -132,6 +133,24 @@ public:
             (std::string(v).length()) ? std::stoll(std::string(v), 0, 10) : 0);
       }
 
+      Env *env = DefaultEnv::GetEnv();
+      std::string appName;
+      env->GetString("AppName", appName);
+      std::string noApps;
+      auto itapp = config->find("noapp");
+      if (itapp != config->end()) {
+        noApps = itapp->second;
+      }
+
+      if (const char *v = getenv("XRD_JCACHE_NOAPP")) {
+        noApps = v;
+      }
+
+      if (noApps.length() && (noApps.find(appName) != std::string::npos)) {
+        // switch the cache on bypass if we are in the 'noapp' entry list
+        JCacheFile::SetBypass(true);
+      }
+
       Log *log = DefaultEnv::GetLog();
       log->Info(1, "JCache : cache directory: %s",
                 JCacheFile::sCachePath.c_str());
@@ -145,6 +164,11 @@ public:
                 JCacheFile::sOpenAsync ? "true" : "false");
       log->Info(1, "JCache : bypass operation: %s",
                 JCacheFile::sEnableBypass ? "true" : "false");
+      log->Info(1, "JCache : running app: %s", appName.c_str());
+
+      if (noApps.length()) {
+        log->Info(1, "JCache : filtered apps: %s", noApps.c_str());
+      }
       if (JCacheFile::sJsonPath.length()) {
         log->Info(1, "JCache : json output to prefix: %s",
                   JCacheFile::sJsonPath.c_str());

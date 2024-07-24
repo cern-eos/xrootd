@@ -24,6 +24,7 @@
 /*----------------------------------------------------------------------------*/
 #include "XrdClJCacheFile.hh"
 #include "file/CacheStats.hh"
+#include "file/Hierarchy.hh"
 /*----------------------------------------------------------------------------*/
 #include "XrdCl/XrdClMessageUtils.hh"
 /*----------------------------------------------------------------------------*/
@@ -35,6 +36,8 @@ bool XrdCl::JCacheFile::sEnableVectorCache = false;
 bool XrdCl::JCacheFile::sEnableSummary = true;
 bool XrdCl::JCacheFile::sEnableBypass = false;
 bool XrdCl::JCacheFile::sOpenAsync = false;
+bool XrdCl::JCacheFile::sFlatHierarchy = false;
+
 JCache::CacheStats XrdCl::JCacheFile::sStats(true);
 JCache::Cleaner XrdCl::JCacheFile::sCleaner;
 JournalManager XrdCl::JCacheFile::sJournalManager;
@@ -130,15 +133,30 @@ XRootDStatus JCacheFile::Open(const std::string &url, OpenFlags::Flags flags,
       mOpenState = OPENING;
       if (sEnableVectorCache || (sEnableJournalCache && !sEnableBypass)) {
         if ((flags & OpenFlags::Flags::Read) == OpenFlags::Flags::Read) {
-          std::string JournalDir =
-              sCachePath + "/" + VectorCache::computeSHA256(pUrl);
-          pJournalPath = JournalDir + "/journal";
-          // it can be that we cannot write the journal directory
-          if (!VectorCache::ensureLastSubdirectoryExists(JournalDir)) {
-            st = XRootDStatus(stError, errOSError);
-            std::cerr << "error: unable to create cache directory: "
-                      << JournalDir << std::endl;
-            return st;
+          if (sFlatHierarchy) {
+            // we use sha256 directory names in a flat hierarchy
+            std::string JournalDir =
+                sCachePath + "/" + VectorCache::computeSHA256(pUrl);
+            pJournalPath = JournalDir + "/journal";
+            // it can be that we cannot write the journal directory
+            if (!VectorCache::ensureLastSubdirectoryExists(JournalDir)) {
+              st = XRootDStatus(stError, errOSError);
+              std::cerr << "error: unable to create cache directory: "
+                        << JournalDir << std::endl;
+              return st;
+            }
+          } else {
+            // we keep the original path for the cache
+            XrdCl::URL url(pUrl);
+            std::string JournalDir =
+                sCachePath + url.GetPath();
+            pJournalPath = JournalDir + "/journal";
+            if (!JCache::makeHierarchy(pJournalPath)) {
+              st = XRootDStatus(stError, errOSError);
+              std::cerr << "error: unable to create cache directory: "
+                        << JournalDir << std::endl;
+              return st;
+            }
           }
         }
       }
