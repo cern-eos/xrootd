@@ -45,30 +45,30 @@ json =
 > By default JCache prints a summary at application exit. If you don't want the summary set ```summary = false```. 
 
 > [!TIP]
-> By default JCache does not write a JSON summary.  If you want JSON summaries define a directory whare stored change ```json = /tmp/```. If you don't want any json summary file use the defualt or set it to an empty string. The name of the json summary file is ```jcache.env{"XRD_APPNAME"}:"none".{pid}.json```
+> By default JCache does not write a JSON summary.  If you want JSON summaries define a directory where to store summary files ```json = /tmp/```. If you don't want any json summary file use the default or set it to an empty string. The name of the json summary file is ```jcache.env{"XRD_APPNAME"}:"none".{pid}.json```
 
 > [!TIP]
-> If you want to run the plug-in inside a proxy server, you can set ```stats = 60```. In this case it will print every 60s a summary with the current cache statistics. The default is not print in intervals the cache statistics (```stats = 0```).
+> If you want to run the plug-in inside a proxy server, you can set ```stats = 60```. In this case it will print every 60s a summary with the current cache statistics. The default is not to print in intervals the cache statistics - only when the application exits. (```stats = 0```).
 
 > [!TIP]
-> If you want to have the possiblity of detached/asynchronous open operation, then set ```async = 1```. The cache then relies on the filesize and modification times stored in the journal cache. This should only be used for WORM data. The advantage is that there is no need to wait for remote Open operations to finish during the attachment to the cache if there is already a journal entry for the requested file. So if all requests are already in the cache, there is not a single possibly slow remote operation in the IO path.
+> If you want to have the possiblity of detached/asynchronous open operation, then set ```async = 1```. The cache then relies on the filesize and modification times stored in the journal cache. This should only be used for WORM data. The advantage is that there is no need to wait for remote Open operations to finish during the attachment to the cache - if there is already a journal entry for the requested file! So if all read requests are already in the cache, there is not a single possibly slow remote operation in the IO path.
 
 > [!TIP]
 > If you want to benefit from the benchmarking statistics you can switch the plug-to to bypass. In this case statistics is gathered but no file is written to the cache and not data is served from the cache.
 
 > [!TIP]
 > If you want certain apps to not use the cache you can list the names of applications which are automatically enabling bypass e.g. ```noapp = xrdcp``` or ```noapp = xrdcp,eoscp```.
-> This will set the cache automatically to bypass for these applications.
+> This will set the cache automatically to bypass for the comma separeted list of  applications.
 
 > [!TIP]
-> By default JCache stores the cache journals under the same namespace hierarchy inside the cache directory as the remote path. If you set ```flat = 1``` it will store all journals in a flat structure under a directory named after the hex SHA256 value of the remote path. This approach creates however one directory per cached file under a the JCache directory - use with caution!
+> By default JCache stores the cache journals using the same namespace hierarchy inside the cache directory as the remote path. If you set ```flat = 1``` it will store all journals in a flat structure under a directory named after the hex SHA256 value of the remote path. This approach creates one directory per cached file under a the JCache directory in a flat structure - use with caution!
 
 > [!NOTE]  
-> The easiest way to verifyt the plug-in functionning is to run with ```XRD_LOGLEVEL=Info``` since the plug-in will provide
-> some startup information and also prints where a file is cached locally once it is attached.
+> The easiest way to verify the plug-in functionning is to run with ```XRD_LOGLEVEL=Info``` since the plug-in will provide
+> some startup information and also print where a file is cached locally once it is attached.
 
 ### Overwriting Configuration using Environment Variables
-It is possible to overwrite defaults or settings in the configuration file using the following environment variables:
+It is possible to overwrite defaults or settings in the configuration file using the following environment variables or use only these environment variables to configure the plug-in:
 ```
 XRD_JCACHE_SUMMARY=true|false|1|0
 XRD_JCACHE_JOURNAL=true|false|1|0
@@ -82,12 +82,19 @@ XRD_JCACHE_FLAT=true|false|1|0
 XRD_APPNAME=application-name-used-in-json-file
 ```
 > [!TIP]
-> These are in particular useful, if you want to configure the plug-in using the default mechanism or want to overwrite some default settings in your environment without changing configuration fiels.
+> These are in particular useful, if you want to configure the plug-in using the default mechanism or want to overwrite some default settings in your environment without changing shared configuration files.
 > ```mkdir -p /var/tmp/jcache/; env XRD_PLUGIN=libXrdClJCachePlugin-5.so XRD_JCACHE_CACHE=/var/tmp/jcache/ xrdcp ```
 
 # 2 Read Journal Cache
 
-Each URL accessed for reading creates a journal file under the following path:
+Each URL accessed for reading creates a journal file under one of the following paths:
+By default:
+```
+<config:cache>/<remote-tree-until-filename>/journal
+```
+E.g. */var/tmp/jcache/data/higgs.root/journal*
+
+If the flat option was selected:
 ```
 <config:cache>/<hex::sha256(URL)>/journal
 ```
@@ -116,7 +123,7 @@ Each application read request is then written in an append log style using a chu
 ```
 followed by a data blob of ```<size>``` bytes.
 
-The advantage of the journal approach is that unlike in a page cache like XCACHE, only requested data is cached! There is no such thing as pagesize. 
+The advantage of the journal approach is that unlike in a page cache like XCACHE, only requested data is cached! There is no such thing as pagesize or page alignment of requests.
 
 When a file is opened for reading and a journal exists, the journal is scanned on startup and stored in a red-black tree structure. If in subsequent readings new pages are requested, the journal is appended accordingly and supports even re-writing and merging of chunks (which is not required for read-only caching).
 
@@ -239,6 +246,7 @@ url = root://*
 lib = libXrdClJCachePlugin-5.so
 enable = true
 cache = /var/tmp/jcache/
+stat = 60
 ```
 You have to make sure, that the cache directory exists and is owned by the user running your XRootD process.
 
@@ -256,13 +264,15 @@ env XRD_PLUGIN=/usr/lib64/libXrdClJCachePlugin-5.so XRD_JCACHE_CACHE=/var/tmp/jc
 - ~~Add cache-cleaning as option to client plug-in~~ :white_check_mark:
 - ~~Add possiblity of detached operation (async) mode~~ :white_check_mark:
 - ~~Report summed time spent in Open operations~~ :white_check_mark:
+- ~~We should make a configuration variable, which allows to regularily dump cache statistics and reset counters. This is useful when the plug-in runs inside a proxy server.~~ :white_check_mark:
+- ~~Add the default option to preserve the remote path structure in the local cache (e.g. keep all subdirectories and use the filename as parent directory for the journal file)~~ :white_check_mark
+- ~~Add the option to automatically switch JCache into bypass mode for a list of given application names~~ :white_check_mark
 - Make xrdclcacheclean a daemon with systemd support
 - Add automatic connection de-multiplexing if contention to storage servers is detected
 - Add a CGI option to force cleaning of journal cache for a given file
 - Add a CGI option to bypass journal cache for a given file
 - Add crc32c to journal fragement structure
 - Attaching large files which are not in the buffercache is slow. We should write a compacted journal index, when we detach and read it on attach in a single read
-- ~~We should make a configuration variable, which allows to regularily dump cache statistics and reset counters. This is useful when the plug-in runs inside a proxy server.~~ :white_check_mark:
 
 
 
