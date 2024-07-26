@@ -23,7 +23,7 @@
 
 /*----------------------------------------------------------------------------*/
 #include "cleaner/Cleaner.hh"
-#include <sys/statfs.h>
+#include <sys/statvfs.h>
 /*----------------------------------------------------------------------------*/
 
 namespace fs = std::filesystem;
@@ -64,13 +64,25 @@ long long Cleaner::getDirectorySize(const fs::path &directory, bool scan) {
       }
     }
   } else {
-    struct statfs stat;
+    struct statvfs fs_info;
 
-    if (statfs(directory.c_str(), &stat) != 0) {
+    if (statvfs(directory.c_str(), &fs_info) != 0) {
       mLog->Error(1,
-                  "JCache:Cleaner: failed to get directory size using statfs.");
+                  "JCache:Cleaner: failed to get directory size using statvfs.");
       return 0;
     }
+    // Calculate total space in bytes
+    unsigned long long total_blocks = fs_info.f_blocks;
+    unsigned long long block_size = fs_info.f_bsize;
+    unsigned long long total_space = total_blocks * block_size;
+
+    // Calculate free space in bytes
+    unsigned long long free_blocks = fs_info.f_bfree;
+    unsigned long long free_space = free_blocks * block_size;
+
+    // Calculate used space in bytes
+    unsigned long long used_space = total_space - free_space;
+    totalSize = used_space;
   }
   return totalSize;
 }

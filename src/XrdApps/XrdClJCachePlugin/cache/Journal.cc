@@ -35,6 +35,12 @@
 #include <unistd.h>
 /*----------------------------------------------------------------------------*/
 
+#ifdef __APPLE__
+#include <sys/uio.h>
+#define pread64 pread
+#define pwrite64 pwrite
+#endif
+
 //------------------------------------------------------------------------------
 //! Journal Constructor
 //------------------------------------------------------------------------------
@@ -96,7 +102,7 @@ void Journal::read_jheader() {
   if (jheader.mtime) {
     if (exists) {
       // we only compare if there was a header in the journal
-      if ((abs(fheader.mtime - jheader.mtime) > 1) ||
+      if ((abs((int)(fheader.mtime - jheader.mtime)) > 1) ||
           (fheader.mtime_nsec != jheader.mtime_nsec) ||
           (jheader.filesize && (fheader.filesize != jheader.filesize))) {
         std::cerr << "warning: remote file change detected - purging path:"
@@ -183,7 +189,7 @@ int Journal::attach(const std::string &lpath, uint64_t mtime,
       }
     }
   }
-  if ((fd == -1)) {
+  if (fd == -1) {
     // need to open the file
     size_t tries = 0;
 
@@ -462,7 +468,11 @@ int Journal::sync() {
   if (fd < 0) {
     return -1;
   }
+#ifdef __APPLE__
+  return ::fsync(fd);
+#else
   return ::fdatasync(fd);
+#endif
 }
 
 //------------------------------------------------------------------------------

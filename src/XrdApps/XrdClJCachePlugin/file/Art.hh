@@ -100,7 +100,7 @@ public:
               << runtime << "s ]" << std::endl;
   }
 
-  void drawCurve(const std::vector<long unsigned int> &data, double interval,
+  void drawCurve(const std::vector<uint64_t> &data, double interval,
                  double runtime) {
     std::vector<double> newdata;
     if (interval == 0) {

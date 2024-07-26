@@ -1,5 +1,3 @@
-
-
 #-------------------------------------------------------------------------------
 # Modules
 #-------------------------------------------------------------------------------
@@ -210,10 +208,16 @@ add_executable(
   xrdclcacheclean
   XrdApps/XrdClJCachePlugin/app/XrdClCacheCleaner.cc )
 
-target_link_libraries(
-  xrdclcacheclean
-  stdc++fs
-)
+if ( MacOSX ) 
+  target_link_libraries(
+    xrdclcacheclean
+  )
+else()
+  target_link_libraries(
+    xrdclcacheclean
+    stdc++fs
+  )
+endif()
 
 #-------------------------------------------------------------------------------
 # XrdClJCachePlugin library
@@ -237,10 +241,13 @@ add_library(
   XrdApps/XrdClJCachePlugin/cleaner/Cleaner.hh
 )
 
-target_include_directories( ${LIB_XRDCL_JCACHE_PLUGIN} PRIVATE "${CMAKE_SOURCE_DIR}/src/XrdApps/XrdClJCachePlugin/" )
+target_include_directories( ${LIB_XRDCL_JCACHE_PLUGIN} PRIVATE  "${CMAKE_SOURCE_DIR}/src/XrdApps/XrdClJCachePlugin/" )
   
-target_link_libraries(${LIB_XRDCL_JCACHE_PLUGIN} PRIVATE XrdCl stdc++fs)
-
+if ( MacOSX ) 
+  target_link_libraries(${LIB_XRDCL_JCACHE_PLUGIN} PRIVATE XrdCl OpenSSL::SSL)
+else ()
+  target_link_libraries(${LIB_XRDCL_JCACHE_PLUGIN} PRIVATE XrdCl stdc++fs OpenSSL::SSL)
+endif ()
 
 #-------------------------------------------------------------------------------
 # Install
