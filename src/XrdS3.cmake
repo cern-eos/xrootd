@@ -61,6 +61,7 @@ if (BUILD_S3)
             XrdPosixPreload
             tinyxml2
 	    stdc++fs
+	    jsoncpp
             ${CMAKE_DL_LIBS}
             ${CMAKE_THREAD_LIBS_INIT})
 
