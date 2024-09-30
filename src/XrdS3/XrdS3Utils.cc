@@ -340,8 +340,14 @@ int S3Utils::makePath(char *path, mode_t mode) {
   //
   while ((next_path = index(next_path, int('/')))) {
     *next_path = '\0';
-    if (XrdPosix_Mkdir(path, mode))
-      if (errno != EEXIST) return errno;
+    if (!XrdPosix_Stat(path, &buf)) {
+      if (!S_ISDIR(buf.st_mode)) {
+	return ENOTDIR;
+      }
+    } else {
+      if (XrdPosix_Mkdir(path, mode))
+	if (errno != EEXIST) return errno;
+    }
     *next_path = '/';
     next_path = next_path + 1;
   }
