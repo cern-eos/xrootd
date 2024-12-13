@@ -33,6 +33,10 @@
 #include <cstdio>
 #include <list>
 #include <vector>
+#include <unordered_set>
+#include <algorithm>
+
+#include <regex.h>
 
 #ifdef WIN32
 #include <direct.h>
@@ -51,6 +55,7 @@
 #include "XrdOuc/XrdOucStream.hh"
 #include "XrdOuc/XrdOucString.hh"
 #include "XrdOuc/XrdOucUtils.hh"
+#include "XrdOuc/XrdOucPrivateUtils.hh"
 #include "XrdSys/XrdSysE2T.hh"
 #include "XrdSys/XrdSysError.hh"
 #include "XrdSys/XrdSysPlatform.hh"
@@ -111,7 +116,7 @@ int LookUp(idMap_t &idMap, unsigned int id, char *buff, int blen)
    return luRet;
 }
 }
-  
+
 /******************************************************************************/
 /*                               a r g L i s t                                */
 /******************************************************************************/
@@ -1143,9 +1148,11 @@ char *XrdOucUtils::subLogfn(XrdSysError &eDest, const char *inst, char *logfn)
 
 void XrdOucUtils::toLower(char *str)
 {
+   unsigned char* ustr = (unsigned char*)str;  // Avoid undefined behaviour
+
 // Change each character to lower case
 //
-   while(*str) {*str = tolower(*str); str++;}
+   while(*ustr) {*ustr = tolower(*ustr); ustr++;}
 }
   
 /******************************************************************************/
@@ -1409,5 +1416,64 @@ void XrdOucUtils::trim(std::string &str) {
     while( str.size() && !isgraph(str[str.size()-1]) )
         str.resize (str.size () - 1);
 }
-#endif
 
+/**
+ * Returns a boolean indicating whether 'c' is a valid token character or not.
+ * See https://datatracker.ietf.org/doc/html/rfc6750#section-2.1 for details.
+ */
+
+static bool is_token_character(int c)
+{
+  if (isalnum(c))
+    return true;
+
+  static constexpr char token_chars[] = "-._~+/=:";
+
+  for (char ch : token_chars)
+    if (c == ch)
+      return true;
+
+  return false;
+}
+
+/**
+ * This function obfuscates away authz= cgi elements and/or HTTP authorization
+ * headers from URL or other log line strings which might contain them.
+ *
+ * @param input the string to obfuscate
+ * @return the string with token values obfuscated
+ */
+
+std::string obfuscateAuth(const std::string& input)
+{
+  static const regex_t auth_regex = []() {
+    constexpr char re[] =
+      "(authz=|(transferheader)?(www-|proxy-)?auth(orization|enticate)[[:space:]]*:[[:space:]]*)"
+      "(Bearer([[:space:]]|%20)?(token([[:space:]]|%20)?)?)?";
+
+    regex_t regex;
+
+    if (regcomp(&regex, re, REG_EXTENDED | REG_ICASE) != 0)
+      throw std::runtime_error("Failed to compile regular expression");
+
+    return regex;
+  }();
+
+  regmatch_t match;
+  size_t offset = 0;
+  std::string redacted;
+  const char *const text = input.c_str();
+
+  while (regexec(&auth_regex, text + offset, 1, &match, 0) == 0) {
+    redacted.append(text + offset, match.rm_eo).append("REDACTED");
+
+    offset += match.rm_eo;
+
+    while (offset < input.size() && is_token_character(input[offset]))
+      ++offset;
+  }
+
+  return redacted.append(text + offset);
+}
+
+#endif

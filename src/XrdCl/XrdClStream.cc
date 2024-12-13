@@ -318,13 +318,13 @@ namespace XrdCl
     {
       log->Warning( PostMasterMsg, "[%s] Unable to send message %s through "
                     "substream %d, using 0 instead", pStreamName.c_str(),
-                    msg->GetDescription().c_str(), path.up );
+                    msg->GetObfuscatedDescription().c_str(), path.up );
       path.up = 0;
     }
 
-    log->Dump( PostMasterMsg, "[%s] Sending message %s (0x%x) through "
+    log->Dump( PostMasterMsg, "[%s] Sending message %s (%p) through "
                "substream %d expecting answer at %d", pStreamName.c_str(),
-               msg->GetDescription().c_str(), msg, path.up, path.down );
+               msg->GetObfuscatedDescription().c_str(), msg, path.up, path.down );
 
     //--------------------------------------------------------------------------
     // Enable *a* path and insert the message to the right queue
@@ -506,7 +506,7 @@ namespace XrdCl
     if( !handler )
     {
       ServerResponse *rsp = (ServerResponse*)msg->GetBuffer();
-      log->Warning( PostMasterMsg, "[%s] Discarding received message: 0x%x "
+      log->Warning( PostMasterMsg, "[%s] Discarding received message: %p "
                     "(status=%d, SID=[%d,%d]), no MsgHandler found.",
                     pStreamName.c_str(), msg.get(), rsp->hdr.status,
                     rsp->hdr.streamid[0], rsp->hdr.streamid[1] );
@@ -516,13 +516,13 @@ namespace XrdCl
     //--------------------------------------------------------------------------
     // We have a handler, so we call the callback
     //--------------------------------------------------------------------------
-    log->Dump( PostMasterMsg, "[%s] Handling received message: 0x%x.",
+    log->Dump( PostMasterMsg, "[%s] Handling received message: %p.",
                pStreamName.c_str(), msg.get() );
 
     if( action & (MsgHandler::NoProcess|MsgHandler::Ignore) )
     {
-      log->Dump( PostMasterMsg, "[%s] Ignoring the processing handler for: 0x%x.",
-                 pStreamName.c_str(), msg->GetDescription().c_str() );
+      log->Dump( PostMasterMsg, "[%s] Ignoring the processing handler for: %s.",
+                 pStreamName.c_str(), msg->GetObfuscatedDescription().c_str() );
 
       // if we are handling partial response we have to take down the timeout fence
       if( IsPartial( *msg ) )
@@ -647,8 +647,8 @@ namespace XrdCl
       //------------------------------------------------------------------------
       if( pSubStreams.size() > 1 )
       {
-        log->Debug( PostMasterMsg, "[%s] Attempting to connect %d additional "
-                    "streams.", pStreamName.c_str(), pSubStreams.size()-1 );
+        log->Debug( PostMasterMsg, "[%s] Attempting to connect %llu additional streams.",
+                    pStreamName.c_str(), pSubStreams.size()-1 );
         for( size_t i = 1; i < pSubStreams.size(); ++i )
         {
           pSubStreams[i]->socket->SetAddress( pSubStreams[0]->socket->GetAddress() );
@@ -745,8 +745,8 @@ namespace XrdCl
     // Check if we still have time to try and do something in the current window
     //--------------------------------------------------------------------------
     time_t elapsed = now-pConnectionInitTime;
-    log->Error( PostMasterMsg, "[%s] elapsed = %d, pConnectionWindow = %d "
-               "seconds.", pStreamName.c_str(), elapsed, pConnectionWindow );
+    log->Error( PostMasterMsg, "[%s] elapsed = %ld, pConnectionWindow = %d seconds.",
+                pStreamName.c_str(), elapsed, pConnectionWindow );
 
     //------------------------------------------------------------------------
     // If we have some IP addresses left we try them
@@ -775,8 +775,8 @@ namespace XrdCl
     else if( elapsed < pConnectionWindow && pConnectionCount < pConnectionRetry
              && !status.IsFatal() )
     {
-      log->Info( PostMasterMsg, "[%s] Attempting reconnection in %d "
-                 "seconds.", pStreamName.c_str(), pConnectionWindow-elapsed );
+      log->Info( PostMasterMsg, "[%s] Attempting reconnection in %ld seconds.",
+                 pStreamName.c_str(), pConnectionWindow-elapsed );
 
       Task *task = new ::StreamConnectorTask( *pUrl, pStreamName );
       pTaskManager->RegisterTask( task, pConnectionInitTime+pConnectionWindow );
@@ -910,7 +910,7 @@ namespace XrdCl
   //------------------------------------------------------------------------
   // Force error
   //------------------------------------------------------------------------
-  void Stream::ForceError( XRootDStatus status )
+  void Stream::ForceError( XRootDStatus status, bool hush )
   {
     XrdSysMutexHelper scopedLock( pMutex );
     Log    *log = DefaultEnv::GetLog();
@@ -919,8 +919,10 @@ namespace XrdCl
       if( pSubStreams[substream]->status != Socket::Connected ) continue;
       pSubStreams[substream]->socket->Close();
       pSubStreams[substream]->status = Socket::Disconnected;
-      log->Error( PostMasterMsg, "[%s] Forcing error on disconnect: %s.",
-                  pStreamName.c_str(), status.ToString().c_str() );
+
+      if( !hush )
+        log->Debug( PostMasterMsg, "[%s] Forcing error on disconnect: %s.",
+                    pStreamName.c_str(), status.ToString().c_str() );
 
       //--------------------------------------------------------------------
       // Reinsert the stuff that we have failed to sent

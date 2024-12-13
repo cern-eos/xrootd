@@ -111,6 +111,9 @@ struct Configuration
    time_t    m_cs_UVKeep;               //!< unverified checksum cache keep
    int       m_cs_Chk;                  //!< Checksum check
    bool      m_cs_ChkTLS;               //!< Allow TLS
+
+   long long m_onlyIfCachedMinSize;     //!< minumum size of downloaded file, used by only-if-cached CGI option
+   double    m_onlyIfCachedMinFrac;     //!< minimum fraction of downloaded file, used by only-if-cached CGI option
 };
 
 //------------------------------------------------------------------------------
@@ -291,6 +294,16 @@ public:
    // virtual function of XrdOucCache.
    virtual int  Unlink(const char *url);
 
+   //---------------------------------------------------------------------
+   //  Used by PfcFstcl::Fsctl function.
+   //  Test if file is cached taking in onlyifcached configuration parameters.
+   //---------------------------------------------------------------------
+   virtual int ConsiderCached(const char *url);
+
+   bool DecideIfConsideredCached(long long file_size, long long bytes_on_disk);
+   void WriteFileSizeXAttr(int cinfo_fd, long long file_size);
+   long long DetermineFullFileSize(const std::string &cinfo_fname);
+
    //--------------------------------------------------------------------
    //! \brief Makes decision if the original XrdOucCacheIO should be cached.
    //!
@@ -400,6 +413,7 @@ private:
    bool xcschk(XrdOucStream &);
    bool xdlib(XrdOucStream &);
    bool xtrace(XrdOucStream &);
+   bool test_oss_basics_and_features();
 
    bool cfg2bytes(const std::string &str, long long &store, long long totalSpace, const char *name);
 
@@ -428,6 +442,8 @@ private:
    int              m_RAM_std_size;
 
    bool        m_isClient;                  //!< True if running as client
+   bool        m_dataXattr = false;         //!< True if xattrs are available on the data space
+   bool        m_metaXattr = false;         //!< True if xattrs are available on the meta space
 
    struct WriteQ
    {

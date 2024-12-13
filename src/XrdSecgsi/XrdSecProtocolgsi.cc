@@ -149,7 +149,7 @@ String XrdSecProtocolgsi::UsrCert  = "/.globus/usercert.pem";
 String XrdSecProtocolgsi::UsrKey   = "/.globus/userkey.pem";
 String XrdSecProtocolgsi::PxyValid = "12:00";
 int    XrdSecProtocolgsi::DepLength= 0;
-int    XrdSecProtocolgsi::DefBits  = 512;
+int    XrdSecProtocolgsi::DefBits  = XrdCryptoDefRSABits;
 int    XrdSecProtocolgsi::CACheck  = caVerifyss;
 int    XrdSecProtocolgsi::CRLCheck = crlTry; // 1
 int    XrdSecProtocolgsi::CRLDownload = 0;
@@ -1455,11 +1455,11 @@ XrdSecCredentials *XrdSecProtocolgsi::getCredentials(XrdSecParameters *parm,
 
    // We support passing the user {proxy, cert, key} paths via Url parameter
    char *upp = (ei && ei->getEnv()) ? ei->getEnv()->Get("xrd.gsiusrpxy") : 0;
-   if (upp) UsrProxy = upp;
+   if (upp) urlUsrProxy = upp;
    upp = (ei && ei->getEnv()) ? ei->getEnv()->Get("xrd.gsiusrcrt") : 0;
-   if (upp) UsrCert = upp;
+   if (upp) urlUsrCert = upp;
    upp = (ei && ei->getEnv()) ? ei->getEnv()->Get("xrd.gsiusrkey") : 0;
-   if (upp) UsrKey = upp;
+   if (upp) urlUsrKey = upp;
 
    // Count interations
    (hs->Iter)++;
@@ -2414,7 +2414,7 @@ char *XrdSecProtocolgsiInit(const char mode,
       //                                     ["12:00", i.e. 12 hours]
       //             "XrdSecGSIPROXYDEPLEN"  depth of signature path for proxies;
       //                                     use -1 for unlimited [0]
-      //             "XrdSecGSIPROXYKEYBITS" bits in PKI for proxies [512]
+      //             "XrdSecGSIPROXYKEYBITS" bits in PKI for proxies [default: XrdCryptoDefRSABits]
       //             "XrdSecGSICACHECK"      CA check level [1]:
       //                                      0 do not verify;
       //                                      1 verify if self-signed, warn if not;
@@ -2695,6 +2695,8 @@ char *XrdSecProtocolgsiInit(const char mode,
                authzpxy = 11;
             } else if (!strncmp(op, "-vomsat:",8)) {
                vomsat = getOptVal(vomsatOpts, op+8);
+               if (vomsat != vatIgnore && vomsfun.length() == 0)
+                  vomsfun = "default";
             } else if (!strncmp(op, "-vomsfun:",9)) {
                vomsfun = (const char *)(op+9);
             } else if (!strncmp(op, "-vomsfunparms:",14)) {
@@ -3068,30 +3070,35 @@ int XrdSecProtocolgsi::ClientDoInit(XrdSutBuffer *br, XrdSutBuffer **bm,
       DEBUG("Server does not accept pure cert/key authentication: version < "<< (int)XrdSecgsiVersCertKey);
    }
 
+   String clientcert = UsrCert, clientkey = UsrKey, clientproxy = UsrProxy;
+   if (urlUsrCert.length()>0) clientcert = urlUsrCert;
+   if (urlUsrKey.length()>0) clientkey = urlUsrKey;
+   if (urlUsrProxy.length()>0) clientproxy = urlUsrProxy;
+
    //
    // Resolve place-holders in cert, key and proxy file paths, if any
-   if (XrdSutResolve(UsrCert, Entity.host, Entity.vorg, Entity.grps, Entity.name) != 0) {
-      PRINT("Problems resolving templates in "<<UsrCert);
+   if (XrdSutResolve(clientcert, Entity.host, Entity.vorg, Entity.grps, Entity.name) != 0) {
+      PRINT("Problems resolving templates in "<<clientcert);
       return -1;
    }
-   if (XrdSutResolve(UsrKey, Entity.host, Entity.vorg, Entity.grps, Entity.name) != 0) {
-      PRINT("Problems resolving templates in "<<UsrKey);
+   if (XrdSutResolve(clientkey, Entity.host, Entity.vorg, Entity.grps, Entity.name) != 0) {
+      PRINT("Problems resolving templates in "<<clientkey);
       return -1;
    }
    //
    // In the standard case we need to resolve also the proxy file path
    // Get the proxy path
-   if (XrdSutResolve(UsrProxy, Entity.host, Entity.vorg, Entity.grps, Entity.name) != 0) {
-      PRINT("Problems resolving templates in "<<UsrProxy);
+   if (XrdSutResolve(clientproxy, Entity.host, Entity.vorg, Entity.grps, Entity.name) != 0) {
+      PRINT("Problems resolving templates in "<<clientproxy);
       return -1;
    }
    //
    // Load / Attach-to user proxies
-   ProxyIn_t pi = {UsrCert.c_str(), UsrKey.c_str(), CAdir.c_str(),
-                   UsrProxy.c_str(), PxyValid.c_str(),
+   ProxyIn_t pi = {clientcert.c_str(), clientkey.c_str(), CAdir.c_str(),
+                   clientproxy.c_str(), PxyValid.c_str(),
                    DepLength, DefBits, createpxy};
    ProxyOut_t po = {hs->PxyChain, sessionKsig, hs->Cbck };
-   if (QueryProxy(1, &cachePxy, UsrProxy.c_str(),
+   if (QueryProxy(1, &cachePxy, clientproxy.c_str(),
                   sessionCF, hs->TimeStamp, &pi, &po) != 0) {
       emsg = "error getting user proxies";
       hs->Chain = 0;
@@ -4591,8 +4598,9 @@ bool XrdSecProtocolgsi::VerifyCA(int opt, X509Chain *cca, XrdCryptoFactory *CF)
       }
    } else {
       if (CACheck > caNoVerify) {
-         // Check self-signature
-         if (!(verified = cca->CheckCA()))
+         // Check self-signature and fail if needed
+         bool checkselfsigned = (CACheck > caVerifyss) ? true : false;
+         if (!(verified = cca->CheckCA(checkselfsigned)))
             PRINT("CA certificate self-signed: integrity check failed ("<<xc->SubjectHash()<<")");
       } else {
          // Set OK in any case
@@ -4889,7 +4897,7 @@ int XrdSecProtocolgsi::InitProxy(ProxyIn_t *pi, XrdCryptoFactory *cf, X509Chain 
    }
 
    // Add number of bits in key
-   if (pi->bits > 512) {
+   if (pi->bits != XrdCryptoDefRSABits) {
       cmd += " -bits ";
       cmd += pi->bits;
    }
@@ -5735,11 +5743,17 @@ XrdSutCacheEntry *XrdSecProtocolgsi::GetSrvCertEnt(XrdSutCERef &ceref,
    }
 
    // Reset the entry
-   delete (XrdCryptoX509 *) cent->buf1.buf; // Destroys also xsrv->PKI() pointed in cent->buf2.buf
-   delete (XrdSutBucket *) cent->buf3.buf;
-   cent->buf1.buf = 0;
-   cent->buf2.buf = 0;
-   cent->buf3.buf = 0;
+   XrdCryptoX509 *buf1 = (XrdCryptoX509*) cent->buf1.buf;
+   XrdSutBucket *buf3 = (XrdSutBucket*) cent->buf3.buf;
+
+   if (buf1)
+     delete buf1; // Destroys also xsrv->PKI() pointed in cent->buf2.buf
+   if (buf3)
+     delete buf3;
+
+   cent->buf1.buf = nullptr;
+   cent->buf2.buf = nullptr;
+   cent->buf3.buf = nullptr;
 
    //
    // Get the IDs of the file: we need them to acquire the right privileges when opening
@@ -5815,18 +5829,23 @@ XrdSutCacheEntry *XrdSecProtocolgsi::GetSrvCertEnt(XrdSutCERef &ceref,
       cent->status = kCE_ok;
       cent->cnt = 0;
       cent->mtime = xsrv->NotAfter(); // expiration time
+
       // Save pointer to certificate (destroys also xsrv->PKI())
-      if (cent->buf1.buf) delete (XrdCryptoX509 *) cent->buf1.buf;
+      if (cent->buf1.buf)
+        delete (XrdCryptoX509 *) cent->buf1.buf;
       cent->buf1.buf = (char *)xsrv;
       cent->buf1.len = 0;  // just a flag
+
       // Save pointer to key
-      cent->buf2.buf = 0;
       cent->buf2.buf = (char *)(xsrv->PKI());
       cent->buf2.len = 0;  // just a flag
+
       // Save pointer to bucket
-      if (cent->buf3.buf) delete (XrdSutBucket *) cent->buf3.buf;
+      if (cent->buf3.buf)
+        delete (XrdSutBucket *) cent->buf3.buf;
       cent->buf3.buf = (char *)(xbck);
       cent->buf3.len = 0;  // just a flag
+
       // Save CA hash in list to communicate to clients
       if (certcalist.find(xsrv->IssuerHash()) == STR_NPOS) {
          if (certcalist.length() > 0) certcalist += "|";

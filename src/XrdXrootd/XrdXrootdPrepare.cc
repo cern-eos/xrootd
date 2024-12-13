@@ -129,7 +129,8 @@ int XrdXrootdPrepare::List(XrdXrootdPrepArgs &pargs, char *resp, int resplen)
             else continue;
          if ((up = (char *) index((const char *)(up+1), (int)'_'))) *up = ' ';
             else continue;
-         return snprintf(resp, resplen-1, "%s %ld", dp->d_name, buf.st_mtime);
+         return snprintf(resp, resplen-1, "%s %lld",
+                         dp->d_name, (long long) buf.st_mtime);
         }
 
 // Completed
@@ -257,14 +258,19 @@ int XrdXrootdPrepare::Open(const char *reqid, int &fsz)
    strcpy(path, (const char *)LogDir);
    strcpy(path+LogDirLen, reqid);
 
-// Get the file size
-//
-   if (stat((const char *)path, &buf)) return -errno;
-   fsz = buf.st_size;
-
 // Open the file and return the file descriptor
 //
    if ((fd = open((const char *)path, O_RDONLY)) < 0) return -errno;
+
+// Get the file size
+//
+   if (fstat(fd, &buf) != 0) {
+     close(fd);
+     return -errno;
+   }
+
+   fsz = buf.st_size;
+
    return fd;
 }
   

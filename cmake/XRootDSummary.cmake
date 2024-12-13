@@ -2,7 +2,7 @@
 # Print the configuration summary
 #-------------------------------------------------------------------------------
 set( TRUE_VAR TRUE )
-component_status( CEPH      XRDCEPH_SUBMODULE TRUE_VAR)
+component_status( CEPH      ENABLE_CEPH       BUILD_CEPH )
 component_status( FUSE      BUILD_FUSE        FUSE_FOUND )
 component_status( HTTP      BUILD_HTTP        OPENSSL_FOUND )
 component_status( KRB5      BUILD_KRB5        KERBEROS5_FOUND )
@@ -10,7 +10,8 @@ component_status( MACAROONS BUILD_MACAROONS   MACAROONS_FOUND AND JSON_FOUND AND
 component_status( PYTHON    BUILD_PYTHON      Python_Interpreter_FOUND AND Python_Development_FOUND )
 component_status( READLINE  ENABLE_READLINE   READLINE_FOUND )
 component_status( SCITOKENS BUILD_SCITOKENS   SCITOKENSCPP_FOUND )
-component_status( TESTS     BUILD_TESTS       CPPUNIT_FOUND AND GTEST_FOUND )
+component_status( SERVER_TESTS ENABLE_SERVER_TESTS TRUE_VAR )
+component_status( TESTS     BUILD_TESTS       GTEST_FOUND )
 component_status( TPC       BUILD_TPC         CURL_FOUND )
 component_status( VOMSXRD   BUILD_VOMS        VOMS_FOUND )
 component_status( XRDCL     ENABLE_XRDCL      TRUE_VAR )
@@ -38,6 +39,7 @@ message( STATUS "Erasure coding:    " ${STATUS_XRDEC} )
 message( STATUS "Macaroons:         " ${STATUS_MACAROONS} )
 message( STATUS "SciTokens:         " ${STATUS_SCITOKENS} )
 message( STATUS "Tests:             " ${STATUS_TESTS} )
+message( STATUS "Server Tests:      " ${STATUS_SERVER_TESTS} )
 message( STATUS "----------------------------------------" )
 
 if( FORCE_ENABLED )

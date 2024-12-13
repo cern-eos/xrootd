@@ -44,7 +44,6 @@ jobs:
         apk add \
           bash \
           cmake \
-          cppunit-dev \
           ceph-dev \
           curl-dev \
           fuse-dev \
@@ -60,6 +59,7 @@ jobs:
           make \
           openssl \
           openssl-dev \
+          procps \
           py3-pip \
           py3-setuptools \
           py3-wheel \
@@ -72,7 +72,7 @@ jobs:
           zlib-dev
 
     - name: Clone repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
@@ -96,16 +96,31 @@ jobs:
     container: centos:7
 
     env:
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
+      ACTIONS_RUNNER_FORCE_ACTIONS_NODE_VERSION: node18
       CMAKE_ARGS: "-DCMAKE_INSTALL_PREFIX=/usr;-DCMAKE_INSTALL_RPATH='$ORIGIN/../$LIB'"
 
     steps:
+    - name: Use CentOS 7 Vault Repository URLs
+      run: |
+        sed -i -e '/mirrorlist/d' \
+               -e 's/# \?baseurl=/baseurl=/g' \
+               -e 's/mirror.centos.org/vault.centos.org/g' \
+               -e 's/$releasever/7.9.2009/g' \
+               /etc/yum.repos.d/*.repo
+        yum install -y centos-release-scl epel-release
+        sed -i -e '/mirrorlist/d' \
+               -e 's/# \?baseurl=/baseurl=/g' \
+               -e 's/mirror.centos.org/vault.centos.org/g' \
+               -e 's/$releasever/7.9.2009/g' \
+               /etc/yum.repos.d/*.repo
+
     - name: Install dependencies
       run: |
-        yum install -y centos-release-scl epel-release git
-        yum install -y epel-rpm-macros rpmdevtools sudo yum-utils
+        yum install -y epel-rpm-macros git rpmdevtools sudo yum-utils
 
     - name: Clone repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v1
       with:
         fetch-depth: 0
 
@@ -135,7 +150,7 @@ jobs:
         dnf config-manager --set-enabled powertools
 
     - name: Clone repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
@@ -171,7 +186,43 @@ jobs:
         dnf config-manager --set-enabled crb
 
     - name: Clone repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup GitHub runner user within container
+      run: adduser --uid 1001 runner && chown -R runner:runner ${GITHUB_WORKSPACE}
+
+    - name: Install XRootD build dependencies
+      run: dnf builddep -y xrootd.spec
+
+    - name: Build and Test with CTest
+      run: sudo -E -u runner ctest -VV -S test.cmake
+
+    - name: Install with CMake
+      run: cmake --install build
+
+    - name: Run post-install tests
+      run: |
+        tests/post-install.sh
+        tests/check-headers.sh
+
+  alma10beta:
+    name: Alma 10 (beta)
+    runs-on: ubuntu-latest
+    container: almalinux:10-kitten
+
+    env:
+      CMAKE_ARGS: "-DCMAKE_INSTALL_PREFIX=/usr;-DCMAKE_INSTALL_RPATH='$ORIGIN/../$LIB'"
+
+    steps:
+    - name: Install dependencies
+      run: |
+        dnf install -y dnf-plugins-core epel-release git rpmdevtools sudo
+        dnf config-manager --set-enabled crb
+
+    - name: Clone repository
+      uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
@@ -206,7 +257,7 @@ jobs:
       run: dnf install -y dnf-plugins-core git ninja-build rpmdevtools
 
     - name: Clone repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
@@ -241,42 +292,18 @@ jobs:
       CMAKE_ARGS: '-DINSTALL_PYTHON_BINDINGS=0;-DUSE_SYSTEM_ISAL=1;-DCMAKE_INSTALL_PREFIX=/usr'
 
     steps:
-    - name: Install dependencies
+    - name: Install development tools
       run: |
-        sudo apt update -q
-        sudo apt install -y \
-          cmake \
-          clang \
-          davix-dev \
-          g++ \
-          libcppunit-dev \
-          libcurl4-openssl-dev \
-          libfuse-dev \
-          libgtest-dev \
-          libisal-dev \
-          libjson-c-dev \
-          libkrb5-dev \
-          libmacaroons-dev \
-          libreadline-dev \
-          libscitokens-dev \
-          libssl-dev \
-          libsystemd-dev \
-          libtinyxml-dev \
-          libxml2-dev \
-          make \
-          pkg-config \
-          python3-dev \
-          python3-pip \
-          python3-setuptools \
-          python3-wheel \
-          uuid-dev \
-          voms-dev \
-          zlib1g-dev
+        sudo apt update -qq
+        sudo apt install -y build-essential devscripts equivs git
 
     - name: Clone repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         fetch-depth: 0
+
+    - name: Install XRootD build dependencies
+      run: mk-build-deps --install --remove -s sudo debian/control <<< yes
 
     - name: Build and Test with CTest
       run: env CC=${CC} CXX=${CC/g*/g++} ctest -VV -S test.cmake
@@ -297,7 +324,7 @@ jobs:
 
   macos:
     name: macOS
-    runs-on: macos-latest
+    runs-on: macos-13
 
     env:
       CC: clang
@@ -310,13 +337,10 @@ jobs:
       run: sudo sed -i -e "s/localhost/localhost $(hostname)/g" /etc/hosts
 
     - name: Install dependencies with Homebrew
-      run: brew install cppunit davix googletest isa-l
-
-    - name: Install Python dependencies with pip
-      run: python3 -m pip install --upgrade pip setuptools wheel
+      run: brew install davix googletest python-setuptools
 
     - name: Clone repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         fetch-depth: 0
 

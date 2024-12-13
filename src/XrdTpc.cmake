@@ -25,7 +25,7 @@ if( BUILD_TPC )
   }
   " CURL_PIPELINING
   )
-  set(XRD_COMPILE_DEFS "XRD_CHUNK_RESP")
+
   if ( CURL_PIPELINING )
     set(XRD_COMPILE_DEFS ${XRD_COMPILE_DEFS} "USE_PIPELINING")
   endif ()
@@ -39,7 +39,8 @@ if( BUILD_TPC )
     XrdTpc/XrdTpcState.cc         XrdTpc/XrdTpcState.hh
     XrdTpc/XrdTpcStream.cc        XrdTpc/XrdTpcStream.hh
     XrdTpc/XrdTpcTPC.cc           XrdTpc/XrdTpcTPC.hh
-    XrdTpc/XrdTpcPMarkManager.cc  XrdTpc/XrdTpcPMarkManager.hh)
+    XrdTpc/XrdTpcPMarkManager.cc  XrdTpc/XrdTpcPMarkManager.hh
+    XrdTpc/XrdTpcUtils.cc         XrdTpc/XrdTpcUtils.hh)
 
   target_link_libraries(
     ${LIB_XRD_TPC}

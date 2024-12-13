@@ -39,14 +39,14 @@ jobs:
       run: dnf install -y git krb5-devel libuuid-devel openssl-devel
 
     - name: Clone repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
     - name: Build source distribution tarball
       run: |
         git config --global --add safe.directory "$GITHUB_WORKSPACE"
-        ./genversion.sh >| VERSION
+        ./genversion.sh --sanitize >| VERSION
         ${PYTHON} -m build --sdist
 
     - name: Build binary wheel
@@ -68,8 +68,8 @@ jobs:
       run: mv *.whl dist/
 
     - name: Upload Artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
-        name: Python
+        name: python-${{ matrix.version }}
         path: dist
-        retention-days: 1
+        retention-days: 14

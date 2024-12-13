@@ -33,6 +33,7 @@ set( XROOTD_PUBLIC_HEADERS
   XrdOuc/XrdOucDLlist.hh
   XrdOuc/XrdOucEnv.hh
   XrdOuc/XrdOucErrInfo.hh
+  XrdOuc/XrdOucGatherConf.hh
   XrdOuc/XrdOucGMap.hh
   XrdOuc/XrdOucHash.hh
   XrdOuc/XrdOucHash.icc
@@ -135,6 +136,7 @@ set( XROOTD_PRIVATE_HEADERS
   XrdOuc/XrdOucN2NLoader.hh
   XrdOuc/XrdOucPinLoader.hh
   XrdOuc/XrdOucTUtils.hh
+  XrdOuc/XrdOucPrivateUtils.hh
   XrdPosix/XrdPosixMap.hh
   XrdZip/XrdZipCDFH.hh
   XrdZip/XrdZipDataDescriptor.hh

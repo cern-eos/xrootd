@@ -31,11 +31,6 @@
 /* OpenSSL implementation of XrdCryptoX509                                    */
 /*                                                                            */
 /* ************************************************************************** */
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#include <cerrno>
-
 #include "XrdCrypto/XrdCryptosslRSA.hh"
 #include "XrdCrypto/XrdCryptosslX509.hh"
 #include "XrdCrypto/XrdCryptosslAux.hh"
@@ -43,31 +38,13 @@
 
 #include <openssl/pem.h>
 
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-static RSA *EVP_PKEY_get0_RSA(EVP_PKEY *pkey)
-{
-    if (pkey->type != EVP_PKEY_RSA) {
-        return NULL;
-    }
-    return pkey->pkey.rsa;
-}
-#endif
+#include <cerrno>
+#include <memory>
 
-static int XrdCheckRSA (EVP_PKEY *pkey) {
-   int rc;
-#if OPENSSL_VERSION_NUMBER < 0x10101000L
-   RSA *rsa = EVP_PKEY_get0_RSA(pkey);
-   if (rsa)
-      rc = RSA_check_key(rsa);
-   else
-      rc = -2;
-#else
-   EVP_PKEY_CTX *ckctx = EVP_PKEY_CTX_new(pkey, 0);
-   rc = EVP_PKEY_check(ckctx);
-   EVP_PKEY_CTX_free(ckctx);
-#endif
-   return rc;
-}
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
 #define BIO_PRINT(b,c) \
    BUF_MEM *bptr; \
@@ -115,19 +92,28 @@ XrdCryptosslX509::XrdCryptosslX509(const char *cf, const char *kf)
    }
    // Make sure file exists;
    struct stat st;
-   if (stat(cf, &st) != 0) {
+   int fd = open(cf, O_RDONLY);
+
+   if (fd == -1) {
       if (errno == ENOENT) {
          DEBUG("file "<<cf<<" does not exist - do nothing");
       } else {
-         DEBUG("cannot stat file "<<cf<<" (errno: "<<errno<<")");
+         DEBUG("cannot open file "<<cf<<" (errno: "<<errno<<")");
       }
+      return;
+   }
+
+   if (fstat(fd, &st) != 0) {
+      DEBUG("cannot stat file "<<cf<<" (errno: "<<errno<<")");
+      close(fd);
       return;
    }
    //
    // Open file in read mode
-   FILE *fc = fopen(cf, "r");
+   FILE *fc = fdopen(fd, "r");
    if (!fc) {
-      DEBUG("cannot open file "<<cf<<" (errno: "<<errno<<")");
+      DEBUG("cannot fdopen file "<<cf<<" (errno: "<<errno<<")");
+      close(fd);
       return;
    }
    //
@@ -154,8 +140,14 @@ XrdCryptosslX509::XrdCryptosslX509(const char *cf, const char *kf)
    EVP_PKEY *evpp = 0;
    // Read the private key file, if specified
    if (kf) {
-      if (stat(kf, &st) == -1) {
+      int fd = open(kf, O_RDONLY);
+      if (fd == -1) {
+         DEBUG("cannot open file "<<kf<<" (errno: "<<errno<<")");
+         return;
+      }
+      if (fstat(fd, &st) == -1) {
          DEBUG("cannot stat private key file "<<kf<<" (errno:"<<errno<<")");
+         close(fd);
          return;
       }
       if (!S_ISREG(st.st_mode) || S_ISDIR(st.st_mode) ||
@@ -163,21 +155,24 @@ XrdCryptosslX509::XrdCryptosslX509(const char *cf, const char *kf)
             (st.st_mode & (S_IWGRP)) != 0) {
          DEBUG("private key file "<<kf<<" has wrong permissions "<<
                (st.st_mode & 0777) << " (should be at most 0640)");
+         close(fd);
          return;
       }
       // Open file in read mode
-      FILE *fk = fopen(kf, "r");
+      FILE *fk = fdopen(fd, "r");
       if (!fk) {
          DEBUG("cannot open file "<<kf<<" (errno: "<<errno<<")");
+         close(fd);
          return;
       }
       // This call fills the full key, i.e. also the public part (not really documented, though)
       if ((evpp = PEM_read_PrivateKey(fk,0,0,0))) {
          DEBUG("RSA key completed ");
          // Test consistency
-         if (XrdCheckRSA(evpp) == 1) {
+         auto tmprsa = std::make_unique<XrdCryptosslRSA>(evpp, 1);
+         if (tmprsa->status == XrdCryptoRSA::kComplete) {
             // Save it in pki
-            pki = new XrdCryptosslRSA(evpp);
+            pki = tmprsa.release();
          }
       } else {
          DEBUG("cannot read the key from file");
@@ -432,14 +427,26 @@ void XrdCryptosslX509::CertType()
 //_____________________________________________________________________________
 void XrdCryptosslX509::SetPKI(XrdCryptoX509data newpki)
 {
-   // Set PKI
+   // SetPKI:
+   // if newpki is null does nothing
+   // if newpki contains a consistent private & public key we take ownership
+   //   so that this->PKI()->status will be kComplete.
+   // otherwise, newpki is not consistent:
+   // if the previous PKI() was null or was already kComplete it is and reset
+   //   so that this->PKI()->status will be kInvalid.
 
-   // Cleanup key first
-   if (pki)
-      delete pki;
-   if (newpki)
-      pki = new XrdCryptosslRSA((EVP_PKEY *)newpki, 1);
+   if (!newpki) return;
 
+   auto tmprsa = std::make_unique<XrdCryptosslRSA>((EVP_PKEY*)newpki, 1);
+   if (!pki || pki->status == XrdCryptoRSA::kComplete ||
+       tmprsa->status == XrdCryptoRSA::kComplete) {
+      // Cleanup any existing key first
+      if (pki)
+         delete pki;
+
+      // Set PKI
+      pki = tmprsa.release();
+   }
 }
 
 //_____________________________________________________________________________

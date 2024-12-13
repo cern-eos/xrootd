@@ -45,6 +45,7 @@
 #include "XrdSys/XrdSysPlatform.hh"
 
 #include "XrdOuc/XrdOucPgrwUtils.hh"
+#include "XrdOuc/XrdOucUtils.hh"
 
 #include <sys/uio.h>
 #include <arpa/inet.h> // for network unmarshaling stuff
@@ -182,9 +183,9 @@ namespace XrdCl
           pHasSessionId = true;
 
         Log *log = DefaultEnv::GetLog();
-        log->Debug( ExDbgMsg, "[%s] MsgHandler created: 0x%x (message: %s ).",
+        log->Debug( ExDbgMsg, "[%s] MsgHandler created: %p (message: %s ).",
                     pUrl.GetHostId().c_str(), this,
-                    pRequest->GetDescription().c_str() );
+                    pRequest->GetObfuscatedDescription().c_str() );
 
         ClientRequestHdr *hdr = (ClientRequestHdr*)pRequest->GetBuffer();
         if( ntohs( hdr->requestid ) == kXR_pgread )
@@ -221,7 +222,7 @@ namespace XrdCl
         pEffectiveDataServerUrl = reinterpret_cast<URL*>( 0xDEADBEEF );
 
         Log *log = DefaultEnv::GetLog();
-        log->Debug( ExDbgMsg, "[%s] Destroying MsgHandler: 0x%x.",
+        log->Debug( ExDbgMsg, "[%s] Destroying MsgHandler: %p.",
                     pUrl.GetHostId().c_str(), this );
       }
 

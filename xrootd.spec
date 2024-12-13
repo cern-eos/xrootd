@@ -25,8 +25,8 @@ License:	LGPL-3.0-or-later AND BSD-2-Clause AND BSD-3-Clause AND curl AND MIT AN
 URL:		https://xrootd.slac.stanford.edu
 
 %if !%{with git}
-Version:	5.6.9
-Source0:	%{url}/download/v%{version}/%{name}-%{version}.tar.gz
+Version:	5.7.2
+Source0:	https://xrootd.web.cern.ch/download/v%{version}/%{name}-%{version}.tar.gz
 %else
 %define git_version %(tar xzf %{_sourcedir}/%{name}.tar.gz -O xrootd/VERSION)
 %define src_version %(sed -e "s/%%(describe)/v5.7-rc%(date +%%Y%%m%%d)/" <<< "%git_version")
@@ -36,7 +36,7 @@ Source0:	%{name}.tar.gz
 %endif
 
 %if %{with compat}
-Source1:	%{url}/download/v%{compat_version}/%{name}-%{compat_version}.tar.gz
+Source1:	https://xrootd.web.cern.ch/download/v%{compat_version}/%{name}-%{compat_version}.tar.gz
 %endif
 
 %undefine __cmake_in_source_build
@@ -45,11 +45,6 @@ Source1:	%{url}/download/v%{compat_version}/%{name}-%{compat_version}.tar.gz
 %define cmake %cmake3
 %define __cmake %__cmake3
 %undefine __cmake3_in_source_build
-%endif
-
-%if %{with tests}
-# CppUnit crashes with LTO enabled
-%global _lto_cflags %nil
 %endif
 
 %if %{?rhel}%{!?rhel:0} == 7
@@ -134,9 +129,11 @@ BuildRequires:	openssl-devel
 
 %if %{with tests}
 BuildRequires:	attr
-BuildRequires:	cppunit-devel
+BuildRequires:	coreutils
+BuildRequires:	davix
 BuildRequires:	gtest-devel
 BuildRequires:	openssl
+BuildRequires:	procps-ng
 %endif
 
 %if %{with xrdec}
@@ -457,6 +454,7 @@ make -C %{_builddir}/%{name}-%{compat_version}/build %{?_smp_mflags}
     -DFORCE_ENABLED:BOOL=TRUE \
     -DUSE_SYSTEM_ISAL:BOOL=TRUE \
     -DENABLE_ASAN:BOOL=%{with asan} \
+    -DENABLE_CEPH:BOOL=%{with ceph} \
     -DENABLE_FUSE:BOOL=TRUE \
     -DENABLE_KRB5:BOOL=TRUE \
     -DENABLE_MACAROONS:BOOL=TRUE \
@@ -467,7 +465,6 @@ make -C %{_builddir}/%{name}-%{compat_version}/build %{?_smp_mflags}
     -DENABLE_XRDCL:BOOL=TRUE \
     -DENABLE_XRDCLHTTP:BOOL=TRUE \
     -DENABLE_XRDEC:BOOL=%{with xrdec} \
-    -DXRDCEPH_SUBMODULE:BOOL=%{with ceph} \
     -DENABLE_XRDCLHTTP:BOOL=TRUE \
     -DXRDCL_ONLY:BOOL=FALSE \
     -DXRDCL_LIB_ONLY:BOOL=FALSE \
@@ -950,6 +947,15 @@ fi
 %endif
 
 %changelog
+
+* Wed Nov 27 2024 Guilherme Amadio <amadio@cern.ch> - 1:5.7.2-1
+- XRootD 5.7.2
+
+* Mon Sep 02 2024 Guilherme Amadio <amadio@cern.ch> - 1:5.7.1-1
+- XRootD 5.7.1
+
+* Thu Jun 27 2024 Guilherme Amadio <amadio@cern.ch> - 1:5.7.0-1
+- XRootD 5.7.0
 
 * Fri Mar 08 2024 Guilherme Amadio <amadio@cern.ch> - 1:5.6.9-1
 - XRootD 5.6.9

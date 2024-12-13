@@ -42,6 +42,8 @@
 
 #include "XrdTls/XrdTls.hh"
 #include "XrdTls/XrdTlsContext.hh"
+#include "XrdOuc/XrdOucUtils.hh"
+#include "XrdOuc/XrdOucPrivateUtils.hh"
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -51,6 +53,7 @@
 #include <cctype>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <algorithm>
 
 #define XRHTTP_TK_GRACETIME     600
 
@@ -66,8 +69,8 @@ const char *XrdHttpSecEntityTident = "http";
 // Static stuff
 //
 
-int XrdHttpProtocol::hailWait = 0;
-int XrdHttpProtocol::readWait = 0;
+int XrdHttpProtocol::hailWait = 60000;
+int XrdHttpProtocol::readWait = 300000;
 int XrdHttpProtocol::Port = 1094;
 char *XrdHttpProtocol::Port_str = 0;
 
@@ -112,6 +115,7 @@ char *XrdHttpProtocol::xrd_cslist = nullptr;
 XrdNetPMark * XrdHttpProtocol::pmarkHandle = nullptr;
 XrdHttpChecksumHandler XrdHttpProtocol::cksumHandler = XrdHttpChecksumHandler();
 XrdHttpReadRangeHandler::Configuration XrdHttpProtocol::ReadRangeConfig;
+bool XrdHttpProtocol::tpcForwardCreds = false;
 
 XrdSysTrace XrdHttpTrace("http");
 
@@ -310,7 +314,6 @@ char *XrdHttpProtocol::GetClientIPStr() {
 
   return strdup(buf);
 }
-
 
 // Various routines for handling XrdLink as BIO objects within OpenSSL.
 #if OPENSSL_VERSION_NUMBER < 0x1000105fL
@@ -613,8 +616,11 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
 
     // Read as many lines as possible into the buffer. An empty line breaks
     while ((rc = BuffgetLine(tmpline)) > 0) {
-      TRACE(DEBUG, " rc:" << rc << " got hdr line: " << tmpline.c_str());
-
+      std::string traceLine = tmpline.c_str();
+      if (TRACING(TRACE_DEBUG)) {
+        traceLine = obfuscateAuth(traceLine);
+      }
+      TRACE(DEBUG, " rc:" << rc << " got hdr line: " << traceLine);
       if ((rc == 2) && (tmpline.length() > 1) && (tmpline[rc - 1] == '\n')) {
         CurrentReq.headerok = true;
         TRACE(DEBUG, " rc:" << rc << " detected header end.");
@@ -623,15 +629,20 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
 
 
       if (CurrentReq.request == CurrentReq.rtUnset) {
-        TRACE(DEBUG, " Parsing first line: " << tmpline.c_str());
+        TRACE(DEBUG, " Parsing first line: " << traceLine.c_str());
         int result = CurrentReq.parseFirstLine((char *)tmpline.c_str(), rc);
         if (result < 0) {
           TRACE(DEBUG, " Parsing of first line failed with " << result);
           return -1;
         }
+      } else {
+        int result = CurrentReq.parseLine((char *) tmpline.c_str(), rc);
+        if(result < 0) {
+          TRACE(DEBUG, " Parsing of header line failed with " << result)
+          SendSimpleResp(400,NULL,NULL,"Malformed header line. Hint: ensure the line finishes with \"\\r\\n\"", 0, false);
+          return -1;
+        }
       }
-      else
-        CurrentReq.parseLine((char *)tmpline.c_str(), rc);
 
 
     }
@@ -1065,6 +1076,7 @@ int XrdHttpProtocol::Config(const char *ConfigFN, XrdOucEnv *myEnv) {
       else if TS_Xeq("header2cgi", xheader2cgi);
       else if TS_Xeq("httpsmode", xhttpsmode);
       else if TS_Xeq("tlsreuse", xtlsreuse);
+      else if TS_Xeq("auth", xauth);
       else {
         eDest.Say("Config warning: ignoring unknown directive '", var, "'.");
         Config.Echo();
@@ -1085,6 +1097,10 @@ int XrdHttpProtocol::Config(const char *ConfigFN, XrdOucEnv *myEnv) {
        return 1;
       }
 
+// Some headers must always be converted to CGI key=value pairs
+//
+   hdr2cgimap["Cache-Control"] = "cache-control";
+
 // Test if XrdEC is loaded
    if (getenv("XRDCL_EC")) usingEC = true;
 
@@ -1101,6 +1117,7 @@ int XrdHttpProtocol::Config(const char *ConfigFN, XrdOucEnv *myEnv) {
        eDest.Say("Config warning: HTTPS functionality ", why);
        httpsmode = hsmOff;
 
+       LoadExtHandlerNoTls(extHIVec, ConfigFN, *myEnv);
        if (what)
           {eDest.Say("Config failure: ", what, " HTTPS but it ", why);
            NoGo = 1;
@@ -1561,6 +1578,7 @@ int XrdHttpProtocol::StartSimpleResp(int code, const char *desc, const char *hea
     else if (code == 405) ss << "Method Not Allowed";
     else if (code == 416) ss << "Range Not Satisfiable";
     else if (code == 500) ss << "Internal Server Error";
+    else if (code == 504) ss << "Gateway Timeout";
     else ss << "Unknown";
   }
   ss << crlf;
@@ -1692,8 +1710,6 @@ int XrdHttpProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
   //  SI = new XrdXrootdStats(pi->Stats);
   Sched = pi->Sched;
   BPool = pi->BPool;
-  hailWait = 10000;
-  readWait = 30000;
   xrd_cslist = getenv("XRD_CSLIST");
 
   Port = pi->Port;
@@ -1743,6 +1759,62 @@ int XrdHttpProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
   return 1;
 }
 
+/******************************************************************************/
+/*                   p a r s e H e a d e r 2 C G I                            */
+/******************************************************************************/
+int XrdHttpProtocol::parseHeader2CGI(XrdOucStream &Config, XrdSysError & err,std::map<std::string, std::string> &header2cgi) {
+  char *val, keybuf[1024], parmbuf[1024];
+  char *parm;
+
+  // Get the header key
+  val = Config.GetWord();
+  if (!val || !val[0]) {
+    err.Emsg("Config", "No headerkey specified.");
+    return 1;
+  } else {
+
+    // Trim the beginning, in place
+    while ( *val && !isalnum(*val) ) val++;
+    strcpy(keybuf, val);
+
+    // Trim the end, in place
+    char *pp;
+    pp = keybuf + strlen(keybuf) - 1;
+    while ( (pp >= keybuf) && (!isalnum(*pp)) ) {
+      *pp = '\0';
+      pp--;
+    }
+
+    parm = Config.GetWord();
+
+    // Avoids segfault in case a key is given without value
+    if(!parm || !parm[0]) {
+      err.Emsg("Config", "No header2cgi value specified. key: '", keybuf, "'");
+      return 1;
+    }
+
+    // Trim the beginning, in place
+    while ( *parm && !isalnum(*parm) ) parm++;
+    strcpy(parmbuf, parm);
+
+    // Trim the end, in place
+    pp = parmbuf + strlen(parmbuf) - 1;
+    while ( (pp >= parmbuf) && (!isalnum(*pp)) ) {
+      *pp = '\0';
+      pp--;
+    }
+
+    // Add this mapping to the map that will be used
+    try {
+      header2cgi[keybuf] = parmbuf;
+    } catch ( ... ) {
+      err.Emsg("Config", "Can't insert new header2cgi rule. key: '", keybuf, "'");
+      return 1;
+    }
+
+  }
+  return 0;
+}
 
 
 /******************************************************************************/
@@ -2163,20 +2235,31 @@ int XrdHttpProtocol::xsecretkey(XrdOucStream & Config) {
   if (val[0] == '/') {
     struct stat st;
     inFile = true;
-    if ( stat(val, &st) ) {
-      eDest.Emsg("Config", errno, "stat shared secret key file", val);
+    int fd = open(val, O_RDONLY);
+
+    if ( fd == -1 ) {
+      eDest.Emsg("Config", errno, "open shared secret key file", val);
+      return 1;
+    }
+
+    if ( fstat(fd, &st) != 0 ) {
+      eDest.Emsg("Config", errno, "fstat shared secret key file", val);
+      close(fd);
       return 1;
     }
 
     if ( st.st_mode & S_IWOTH & S_IWGRP & S_IROTH) {
-      eDest.Emsg("Config", "For your own security, the shared secret key file cannot be world readable or group writable'", val, "'");
+      eDest.Emsg("Config",
+        "For your own security, the shared secret key file cannot be world readable or group writable '", val, "'");
+      close(fd);
       return 1;
     }
 
-    FILE *fp = fopen(val,"r");
+    FILE *fp = fdopen(fd, "r");
 
-    if( fp == NULL ) {
-      eDest.Emsg("Config", errno, "open shared secret key file", val);
+    if ( fp == nullptr ) {
+      eDest.Emsg("Config", errno, "fdopen shared secret key file", val);
+      close(fd);
       return 1;
     }
 
@@ -2568,6 +2651,8 @@ int XrdHttpProtocol::xexthandler(XrdOucStream &Config,
                                  std::vector<extHInfo> &hiVec) {
   char *val, path[1024], namebuf[1024];
   char *parm;
+  // By default, every external handler need TLS configured to be loaded
+  bool noTlsOK = false;
   
   // Get the name
   //
@@ -2582,10 +2667,17 @@ int XrdHttpProtocol::xexthandler(XrdOucStream &Config,
   }
   strncpy(namebuf, val, sizeof(namebuf));
   namebuf[ sizeof(namebuf)-1 ] = '\0';
-  
+
+  // Get the +notls option if it was provided
+  val = Config.GetWord();
+
+  if(val && !strcmp("+notls",val)) {
+    noTlsOK = true;
+    val = Config.GetWord();
+  }
+
   // Get the path
   //
-  val = Config.GetWord();
   if (!val || !val[0]) {
     eDest.Emsg("Config", "No http external handler plugin specified.");
     return 1;
@@ -2621,7 +2713,7 @@ int XrdHttpProtocol::xexthandler(XrdOucStream &Config,
 
   // Create an info struct and push it on the list of ext handlers to load
   //
-  hiVec.push_back(extHInfo(namebuf, path, (parm ? parm : "")));
+  hiVec.push_back(extHInfo(namebuf, path, (parm ? parm : ""), noTlsOK));
 
   return 0;
 }
@@ -2643,54 +2735,7 @@ int XrdHttpProtocol::xexthandler(XrdOucStream &Config,
  */
 
 int XrdHttpProtocol::xheader2cgi(XrdOucStream & Config) {
-  char *val, keybuf[1024], parmbuf[1024];
-  char *parm;
-  
-  // Get the path
-  //
-  val = Config.GetWord();
-  if (!val || !val[0]) {
-    eDest.Emsg("Config", "No headerkey specified.");
-    return 1;
-  } else {
-    
-    // Trim the beginning, in place
-    while ( *val && !isalnum(*val) ) val++;
-    strcpy(keybuf, val);
-    
-    // Trim the end, in place
-    char *pp;
-    pp = keybuf + strlen(keybuf) - 1;
-    while ( (pp >= keybuf) && (!isalnum(*pp)) ) {
-      *pp = '\0';
-      pp--;
-    }
-    
-    parm = Config.GetWord();
-    
-    // Trim the beginning, in place
-    while ( *parm && !isalnum(*parm) ) parm++;
-    strcpy(parmbuf, parm);
-    
-    // Trim the end, in place
-    pp = parmbuf + strlen(parmbuf) - 1;
-    while ( (pp >= parmbuf) && (!isalnum(*pp)) ) {
-      *pp = '\0';
-      pp--;
-    }
-    
-    // Add this mapping to the map that will be used
-    try {
-      hdr2cgimap[keybuf] = parmbuf;
-    } catch ( ... ) {
-      eDest.Emsg("Config", "Can't insert new header2cgi rule. key: '", keybuf, "'");
-      return 1;
-    }
-    
-  }
-  
-  
-  return 0;
+  return parseHeader2CGI(Config,eDest,hdr2cgimap);
 }
 
 /******************************************************************************/
@@ -2799,7 +2844,27 @@ int XrdHttpProtocol::xtlsreuse(XrdOucStream & Config) {
    eDest.Emsg("config", "invalid tlsreuse parameter -", val);
    return 1;
 }
-  
+
+int XrdHttpProtocol::xauth(XrdOucStream &Config) {
+  char *val = Config.GetWord();
+  if(val) {
+    if(!strcmp("tpc",val)) {
+      if(!(val = Config.GetWord())) {
+        eDest.Emsg("Config", "http.auth tpc value not specified."); return 1;
+      } else {
+        if(!strcmp("fcreds",val)) {
+          tpcForwardCreds = true;
+        } else {
+          eDest.Emsg("Config", "http.auth tpc value is invalid"); return 1;
+        }
+      }
+    } else {
+      eDest.Emsg("Config", "http.auth value is invalid"); return 1;
+    }
+  }
+  return 0;
+}
+
 /******************************************************************************/
 /*                                x t r a c e                                 */
 /******************************************************************************/
@@ -2921,10 +2986,22 @@ int XrdHttpProtocol::LoadSecXtractor(XrdSysError *myeDest, const char *libName,
     myLib.Unload();
     return 1;
 }
-
 /******************************************************************************/
 /*                        L o a d E x t H a n d l e r                         */
 /******************************************************************************/
+
+int XrdHttpProtocol::LoadExtHandlerNoTls(std::vector<extHInfo> &hiVec, const char *cFN, XrdOucEnv &myEnv) {
+  for (int i = 0; i < (int) hiVec.size(); i++) {
+    if(hiVec[i].extHNoTlsOK) {
+      // The external plugin does not need TLS to be loaded
+      if (LoadExtHandler(&eDest, hiVec[i].extHPath.c_str(), cFN,
+                         hiVec[i].extHParm.c_str(), &myEnv,
+                         hiVec[i].extHName.c_str()))
+        return 1;
+    }
+  }
+  return 0;
+}
 
 int XrdHttpProtocol::LoadExtHandler(std::vector<extHInfo> &hiVec,
                                     const char *cFN, XrdOucEnv &myEnv) {
@@ -2938,11 +3015,15 @@ int XrdHttpProtocol::LoadExtHandler(std::vector<extHInfo> &hiVec,
 
   // Load all of the specified external handlers.
   //
-  for (int i = 0; i < (int)hiVec.size(); i++)
+  for (int i = 0; i < (int)hiVec.size(); i++) {
+    // Only load the external handlers that were not already loaded
+    // by LoadExtHandlerNoTls(...)
+    if(!ExtHandlerLoaded(hiVec[i].extHName.c_str())) {
       if (LoadExtHandler(&eDest, hiVec[i].extHPath.c_str(), cFN,
                          hiVec[i].extHParm.c_str(), &myEnv,
                          hiVec[i].extHName.c_str())) return 1;
-
+    }
+  }
   return 0;
 }
   

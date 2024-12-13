@@ -21,6 +21,7 @@
 #include <ctime>
 #include <random>
 #include <chrono>
+#include "GTestXrdHelpers.hh"
 #include "Server.hh"
 #include "Utils.hh"
 #include "TestEnv.hh"
@@ -223,14 +224,14 @@ TEST(SocketTest, TransferTest)
   // Start up the server and connect to it
   //----------------------------------------------------------------------------
   uint16_t port = 9998; // was 9999, but we need to change ports from other
-                    // tests so that we can run all of them in parallel. 
-                    // Will find another, better way to ensure this in the future 
+                        // tests so that we can run all of them in parallel.
+                        // Will find another, better way to ensure this in the future
   EXPECT_TRUE( serv.Setup( port, 1, new RandomHandlerFactory() ) );
   EXPECT_TRUE( serv.Start() );
 
   EXPECT_EQ( sock.GetStatus(), Socket::Disconnected );
-  EXPECT_TRUE( sock.Initialize( AF_INET6 ).IsOK() );
-  EXPECT_TRUE( sock.Connect( "localhost", port ).IsOK() );
+  EXPECT_XRDST_OK( sock.Initialize( AF_INET6 ) );
+  EXPECT_XRDST_OK( sock.Connect( "localhost", port ) );
   EXPECT_EQ( sock.GetStatus(), Socket::Connected );
 
   //----------------------------------------------------------------------------

@@ -24,44 +24,42 @@
 #include <cerrno>
 #include <cstring>
 
-/** @brief Equivalent of CPPUNIT_ASSERT_XRDST
- *
- * Shows the code that we are asserting and its value
- * in the final evaluation.
- */
-#define GTEST_ASSERT_XRDST( x )                                                                  \
+/** Shows the code that we are asserting and its value in the final evaluation. */
+#define ASSERT_XRDST_OK( x )                                                                     \
+{                                                                                                \
+  XrdCl::XRootDStatus _st = x;                                                                   \
+  ASSERT_TRUE(_st.IsOK()) << "[" << #x << "]: " << _st.ToStr() << std::endl;                     \
+}
+
+/** Shows the code that we are asserting and asserts that its execution is throwing an error. */
+#define ASSERT_XRDST_NOTOK( x, err )                                                             \
+{                                                                                                \
+  XrdCl::XRootDStatus _st = x;                                                                   \
+  ASSERT_TRUE(!_st.IsOK() && _st.code == err) << "[" << #x << "]: " << _st.ToStr() << std::endl; \
+}
+
+/** Shows the code that we are asserting and its value in the final evaluation. */
+#define EXPECT_XRDST_OK( x )                                                                     \
 {                                                                                                \
   XrdCl::XRootDStatus _st = x;                                                                   \
   EXPECT_TRUE(_st.IsOK()) << "[" << #x << "]: " << _st.ToStr() << std::endl;                     \
 }
 
-/** @brief Equivalent of CPPUNIT_ASSERT_XRDST_NOTOK
- *
- * Shows the code that we are asserting and asserts that its
- * execution is throwing an error.
- */
-#define GTEST_ASSERT_XRDST_NOTOK( x, err )                                                       \
+/** Shows the code that we are asserting and asserts that its execution is throwing an error. */
+#define EXPECT_XRDST_NOTOK( x, err )                                                             \
 {                                                                                                \
   XrdCl::XRootDStatus _st = x;                                                                   \
   EXPECT_TRUE(!_st.IsOK() && _st.code == err) << "[" << #x << "]: " << _st.ToStr() << std::endl; \
 }
 
-/** @brief Equivalent of CPPUNIT_ASSERT_ERRNO
- *
- * Shows the code that we are asserting and its error
- * number.
- */
-#define GTEST_ASSERT_ERRNO( x )                                                                  \
+/** Shows the code that we are asserting and its error number. */
+#define EXPECT_ERRNO_OK( x )                                                                     \
 {                                                                                                \
   EXPECT_TRUE(x) << "[" << #x << "]: " << strerror(errno) << std::endl;                          \
 }
 
-/** @brief Equivalent of GTEST_ASSERT_PTHREAD
- *
- * Shows the code that we are asserting and its error
- * number, in a thread-safe manner.
- */
-#define GTEST_ASSERT_PTHREAD( x )                                                                \
+/** Shows the code that we are asserting and its error number, in a thread-safe manner. */
+#define EXPECT_PTHREAD_OK( x )                                                                   \
 {                                                                                                \
   errno = x;                                                                                     \
   EXPECT_TRUE(errno == 0) << "[" << #x << "]: " << strerror(errno) << std::endl;                 \

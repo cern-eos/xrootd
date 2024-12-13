@@ -68,6 +68,7 @@ File::File(const std::string& path, long long iOffset, long long iFileSize) :
    m_block_size(0),
    m_num_blocks(0),
    m_prefetch_state(kOff),
+   m_prefetch_bytes(0),
    m_prefetch_read_cnt(0),
    m_prefetch_hit_cnt(0),
    m_prefetch_score(0)
@@ -473,6 +474,7 @@ bool File::Open()
       m_cfi.ResetNoCkSumTime();
       m_cfi.Write(m_info_file, ifn.c_str());
       m_info_file->Fsync();
+      cache()->WriteFileSizeXAttr(m_info_file->getFD(), m_file_size);
       TRACEF(Debug, tpfx << "Creating new file info, data size = " <<  m_file_size << " num blocks = "  << m_cfi.GetNBlocks());
    }
 
@@ -486,6 +488,27 @@ bool File::Open()
    return true;
 }
 
+int File::Fstat(struct stat &sbuff)
+{
+   // Stat on an open file.
+   // Corrects size to actual full size of the file.
+   // Sets atime to 0 if the file is only partially downloaded, in accordance
+   // with pfc.onlyifcached settings.
+   // Called from IO::Fstat() and Cache::Stat() when the file is active.
+   // Returns 0 on success, -errno on error.
+
+   int res;
+
+   if ((res = m_data_file->Fstat(&sbuff))) return res;
+
+   sbuff.st_size = m_file_size;
+
+   bool is_cached = cache()->DecideIfConsideredCached(m_file_size, sbuff.st_blocks * 512ll);
+   if ( ! is_cached)
+      sbuff.st_atime = 0;
+
+   return 0;
+}
 
 //==============================================================================
 // Read and helpers
@@ -606,11 +629,23 @@ void File::ProcessBlockRequests(BlockList_t& blks)
 
 //------------------------------------------------------------------------------
 
-void File::RequestBlocksDirect(IO *io, DirectResponseHandler *handler, std::vector<XrdOucIOVec>& ioVec, int expected_size)
+void File::RequestBlocksDirect(IO *io, ReadRequest *read_req, std::vector<XrdOucIOVec>& ioVec, int expected_size)
 {
-   TRACEF(DumpXL, "RequestBlocksDirect() issuing ReadV for n_chunks = " << (int) ioVec.size() << ", total_size = " << expected_size);
+   int n_chunks    = ioVec.size();
+   int n_vec_reads = (n_chunks - 1) / XrdProto::maxRvecsz + 1;
 
-   io->GetInput()->ReadV( *handler, ioVec.data(), (int) ioVec.size());
+   TRACEF(DumpXL, "RequestBlocksDirect() issuing ReadV for n_chunks = " << n_chunks <<
+          ", total_size = " << expected_size << ", n_vec_reads = " << n_vec_reads);
+
+   DirectResponseHandler *handler = new DirectResponseHandler(this, read_req, n_vec_reads);
+
+   int pos = 0;
+   while (n_chunks > XrdProto::maxRvecsz) {
+      io->GetInput()->ReadV( *handler, ioVec.data() + pos, XrdProto::maxRvecsz);
+      pos      += XrdProto::maxRvecsz;
+      n_chunks -= XrdProto::maxRvecsz;
+   }
+   io->GetInput()->ReadV( *handler, ioVec.data() + pos, n_chunks);
 }
 
 //------------------------------------------------------------------------------
@@ -820,12 +855,25 @@ int File::ReadOpusCoalescere(IO *io, const XrdOucIOVec *readV, int readVnum,
             {
                TRACEF(DumpXL, tpfx << "direct block " << block_idx << ", blk_off " << blk_off << ", size " << size);
 
-               if (lbe == LB_direct)
-                  iovec_direct.back().size += size;
-               else
-                  iovec_direct.push_back( { block_idx * m_block_size + blk_off, size, 0, iUserBuff + off } );
                iovec_direct_total += size;
                read_req->m_direct_done = false;
+
+               // Make sure we do not issue a ReadV with chunk size above XrdProto::maxRVdsz.
+               // Number of actual ReadVs issued so as to not exceed the XrdProto::maxRvecsz limit
+               // is determined in the RequestBlocksDirect().
+               if (lbe == LB_direct && iovec_direct.back().size + size <= XrdProto::maxRVdsz) {
+                  iovec_direct.back().size += size;
+               } else {
+                  long long  in_offset = block_idx * m_block_size + blk_off;
+                  char      *out_pos   = iUserBuff + off;
+                  while (size > XrdProto::maxRVdsz) {
+                     iovec_direct.push_back( { in_offset, XrdProto::maxRVdsz, 0, out_pos } );
+                     in_offset += XrdProto::maxRVdsz;
+                     out_pos   += XrdProto::maxRVdsz;
+                     size      -= XrdProto::maxRVdsz;
+                  }
+                  iovec_direct.push_back( { in_offset, size, 0, out_pos } );
+               }
 
                lbe = LB_direct;
             }
@@ -847,8 +895,7 @@ int File::ReadOpusCoalescere(IO *io, const XrdOucIOVec *readV, int readVnum,
    // Second, send out remote direct read requests.
    if ( ! iovec_direct.empty())
    {
-      DirectResponseHandler *direct_handler = new DirectResponseHandler(this, read_req, 1);
-      RequestBlocksDirect(io, direct_handler, iovec_direct, iovec_direct_total);
+      RequestBlocksDirect(io, read_req, iovec_direct, iovec_direct_total);
 
       TRACEF(Dump, tpfx << "direct read requests sent out, n_chunks = " << (int) iovec_direct.size() << ", total_size = " << iovec_direct_total);
    }
@@ -899,7 +946,8 @@ int File::ReadOpusCoalescere(IO *io, const XrdOucIOVec *readV, int readVnum,
    if (read_req)
    {
       read_req->m_bytes_read += bytes_read;
-      read_req->update_error_cond(error_cond);
+      if (error_cond)
+         read_req->update_error_cond(error_cond);
       read_req->m_stats.m_BytesHit += bytes_read;
       read_req->m_sync_done = true;
 
@@ -1193,7 +1241,7 @@ void File::ProcessBlockError(Block *b, ReadRequest *rreq)
    // Does not manage m_read_req.
    // Will not complete the request.
 
-   TRACEF(Error, "ProcessBlockError() io " << b->m_io << ", block "<< b->m_offset/m_block_size <<
+   TRACEF(Debug, "ProcessBlockError() io " << b->m_io << ", block "<< b->m_offset/m_block_size <<
                  " finished with error " << -b->get_error() << " " << XrdSysE2T(-b->get_error()));
 
    rreq->update_error_cond(b->get_error());
@@ -1296,6 +1344,7 @@ void File::ProcessBlockResponse(Block *b, int res)
             m_state_cond.UnLock();
             return;
          }
+         m_prefetch_bytes += b->get_size();
       }
       else
       {
@@ -1329,9 +1378,15 @@ void File::ProcessBlockResponse(Block *b, int res)
    else
    {
       if (res < 0) {
-         TRACEF(Error, tpfx << "block " << b << ", idx=" << b->m_offset/m_block_size << ", off=" << b->m_offset << " error=" << res);
+         bool new_error = b->get_io()->register_block_error(res);
+         int tlvl = new_error ? TRACE_Error : TRACE_Debug;
+         TRACEF_INT(tlvl, tpfx << "block " << b << ", idx=" << b->m_offset/m_block_size << ", off=" << b->m_offset
+                    << ", io=" <<  b->get_io() << ", error=" << res);
       } else {
-         TRACEF(Error, tpfx << "block " << b << ", idx=" << b->m_offset/m_block_size << ", off=" << b->m_offset << " incomplete, got " << res << " expected " << b->get_size());
+         bool first_p = b->get_io()->register_incomplete_read();
+         int tlvl = first_p ? TRACE_Error : TRACE_Debug;
+         TRACEF_INT(tlvl, tpfx << "block " << b << ", idx=" << b->m_offset/m_block_size << ", off=" << b->m_offset
+                    << ", io=" <<  b->get_io() << " incomplete, got " << res << " expected " << b->get_size());
 #if defined(__APPLE__) || defined(__GNU__) || (defined(__FreeBSD_kernel__) && defined(__GLIBC__)) || defined(__FreeBSD__)
          res = -EIO;
 #else
@@ -1369,7 +1424,7 @@ void File::ProcessBlockResponse(Block *b, int res)
       {
          ReadRequest *rreq = creqs_to_keep.front().m_read_req;
 
-         TRACEF(Info, "ProcessBlockResponse() requested block " << (void*)b << " failed with another io " <<
+         TRACEF(Debug, "ProcessBlockResponse() requested block " << (void*)b << " failed with another io " <<
                b->get_io() << " - reissuing request with my io " << rreq->m_io);
 
          b->reset_error_and_set_io(rreq->m_io, rreq);

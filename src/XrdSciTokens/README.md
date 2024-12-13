@@ -115,8 +115,21 @@ are:
    - `username_claim` (optional): Not all issuers put the desired username in the `sub` claim (sometimes the subject is
       set to a de-identified value).  To use an alternate claim as the username, such as `uid`, set this to the desired
       claim name.  If set, it overrides `map_subject` and `default_user`.
-   -  `name_mapfile` (options): If set, then the referenced file is parsed as a JSON object and the specified mappings
+   - `groups_claim` (optional): Not all issuers put the desired groups in the `wlcg.groups` claim. To use an alternate claim
+      as the groups, set this to the desired claim name. If not set, the default is `wlcg.groups`.
+   - `name_mapfile` (options): If set, then the referenced file is parsed as a JSON object and the specified mappings
       are applied to the username inside the XRootD framework.  See below for more information on the mapfile.
+   -  `authorization_strategy` (optional): One or more authorizations to use from the token.  Multiple (space separated)
+      items may be specified from the following valid values:
+
+         - `capability`: Authorize based on capabilities (e.g., `storage.read:/foo`) from the token.
+         - `group`: Pass through the request if there's any group present in the token.
+         - `mapping`: Pass through the request if the user mapping was successful.
+
+      For the `group` and `mapping` cases, the username and group are set in the internal XRootD request credential,
+      but the final authorization must be done by a subsequent plugin.  The default value is `capability group mapping`.
+      *Note*: if `mapping` is present, then a token without a capability may still have authorized actions.
+
 
 Group- and Scope-based authorization
 ------------------------------------
@@ -157,7 +170,8 @@ The enumerated keys are:
      For example, if the issuer's base path is `/home`, the operation is accessing `/home/bbockelm/foo`, and the path in
      the rule is `/bbockelm`, then this attribute evaluates to `true`.  Note the path value and the requested path must
      be normalized; if presented with `/home//bbockelm/`, then this is treated as if `/home/bbockelm` was given.
-   - `group`: Case-sensitive match against one of the groups in the token.
+   - `group`: Case-sensitive match against one of the groups in the token (the claim specifying the groups is configurable, controlled by the
+     `groups_claim` variable in the issuer config; default is `wlcg.groups`).
    - `ignore`: If present (regardless of the value), the rule is ignored.
    - `comment`: Ignored; reserved for adding comments from the administrator.
 

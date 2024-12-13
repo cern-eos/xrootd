@@ -74,6 +74,7 @@
 #include "XrdSys/XrdSysLogger.hh"
 #include "XrdSys/XrdSysPlatform.hh"
 #include "XrdSys/XrdSysPthread.hh"
+#include "XrdSys/XrdSysRAtomic.hh"
 
 #include "XrdOuc/XrdOuca2x.hh"
 #include "XrdOuc/XrdOucEnv.hh"
@@ -465,6 +466,7 @@ int XrdOfsFile::open(const char          *path,      // In
                         SFS_O_CREAT  - Create the file open in RW mode
                         SFS_O_TRUNC  - Trunc  the file open in RW mode
                         SFS_O_POSC   - Presist    file on successful close
+                        SFS_O_SEQIO  - Primarily sequential I/O (e.g. xrdcp)
             Mode      - The Posix access mode bits to be assigned to the file.
                         These bits correspond to the standard Unix permission
                         bits (e.g., 744 == "rwxr--r--"). Additionally, Mode
@@ -757,6 +759,20 @@ int XrdOfsFile::open(const char          *path,      // In
       }
    oP.hP->Activate(oP.fP);
    oP.hP->UnLock();
+
+// If this is being opened for sequential I/O advise the filesystem about it.
+//
+#if defined(__linux__) || (defined(__FreeBSD_kernel__) && defined(__GLIBC__))
+   if (!(XrdOfsFS->OssIsProxy) && open_mode & SFS_O_SEQIO)
+      {static RAtomic_int fadFails(0);
+       int theFD =  oP.fP->getFD();
+       if (theFD >= 0 && fadFails < 4096)
+          if (posix_fadvise(theFD, 0, 0, POSIX_FADV_SEQUENTIAL) < 0)
+             {OfsEroute.Emsg(epname, errno, "fadsize for sequential I/O.");
+              fadFails++;
+             }
+      }
+#endif
 
 // Send an open event if we must
 //
@@ -2533,12 +2549,19 @@ int XrdOfs::Emsg(const char    *pfx,    // Message prefix value
 // If the error is EBUSY then we just need to stall the client. This is
 // a hack in order to provide for proxy support
 //
+// The hack unfotunately is now beinng triggered for reads and writes when
+// it was never so before (presumably due to client changes). So do not
+// apply the hack for these operations. This gets a better fix in R 6.0
+//
+if (strcmp("read", op) && strcmp("readv", op) && strcmp("pgRead", op) && 
+    strcmp("write",op) && strcmp("pgwrite",op)) {
     if (ecode < 0) ecode = -ecode;
     if (ecode == EBUSY) return 5;  // A hack for proxy support
 
 // Check for timeout conditions that require a client delay
 //
    if (ecode == ETIMEDOUT) return OSSDelay;
+   }
 
 // Format the error message
 //

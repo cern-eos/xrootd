@@ -43,7 +43,7 @@ jobs:
         apt install -y build-essential devscripts git
 
     - name: Clone repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
@@ -53,9 +53,9 @@ jobs:
     - name: Build DEBs
       run: |
         git config --global --add safe.directory "$GITHUB_WORKSPACE"
-        VERSION=$(git describe --match 'v*' | sed -e 's/v//; s/-rc/~rc/; s/-g/+git/; s/-/.post/; s/-/./')
+        VERSION=$(./genversion.sh --sanitize)
         dch --create --package xrootd -v ${VERSION} -M 'XRootD automated build.'
-        debuild --no-tgz-check --no-sign -b
+        debuild --no-tgz-check --no-sign -- binary-arch
 
     - name: Install DEBs
       run: apt install -y ../*.deb
@@ -66,43 +66,49 @@ jobs:
     - name: Move DEBs to Artifact Directory
       run: |
         source /etc/os-release
-        mkdir -p DEB/${ID}/${VERSION_CODENAME}
-        mv ../*.* DEB/${ID}/${VERSION_CODENAME}
+        mkdir -p debian/${VERSION_CODENAME}
+        mv ../*.* debian/${VERSION_CODENAME}
 
     - name: Upload Artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
-        name: DEB
-        path: DEB
-        retention-days: 1
+        name: debian-${{ matrix.version }}
+        path: debian
+        retention-days: 14
 
   ubuntu:
-    name: Ubuntu (22.04)
-    runs-on: ubuntu-22.04
+    name: Ubuntu
+
+    strategy:
+      matrix:
+        version: [ "22.04", "24.04" ]
+
+    runs-on: ubuntu-latest
+    container: ubuntu:${{ matrix.version }}
 
     steps:
     - name: Install development tools
       run: |
-        sudo apt update -qq
-        sudo apt install -y build-essential devscripts equivs git
+        apt update -qq
+        apt install -y build-essential devscripts equivs git
 
     - name: Clone repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
     - name: Install XRootD build dependencies
-      run: mk-build-deps --install --remove -s sudo debian/control <<< yes
+      run: mk-build-deps --install --remove debian/control <<< yes
 
     - name: Build DEBs
       run: |
         git config --global --add safe.directory "$GITHUB_WORKSPACE"
-        VERSION=$(git describe --match 'v*' | sed -e 's/v//; s/-rc/~rc/; s/-g/+git/; s/-/.post/; s/-/./')
+        VERSION=$(./genversion.sh --sanitize)
         dch --create --package xrootd -v ${VERSION} -M 'XRootD automated build.'
-        debuild --no-tgz-check --no-sign -b
+        debuild --no-tgz-check --no-sign -- binary-arch
 
     - name: Install DEBs
-      run: sudo apt install -y ../*.deb
+      run: apt install -y ../*.deb
 
     - name: Run post-install tests
       run: tests/post-install.sh
@@ -110,12 +116,12 @@ jobs:
     - name: Move DEBs to Artifact Directory
       run: |
         source /etc/os-release
-        mkdir -p DEB/${ID}/${VERSION_CODENAME}
-        mv ../*.* DEB/${ID}/${VERSION_CODENAME}
+        mkdir -p ubuntu/${VERSION_CODENAME}
+        mv ../*.* ubuntu/${VERSION_CODENAME}
 
     - name: Upload Artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
-        name: DEB
-        path: DEB
-        retention-days: 1
+        name: ubuntu-${{ matrix.version }}
+        path: ubuntu
+        retention-days: 14

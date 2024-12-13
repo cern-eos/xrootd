@@ -91,6 +91,9 @@ public:
     if (Resume) (*this.*Resume)();
   }
 
+  /// Use this function to parse header2cgi configurations
+  static int parseHeader2CGI(XrdOucStream &Config, XrdSysError & err, std::map<std::string, std::string> & header2cgi);
+
   /// Tells if the oustanding bytes on the socket match this protocol implementation
   XrdProtocol *Match(XrdLink *lp);
 
@@ -190,9 +193,9 @@ private:
         {XrdOucString extHName;  // The instance name (1 to 16 characters)
          XrdOucString extHPath;  // The shared library path
          XrdOucString extHParm;  // The parameter (sort of)
-
-         extHInfo(const char *hName, const char *hPath, const char *hParm)
-                 : extHName(hName), extHPath(hPath), extHParm(hParm) {}
+         bool extHNoTlsOK;     // If true the exthandler can be loaded if TLS has NOT been configured
+         extHInfo(const char *hName, const char *hPath, const char *hParm, const bool hNoTlsOK)
+                 : extHName(hName), extHPath(hPath), extHParm(hParm), extHNoTlsOK(hNoTlsOK) {}
         ~extHInfo() {}
   };
   /// Functions related to the configuration
@@ -219,6 +222,7 @@ private:
   static int xheader2cgi(XrdOucStream &Config);
   static int xhttpsmode(XrdOucStream &Config);
   static int xtlsreuse(XrdOucStream &Config);
+  static int xauth(XrdOucStream &Config);
   
   static bool isRequiredXtractor; // If true treat secxtractor errors as fatal
   static XrdHttpSecXtractor *secxtractor;
@@ -235,7 +239,10 @@ private:
     XrdHttpExtHandler *ptr;
   } exthandler[MAX_XRDHTTPEXTHANDLERS];
   static int exthandlercnt;
-  
+
+  static int LoadExtHandlerNoTls(std::vector<extHInfo> &hiVec,
+                                 const char *cFN, XrdOucEnv &myEnv);
+
   // Loads the ExtHandler plugin, if available
   static int LoadExtHandler(std::vector<extHInfo> &hiVec,
                             const char *cFN, XrdOucEnv &myEnv);
@@ -440,5 +447,8 @@ protected:
 
   /// Packet marking handler pointer (assigned from the environment during the Config() call)
   static XrdNetPMark * pmarkHandle;
+
+  /// If set to true, the HTTP TPC transfers will forward the credentials to redirected hosts
+  static bool tpcForwardCreds;
 };
 #endif

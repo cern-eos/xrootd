@@ -10,10 +10,18 @@
 #include "XrdOuc/XrdOucPinLoader.hh"
 #include "XrdOuc/XrdOuca2x.hh"
 
-#include "XrdOfs/XrdOfsConfigPI.hh"
 #include "XrdVersion.hh"
+#include "XrdOfs/XrdOfsConfigPI.hh"
+#include "XrdSys/XrdSysXAttr.hh"
 
 #include <fcntl.h>
+
+extern XrdSysXAttr *XrdSysXAttrActive;
+
+namespace XrdPfc
+{
+   const char *trace_what_strings[] = {"","error ","warning ","info ","debug ","dump "};
+}
 
 using namespace XrdPfc;
 
@@ -46,7 +54,9 @@ Configuration::Configuration() :
    m_flushCnt(2000),
    m_cs_UVKeep(-1),
    m_cs_Chk(CSChk_Net),
-   m_cs_ChkTLS(false)
+   m_cs_ChkTLS(false),
+   m_onlyIfCachedMinSize(1024*1024),
+   m_onlyIfCachedMinFrac(1.0)
 {}
 
 
@@ -261,6 +271,76 @@ bool Cache::xtrace(XrdOucStream &Config)
    return false;
 }
 
+// Determine if oss spaces are operational and if they support xattrs.
+bool Cache::test_oss_basics_and_features()
+{
+   static const char *epfx = "test_oss_basics_and_features()";
+
+   const auto &conf = m_configuration;
+   const char *user = conf.m_username.c_str();
+   XrdOucEnv   env;
+
+   auto check_space = [&](const char *space, bool &has_xattr)
+   {
+      std::string fname("__prerun_test_pfc_");
+      fname += space;
+      fname += "_space__";
+      env.Put("oss.cgroup", space);
+
+      int res = m_oss->Create(user, fname.c_str(), 0600, env, XRDOSS_mkpath);
+      if (res != XrdOssOK) {
+         m_log.Emsg(epfx, "Can not create a file on space", space);
+         return false;
+      }
+      XrdOssDF *oss_file = m_oss->newFile(user);
+      res = oss_file->Open(fname.c_str(), O_RDWR, 0600, env);
+      if (res != XrdOssOK) {
+         m_log.Emsg(epfx, "Can not open a file on space", space);
+         return false;
+      }
+      res = oss_file->Write(fname.data(), 0, fname.length());
+      if (res != (int) fname.length()) {
+         m_log.Emsg(epfx, "Can not write into a file on space", space);
+         return false;
+      }
+
+      has_xattr = true;
+      long long fsize = fname.length();
+      res = XrdSysXAttrActive->Set("pfc.fsize", &fsize, sizeof(long long), 0, oss_file->getFD(), 0);
+      if (res != 0) {
+         m_log.Emsg(epfx, "Can not write xattr to a file on space", space);
+         has_xattr = false;
+      }
+
+      oss_file->Close();
+
+      if (has_xattr) {
+         char pfn[4096];
+         m_oss->Lfn2Pfn(fname.c_str(), pfn, 4096);
+         fsize = -1ll;
+         res = XrdSysXAttrActive->Get("pfc.fsize", &fsize, sizeof(long long), pfn);
+         if (res != sizeof(long long) || fsize != (long long) fname.length())
+         {
+            m_log.Emsg(epfx, "Can not read xattr from a file on space", space);
+            has_xattr = false;
+         }
+      }
+
+      res = m_oss->Unlink(fname.c_str());
+      if (res != XrdOssOK) {
+         m_log.Emsg(epfx, "Can not unlink a file on space", space);
+         return false;
+      }
+
+      return true;
+   };
+
+   bool aOK = true;
+   aOK &= check_space(conf.m_data_space.c_str(), m_dataXattr);
+   aOK &= check_space(conf.m_meta_space.c_str(), m_metaXattr);
+
+   return aOK;
+}
 
 //______________________________________________________________________________
 /* Function: Config
@@ -377,6 +457,9 @@ bool Cache::Config(const char *config_filename, const char *parameters)
       return false;
    }
 
+   // Test if OSS is operational, determine optional features.
+   aOK &= test_oss_basics_and_features();
+
    // sets default value for disk usage
    XrdOssVSInfo sP;
    {
@@ -421,6 +504,7 @@ bool Cache::Config(const char *config_filename, const char *parameters)
         else aOK = false;
       }
    }
+
    // sets flush frequency
    if ( ! tmpc.m_flushRaw.empty())
    {
@@ -454,7 +538,6 @@ bool Cache::Config(const char *config_filename, const char *parameters)
    }
    // Setup number of standard-size blocks not released back to the system to 5% of total RAM.
    m_configuration.m_RamKeepStdBlocks = (m_configuration.m_RamAbsAvailable / m_configuration.m_bufferSize + 1) * 5 / 100;
-   
 
    // Set tracing to debug if this is set in environment
    char* cenv = getenv("XRDDEBUG");
@@ -475,7 +558,7 @@ bool Cache::Config(const char *config_filename, const char *parameters)
       if (m_configuration.m_cs_UVKeep < 0)
          strcpy(uvk, "lru");
       else
-         sprintf(uvk, "%ld", m_configuration.m_cs_UVKeep);
+         sprintf(uvk, "%lld", (long long) m_configuration.m_cs_UVKeep);
       float rg = (m_configuration.m_RamAbsAvailable) / float(1024*1024*1024);
       loff = snprintf(buff, sizeof(buff), "Config effective %s pfc configuration:\n"
                       "       pfc.cschk %s uvkeep %s\n"
@@ -488,7 +571,9 @@ bool Cache::Config(const char *config_filename, const char *parameters)
                       "       pfc.spaces %s %s\n"
                       "       pfc.trace %d\n"
                       "       pfc.flush %lld\n"
-                      "       pfc.acchistorysize %d\n",
+                      "       pfc.acchistorysize %d\n"
+                      "       pfc.onlyIfCachedMinBytes %lld\n"
+                      "       pfc.onlyIfCachedMinFrac %.2f\n",
                       config_filename,
                       csc[int(m_configuration.m_cs_Chk)], uvk,
                       m_configuration.m_bufferSize,
@@ -503,7 +588,9 @@ bool Cache::Config(const char *config_filename, const char *parameters)
                       m_configuration.m_meta_space.c_str(),
                       m_trace->What,
                       m_configuration.m_flushCnt,
-                      m_configuration.m_accHistorySize);
+                      m_configuration.m_accHistorySize,
+                      m_configuration.m_onlyIfCachedMinSize,
+                      m_configuration.m_onlyIfCachedMinFrac);
 
       if (m_configuration.is_dir_stat_reporting_on())
       {
@@ -823,6 +910,49 @@ bool Cache::ConfigParameters(std::string part, XrdOucStream& config, TmpConfigur
       {
          m_log.Emsg("Config", "Error: pfc.flush requires a parameter.");
          return false;
+      }
+   }
+   else if ( part == "onlyifcached" )
+   {
+      const char *p = 0;
+      while ((p = cwg.GetWord()) && cwg.HasLast())
+      {
+         if (strcmp(p, "minsize") == 0)
+         {
+            std::string minBytes = cwg.GetWord();
+            long long minBytesTop = 1024 * 1024 * 1024;
+            if (::isalpha(*(minBytes.rbegin())))
+            {
+               if (XrdOuca2x::a2sz(m_log, "Error in parsing minsize value for onlyifcached parameter", minBytes.c_str(), &m_configuration.m_onlyIfCachedMinSize, 0, minBytesTop))
+               {
+                  return false;
+               }
+            }
+            else
+            {
+               if (XrdOuca2x::a2ll(m_log, "Error in parsing numeric minsize value for onlyifcached parameter", minBytes.c_str(),&m_configuration.m_onlyIfCachedMinSize, 0, minBytesTop))
+               {
+                  return false;
+               }
+            }
+         }
+         if (strcmp(p, "minfrac") == 0)
+         {
+            std::string minFrac = cwg.GetWord();
+            char *eP;
+            errno = 0;
+            double frac = strtod(minFrac.c_str(), &eP);
+            if (errno || eP == minFrac.c_str())
+            {
+               m_log.Emsg("Config", "Error setting fraction for only-if-cached directive");
+               return false;
+            }
+            m_configuration.m_onlyIfCachedMinFrac = frac;
+         }
+         else
+         {
+            m_log.Emsg("Config", "Error: onlyifcached stanza contains unknown directive", p);
+         }
       }
    }
    else

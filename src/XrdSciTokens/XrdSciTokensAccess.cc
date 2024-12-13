@@ -42,6 +42,13 @@ enum LogMask {
     All = 0xff
 };
 
+enum IssuerAuthz {
+    Capability = 0x01,
+    Group = 0x02,
+    Mapping = 0x04,
+    Default = 0x07
+};
+
 std::string LogMaskToString(int mask) {
     if (mask == LogMask::All) {return "all";}
 
@@ -272,24 +279,30 @@ struct IssuerConfig
                  const std::vector<std::string> &base_paths,
                  const std::vector<std::string> &restricted_paths,
                  bool map_subject,
+                 uint32_t authz_strategy,
                  const std::string &default_user,
                  const std::string &username_claim,
+                 const std::string &groups_claim,
                  const std::vector<MapRule> rules)
         : m_map_subject(map_subject || !username_claim.empty()),
+          m_authz_strategy(authz_strategy),
           m_name(issuer_name),
           m_url(issuer_url),
           m_default_user(default_user),
           m_username_claim(username_claim),
+          m_groups_claim(groups_claim),
           m_base_paths(base_paths),
           m_restricted_paths(restricted_paths),
           m_map_rules(rules)
     {}
 
     const bool m_map_subject;
+    const uint32_t m_authz_strategy;
     const std::string m_name;
     const std::string m_url;
     const std::string m_default_user;
     const std::string m_username_claim;
+    const std::string m_groups_claim;
     const std::vector<std::string> m_base_paths;
     const std::vector<std::string> m_restricted_paths;
     const std::vector<MapRule> m_map_rules;
@@ -337,7 +350,9 @@ class XrdAccRules
 {
 public:
     XrdAccRules(uint64_t expiry_time, const std::string &username, const std::string &token_subject,
-        const std::string &issuer, const std::vector<MapRule> &rules, const std::vector<std::string> &groups) :
+        const std::string &issuer, const std::vector<MapRule> &rules, const std::vector<std::string> &groups,
+        uint32_t authz_strategy) :
+        m_authz_strategy(authz_strategy),
         m_expiry_time(expiry_time),
         m_username(username),
         m_token_subject(token_subject),
@@ -349,28 +364,36 @@ public:
     ~XrdAccRules() {}
 
     bool apply(Access_Operation oper, std::string path) {
-        for (const auto & rule : m_rules) {
-            // The rule permits if both conditions are met:
-            // - The operation type matches the requested operation,
-            // - The requested path is a substring of the ACL's permitted path, AND
-            // - Either the requested path and ACL path is the same OR the requested path is a subdir of the ACL path.
-            //
-            // The third rule implies if the rule permits read:/foo, we should NOT authorize read:/foobar.
-            if ((oper == rule.first) &&
-                !path.compare(0, rule.second.size(), rule.second, 0, rule.second.size()) &&
-                (rule.second.size() == path.length() || path[rule.second.size()]=='/'))
-            {
-                return true;
-            }
-            // according to WLCG token specs, allow creation of required superfolders for a new file if requested
-            if ((oper == rule.first) && (oper == AOP_Stat || oper == AOP_Mkdir)
-             && rule.second.size() >= path.length()
-             && !rule.second.compare(0, path.size(), path, 0, path.size())
-             && (rule.second.size() == path.length() || rule.second[path.length()] == '/')) {
-                return true;
-            }
+      auto is_subdirectory = [](const std::string& dir, const std::string& subdir) {
+        if (subdir.size() < dir.size())
+          return false;
+
+        if (subdir.compare(0, dir.size(), dir, 0, dir.size()) != 0)
+          return false;
+
+        return dir.size() == subdir.size() || subdir[dir.size()] == '/' || dir == "/";
+      };
+
+      for (const auto & rule : m_rules) {
+        // Skip rules that don't match the current operation
+        if (rule.first != oper)
+          continue;
+
+        // If the rule allows any path, allow the operation
+        if (rule.second == "/")
+          return true;
+
+        // Allow operation if path is a subdirectory of the rule's path
+        if (is_subdirectory(rule.second, path)) {
+          return true;
+        } else {
+          // Allow stat and mkdir of parent directories to comply with WLCG token specs
+          if (oper == AOP_Stat || oper == AOP_Mkdir)
+            if (is_subdirectory(path, rule.second))
+              return true;
         }
-        return false;
+      }
+      return false;
     }
 
     bool expired() const {return monotonic_time() > m_expiry_time;}
@@ -420,10 +443,13 @@ public:
     const std::string & get_default_username() const {return m_username;}
     const std::string & get_issuer() const {return m_issuer;}
 
+    uint32_t get_authz_strategy() const {return m_authz_strategy;}
+
     size_t size() const {return m_rules.size();}
     const std::vector<std::string> &groups() const {return m_groups;}
 
 private:
+    uint32_t m_authz_strategy;
     AccessRulesRaw m_rules;
     uint64_t m_expiry_time{0};
     const std::string m_username;
@@ -506,15 +532,16 @@ public:
         if (!access_rules) {
             m_log.Log(LogMask::Debug, "Access", "Token not found in recent cache; parsing.");
             try {
-		uint64_t cache_expiry;
-		AccessRulesRaw rules;
+                uint64_t cache_expiry;
+                AccessRulesRaw rules;
                 std::string username;
                 std::string token_subject;
                 std::string issuer;
                 std::vector<MapRule> map_rules;
                 std::vector<std::string> groups;
-                if (GenerateAcls(authz, cache_expiry, rules, username, token_subject, issuer, map_rules, groups)) {
-                    access_rules.reset(new XrdAccRules(now + cache_expiry, username, token_subject, issuer, map_rules, groups));
+                uint32_t authz_strategy;
+                if (GenerateAcls(authz, cache_expiry, rules, username, token_subject, issuer, map_rules, groups, authz_strategy)) {
+                    access_rules.reset(new XrdAccRules(now + cache_expiry, username, token_subject, issuer, map_rules, groups, authz_strategy));
                     access_rules->parse(rules);
                 } else {
                     m_log.Log(LogMask::Warning, "Access", "Failed to generate ACLs for token");
@@ -533,7 +560,8 @@ public:
             m_log.Log(LogMask::Debug, "Access", "Cached token", access_rules->str().c_str());
         }
 
-        // Strategy: we populate the name in the XrdSecEntity if:
+        // Strategy: assuming the corresponding strategy is enabled, we populate the name in
+        // the XrdSecEntity if:
         //    1. There are scopes present in the token that authorize the request,
         //    2. The token is mapped by some rule in the mapfile (group or subject-based mapping).
         // The default username for the issuer is only used in (1).
@@ -553,7 +581,8 @@ public:
         if (!issuer.empty()) {
             new_secentity.vorg = strdup(issuer.c_str());
         }
-        if (access_rules->groups().size()) {
+        bool group_success = false;
+        if ((access_rules->get_authz_strategy() & IssuerAuthz::Group) && access_rules->groups().size()) {
             std::stringstream ss;
             for (const auto &grp : access_rules->groups()) {
                 ss << grp << " ";
@@ -564,6 +593,7 @@ public:
                 memcpy(new_secentity.grps, groups_str.c_str(), groups_str.size());
                 new_secentity.grps[groups_str.size()] = '\0';
             }
+            group_success = true;
         }
 
         std::string username;
@@ -571,15 +601,15 @@ public:
         bool scope_success = false;
         username = access_rules->get_username(path);
 
-        mapping_success = !username.empty();
-        scope_success = access_rules->apply(oper, path);
+        mapping_success = (access_rules->get_authz_strategy() & IssuerAuthz::Mapping) && !username.empty();
+        scope_success = (access_rules->get_authz_strategy() & IssuerAuthz::Capability) && access_rules->apply(oper, path);
         if (scope_success && (m_log.getMsgMask() & LogMask::Debug)) {
             std::stringstream ss;
             ss << "Grant authorization based on scopes for operation=" << OpToName(oper) << ", path=" << path;
             m_log.Log(LogMask::Debug, "Access", ss.str().c_str());
         }
 
-        if (!scope_success && !mapping_success) {
+        if (!scope_success && !mapping_success && !group_success) {
             auto returned_accs = OnMissing(&new_secentity, path, oper, env);
             // Clean up the new_secentity
             if (new_secentity.vorg != nullptr) free(new_secentity.vorg);
@@ -590,11 +620,13 @@ public:
         }
 
         // Default user only applies to scope-based mappings.
-        if (!mapping_success && scope_success) {
-            mapping_success = !(username = access_rules->get_default_username()).empty();
+        if (scope_success && username.empty()) {
+            username = access_rules->get_default_username();
         }
 
-        if (mapping_success) {
+        // Setting the request.name will pass the username to the next plugin.
+        // Ensure we do that only if map-based or scope-based authorization worked.
+        if (scope_success || mapping_success) {
             // Set scitokens.name in the extra attribute
             Entity->eaAPI->Add("request.name", username, true);
             new_secentity.eaAPI->Add("request.name", username, true);
@@ -730,7 +762,7 @@ private:
         return XrdAccPriv_None;
     }
 
-    bool GenerateAcls(const std::string &authz, uint64_t &cache_expiry, AccessRulesRaw &rules, std::string &username, std::string &token_subject, std::string &issuer, std::vector<MapRule> &map_rules, std::vector<std::string> &groups) {
+    bool GenerateAcls(const std::string &authz, uint64_t &cache_expiry, AccessRulesRaw &rules, std::string &username, std::string &token_subject, std::string &issuer, std::vector<MapRule> &map_rules, std::vector<std::string> &groups, uint32_t &authz_strategy) {
         // Does this look like a JWT?  If not, bail out early and
         // do not pollute the log.
         bool looks_good = true;
@@ -813,20 +845,6 @@ private:
         }
         enforcer_destroy(enf);
 
-        char **group_list;
-        std::vector<std::string> groups_parsed;
-        if (!scitoken_get_claim_string_list(token, "wlcg.groups", &group_list, &err_msg)) {
-            for (int idx=0; group_list[idx]; idx++) {
-                groups_parsed.emplace_back(group_list[idx]);
-            }
-            scitoken_free_string_list(group_list);
-        } else {
-            // For now, we silently ignore errors.
-            // std::cerr << "Failed to get groups: " << err_msg << std::endl;
-            free(err_msg);
-        }
-
-
         pthread_rwlock_rdlock(&m_config_lock);
         auto iter = m_issuers.find(token_issuer);
         if (iter == m_issuers.end()) {
@@ -835,10 +853,24 @@ private:
             scitoken_destroy(token);
             return false;
         }
-        const auto &config = iter->second;
+        const auto config = iter->second;
+        pthread_rwlock_unlock(&m_config_lock);
         value = nullptr;
+
+        char **group_list;
+        std::vector<std::string> groups_parsed;
+        if (scitoken_get_claim_string_list(token, config.m_groups_claim.c_str(), &group_list, &err_msg) == 0) {
+            for (int idx=0; group_list[idx]; idx++) {
+                groups_parsed.emplace_back(group_list[idx]);
+            }
+            scitoken_free_string_list(group_list);
+        } else {
+            // Failing to parse groups is not fatal, but we should still warn about what's wrong
+            m_log.Log(LogMask::Warning, "GenerateAcls", "Failed to get token groups:", err_msg);
+            free(err_msg);
+        }
+
         if (scitoken_get_claim_string(token, "sub", &value, &err_msg)) {
-            pthread_rwlock_unlock(&m_config_lock);
             m_log.Log(LogMask::Warning, "GenerateAcls", "Failed to get token subject:", err_msg);
             free(err_msg);
             scitoken_destroy(token);
@@ -850,7 +882,6 @@ private:
         auto tmp_username = token_subject;
         if (!config.m_username_claim.empty()) {
             if (scitoken_get_claim_string(token, config.m_username_claim.c_str(), &value, &err_msg)) {
-                pthread_rwlock_unlock(&m_config_lock);
                 m_log.Log(LogMask::Warning, "GenerateAcls", "Failed to get token username:", err_msg);
                 free(err_msg);
                 scitoken_destroy(token);
@@ -962,8 +993,7 @@ private:
                 xrd_rules.emplace_back(AOP_Delete, write_path);
             }
         }
-
-        pthread_rwlock_unlock(&m_config_lock);
+        authz_strategy = config.m_authz_strategy;
 
         cache_expiry = expiry;
         rules = std::move(xrd_rules);
@@ -1249,11 +1279,32 @@ private:
             auto default_user = reader.Get(section, "default_user", "");
             auto map_subject = reader.GetBoolean(section, "map_subject", false);
             auto username_claim = reader.Get(section, "username_claim", "");
+            auto groups_claim = reader.Get(section, "groups_claim", "wlcg.groups");
+
+            auto authz_strategy_str = reader.Get(section, "authorization_strategy", "");
+            uint32_t authz_strategy = 0;
+            if (authz_strategy_str.empty()) {
+                authz_strategy = IssuerAuthz::Default;
+            } else {
+                std::istringstream authz_strategy_stream(authz_strategy_str);
+                std::string authz_str;
+                while (std::getline(authz_strategy_stream, authz_str, ' ')) {
+                    if (!strcasecmp(authz_str.c_str(), "capability")) {
+                        authz_strategy |= IssuerAuthz::Capability;
+                    } else if (!strcasecmp(authz_str.c_str(), "group")) {
+                        authz_strategy |= IssuerAuthz::Group;
+                    } else if (!strcasecmp(authz_str.c_str(), "mapping")) {
+                        authz_strategy |= IssuerAuthz::Mapping;
+                    } else {
+                        m_log.Log(LogMask::Error, "Reconfig", "Unknown authorization strategy (ignoring):", authz_str.c_str());
+                    }
+                }
+            }
 
             issuers.emplace(std::piecewise_construct,
                             std::forward_as_tuple(issuer),
                             std::forward_as_tuple(name, issuer, base_paths, restricted_paths,
-                                                  map_subject, default_user, username_claim, rules));
+                                                  map_subject, authz_strategy, default_user, username_claim, groups_claim, rules));
         }
 
         if (issuers.empty()) {

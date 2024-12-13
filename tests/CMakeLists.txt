@@ -3,20 +3,23 @@ if(NOT BUILD_TESTS)
 endif()
 
 include(GoogleTest)
-add_subdirectory( XrdCl )
+
+add_subdirectory(common)
+
+add_subdirectory(XrdCl)
+add_subdirectory(XrdCeph)
+add_subdirectory(XrdEc)
+
 add_subdirectory(XrdHttpTests)
 
-add_subdirectory( common )
-add_subdirectory( XrdClTests )
+add_subdirectory(XrdOucTests)
+
 add_subdirectory( XrdSsiTests )
 
-if( BUILD_XRDEC )
-  add_subdirectory( XrdEcTests )
-  add_subdirectory( XrdEc ) # new tests with GTest
-endif()
+add_subdirectory(XrdTpcTests)
 
-if( BUILD_CEPH )
-  add_subdirectory( XrdCephTests )
+if(NOT ENABLE_SERVER_TESTS)
+  return()
 endif()
 
 add_subdirectory( XRootD )
