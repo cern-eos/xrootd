@@ -35,6 +35,7 @@ size = 0
 async = 0
 bypass = 0
 flat = false
+basepath =
 noapp =
 json =
 
@@ -63,6 +64,9 @@ json =
 > [!TIP]
 > By default JCache stores the cache journals using the same namespace hierarchy inside the cache directory as the remote path. If you set ```flat = 1``` it will store all journals in a flat structure under a directory named after the hex SHA256 value of the remote path. This approach creates one directory per cached file under a the JCache directory in a flat structure - use with caution!
 
+> [!TIP]
+> If you cache from federated storage with a common base path e.g. /store/ you can define this base path and the cache will remove host and prefixes and names start with basepath e.g. instead of foo.bar:1094/grid/site/store/file it will use /store/file instead. Since in a federation the source might change mtime is not anymore reliable and you should enable the `async` option as well and assume all the cached data is WORM e.g. never modified after publication in the federation.
+
 > [!NOTE]  
 > The easiest way to verify the plug-in functionning is to run with ```XRD_LOGLEVEL=Info``` since the plug-in will provide
 > some startup information and also print where a file is cached locally once it is attached.
@@ -79,6 +83,7 @@ XRD_JCACHE_ASYNC=true|false|1|0
 XRD_JCACHE_BYPASS=true|false|1|0
 XRD_JCACHE_NOAPP=xrdcp,...
 XRD_JCACHE_FLAT=true|false|1|0
+XRD_JCACHE_BASEPATH=/store/
 XRD_APPNAME=application-name-used-in-json-file
 ```
 > [!TIP]
