@@ -26,10 +26,11 @@
 #include <filesystem>
 #include <string>
 #include <sys/stat.h>
+#include <iostream>
 
 namespace JCache {
 
-bool makeHierarchy(const std::string &path) {
+static bool makeHierarchy(const std::string &path) {
   std::filesystem::path dirPath(path);
 
   try {

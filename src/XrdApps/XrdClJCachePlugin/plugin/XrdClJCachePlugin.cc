@@ -24,9 +24,11 @@
 
 #include "plugin/XrdClJCachePlugin.hh"
 
+bool XrdCl::JCacheFactory::sEnableFileSystem = false;
+
 XrdVERSIONINFO(XrdClGetPlugIn, XrdClGetPlugIn)
 
-    extern "C" {
+extern "C" {
   void *XrdClGetPlugIn(const void *arg) {
     const std::map<std::string, std::string> *config =
         static_cast<const std::map<std::string, std::string> *>(arg);

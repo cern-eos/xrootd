@@ -31,12 +31,14 @@
 
 std::string XrdCl::JCacheFile::sCachePath = "";
 std::string XrdCl::JCacheFile::sJsonPath = "";
+std::string XrdCl::JCacheFile::sBasePath = "";
 bool XrdCl::JCacheFile::sEnableJournalCache = true;
 bool XrdCl::JCacheFile::sEnableVectorCache = false;
 bool XrdCl::JCacheFile::sEnableSummary = true;
 bool XrdCl::JCacheFile::sEnableBypass = false;
 bool XrdCl::JCacheFile::sOpenAsync = false;
 bool XrdCl::JCacheFile::sFlatHierarchy = false;
+bool XrdCl::JCacheFile::sThreadConnectionDemultiplexing = false;
 
 JCache::CacheStats XrdCl::JCacheFile::sStats(true);
 JCache::Cleaner XrdCl::JCacheFile::sCleaner;
@@ -102,10 +104,32 @@ XRootDStatus JCacheFile::Open(const std::string &url, OpenFlags::Flags flags,
   // sanitize named connections and CGI for the URL to cache
   XrdCl::URL cleanUrl;
   XrdCl::URL origUrl(url);
+  std::string cacheUrl;
+
   cleanUrl.SetProtocol(origUrl.GetProtocol());
   cleanUrl.SetHostName(origUrl.GetHostName());
+
+
   cleanUrl.SetPort(origUrl.GetPort());
   cleanUrl.SetPath(origUrl.GetPath());
+
+  cacheUrl = cleanUrl.GetURL(); // we cannot add the thread id when we use hashing to define the journal name in the cache
+
+  if (sThreadConnectionDemultiplexing) {
+    // Lambda function to get the thread ID and return it as an 8-character hexadecimal string
+    auto get_thread_id_hex = []() -> std::string {
+        // Buffer to hold the hexadecimal string (8 characters + null terminator)
+        char hex_str[9];
+
+        // Get the thread ID, apply the modulo operation, and format it directly into the buffer
+        sprintf(hex_str, "%08x", (int)(syscall(SYS_gettid)) % 0xFFFFFFFF);
+
+        // Return the formatted hexadecimal string
+        return std::string(hex_str);
+    };
+
+    cleanUrl.SetUserName(get_thread_id_hex());
+  }
   pUrl = cleanUrl.GetURL();
 
   // allow to enable asynchronous operation globally
@@ -136,7 +160,7 @@ XRootDStatus JCacheFile::Open(const std::string &url, OpenFlags::Flags flags,
           if (sFlatHierarchy) {
             // we use sha256 directory names in a flat hierarchy
             std::string JournalDir =
-                sCachePath + "/" + VectorCache::computeSHA256(pUrl);
+                sCachePath + "/" + VectorCache::computeSHA256(cacheUrl);
             pJournalPath = JournalDir + "/journal";
             // it can be that we cannot write the journal directory
             if (!VectorCache::ensureLastSubdirectoryExists(JournalDir)) {
@@ -148,9 +172,16 @@ XRootDStatus JCacheFile::Open(const std::string &url, OpenFlags::Flags flags,
           } else {
             // we keep the original path for the cache
             XrdCl::URL url(pUrl);
-            std::string JournalDir =
-                sCachePath + url.GetPath();
-            pJournalPath = JournalDir + "/journal";
+	    std::string JournalDir;
+	    size_t basepos=0;
+	    if (sBasePath.empty() || (basepos = url.GetPath().find(sBasePath) == std::string::npos)) {
+	      JournalDir = sCachePath + url.GetHostName() + ":" + std::to_string(url.GetPort()) + "/" + url.GetPath();
+	    } else {
+	      // this allows to cache by basepath e.g. instead of host:port/local-prefix/basepath/abc we cache as /basepath/abc independent of the host
+	      JournalDir = sCachePath + url.GetPath().substr(basepos);
+	    }
+
+	    pJournalPath = JournalDir + "/journal";
             if (!JCache::makeHierarchy(pJournalPath)) {
               st = XRootDStatus(stError, errOSError);
               std::cerr << "error: unable to create cache directory: "
@@ -620,6 +651,7 @@ bool JCacheFile::AttachForRead() {
           sStats.opentime =
               sStats.opentime.load() + pOpenHandler->GetTimeToOpen();
         }
+	std::cerr << "attaching with " << sinfo->GetModTime() << std::endl;
         if (pJournal->attach(pJournalPath, sinfo->GetModTime(), 0,
                              sinfo->GetSize())) {
           if (!sEnableBypass) {

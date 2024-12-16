@@ -28,6 +28,7 @@
 #include "XrdCl/XrdClPlugInInterface.hh"
 /*----------------------------------------------------------------------------*/
 #include "../file/XrdClJCacheFile.hh"
+#include "../system/XrdClJCacheSystem.hh"
 /*----------------------------------------------------------------------------*/
 #include <map>
 #include <memory>
@@ -40,6 +41,8 @@ namespace XrdCl {
 //------------------------------------------------------------------------------
 class JCacheFactory : public PlugInFactory {
 public:
+  static bool sEnableFileSystem;
+
   //----------------------------------------------------------------------------
   //! Constructor
   //!
@@ -88,6 +91,23 @@ public:
       JCacheFile::SetFlatHierarchy(
           itf != config->end() ? (itf->second == "true") || (itf->second == "1")
                                : false);
+
+      auto itbp = config->find("basepath");
+      if (itbp != config->end() && !itbp->second.empty()) {
+	JCacheFile::SetBasePath(itbp->second);
+      }
+
+      auto itmux = config->find("demux");
+      JCacheFile::SetThreadConnectionDemultiplexing(
+          itmux != config->end()
+              ? (itmux->second == "true") || (itmux->second == "1")
+              : false);
+
+      // if we are supposed to load also the System plug-in
+      auto itss = config->find("system");
+      sEnableFileSystem = (itss != config->end() ? (itss->second == "true") ||
+                                                       (itss->second == "1")
+                                                 : true);
 
       if (const char *v = getenv("XRD_JCACHE_CACHE")) {
         JCacheFile::SetCache((std::string(v).length()) ? std::string(v) : "");
@@ -144,6 +164,22 @@ public:
                                                                     : false);
       }
 
+      if (const char *v = getenv("XRD_JCACHE_BASEPATH")) {
+	JCacheFile::SetBasePath(v);
+      }
+
+      if (const char *v = getenv("XRD_JCACHE_DEMUX")) {
+        JCacheFile::SetThreadConnectionDemultiplexing(
+            ((std::string(v) == "true") || (std::string(v) == "1")) ? true
+                                                                    : false);
+      }
+
+      if (const char *v = getenv("XRD_JCACHE_SYSTEM")) {
+        sEnableFileSystem =
+            ((std::string(v) == "true") || (std::string(v) == "1")) ? true
+                                                                    : false;
+      }
+
       Env *env = DefaultEnv::GetEnv();
       std::string appName;
       env->GetString("AppName", appName);
@@ -175,7 +211,13 @@ public:
                 JCacheFile::sOpenAsync ? "true" : "false");
       log->Info(1, "JCache : bypass operation: %s",
                 JCacheFile::sEnableBypass ? "true" : "false");
+      log->Info(1, "JCache : connection demultiplexing: %s",
+                JCacheFile::sThreadConnectionDemultiplexing ? "true" : "false");
       log->Info(1, "JCache : running app: %s", appName.c_str());
+
+      log->Info(1, "JCache : basepath: '%s'", JCacheFile::sBasePath.c_str());
+      log->Info(1, "JCache : filesystem plug-in : %s",
+                sEnableFileSystem ? "true" : "false");
 
       if (noApps.length()) {
         log->Info(1, "JCache : filtered apps: %s", noApps.c_str());
@@ -209,9 +251,12 @@ public:
   //! Create a file system plug-in for the given URL
   //----------------------------------------------------------------------------
   virtual FileSystemPlugIn *CreateFileSystem(const std::string &url) {
-    Log *log = DefaultEnv::GetLog();
-    log->Error(1, "FileSystem plugin implementation not supported");
-    return static_cast<FileSystemPlugIn *>(0);
+    if (JCacheFactory::sEnableFileSystem) {
+      std::unique_ptr<JCacheSystem> ptr(new JCacheSystem(url));
+      return static_cast<FileSystemPlugIn *>(ptr.release());
+    } else {
+      return static_cast<FileSystemPlugIn *>(0);
+    }
   }
 };
 

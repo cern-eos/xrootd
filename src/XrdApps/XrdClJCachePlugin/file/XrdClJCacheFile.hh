@@ -45,6 +45,7 @@
 #include <iostream>
 #include <string>
 #include <sys/time.h>
+#include <sys/syscall.h>
 /*----------------------------------------------------------------------------*/
 
 namespace JCache {
@@ -224,23 +225,27 @@ public:
   static void SetJournal(const bool &value) { sEnableJournalCache = value; }
   static void SetVector(const bool &value) { sEnableVectorCache = value; }
   static void SetJsonPath(const std::string &path) { sJsonPath = path; }
+  static void SetBasePath(const std::string &path) { sBasePath = path; }
   static void SetSummary(const bool &value) { sEnableSummary = value; }
   static void SetBypass(const bool &value) { sEnableBypass = value; }
   static void SetSize(uint64_t size) { sCleaner.SetSize(size, sCachePath); }
   static void SetAsync(bool async) { sOpenAsync = async; }
   static void SetFlatHierarchy(bool value) { sFlatHierarchy = value; }
+  static void SetThreadConnectionDemultiplexing(bool value) { sThreadConnectionDemultiplexing = value; }
 
   //----------------------------------------------------------------------------
   //! @brief static members pointing to cache settings
   //----------------------------------------------------------------------------
   static std::string sCachePath;
   static std::string sJsonPath;
+  static std::string sBasePath;
   static bool sEnableVectorCache;
   static bool sEnableJournalCache;
   static bool sEnableBypass;
   static bool sEnableSummary;
   static bool sOpenAsync;
   static bool sFlatHierarchy;
+  static bool sThreadConnectionDemultiplexing;
 
   static JournalManager sJournalManager;
 

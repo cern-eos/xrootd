@@ -102,7 +102,7 @@ void Journal::read_jheader() {
   if (jheader.mtime) {
     if (exists) {
       // we only compare if there was a header in the journal
-      if ((abs((int)(fheader.mtime - jheader.mtime)) > 1) ||
+      if ((abs((int)(fheader.mtime - jheader.mtime)) > 5) ||
           (fheader.mtime_nsec != jheader.mtime_nsec) ||
           (jheader.filesize && (fheader.filesize != jheader.filesize))) {
         std::cerr << "warning: remote file change detected - purging path:"
@@ -497,11 +497,6 @@ off_t Journal::get_max_offset() {
 int Journal::reset() {
   journal.clear();
   int retc = 0;
-  if (fd >= 0) {
-    retc = ftruncate(fd, 0);
-    retc |= write_jheader();
-    cachesize = sizeof(jheader_t);
-  }
   max_offset = 0;
   jheader.magic = JOURNAL_MAGIC;
   jheader.mtime = 0;
@@ -511,6 +506,11 @@ int Journal::reset() {
   jheader.placeholder2 = 0;
   jheader.placeholder3 = 0;
   jheader.placeholder4 = 0;
+  if (fd >= 0) {
+    retc = ftruncate(fd, 0);
+    retc |= write_jheader();
+    cachesize = sizeof(jheader_t);
+  }
   return retc;
 }
 
