@@ -70,7 +70,7 @@ XRootDStatus JCacheSystem::DirList(const std::string &path,
       return XRootDStatus(stOK, 0);
     }
     // fall back to the remote listing
-  } 
+  }
 
   if (!JCache::makeHierarchy(ListingPath)) {
     auto st = XRootDStatus(stError, errOSError);
@@ -115,14 +115,14 @@ DirectoryList *JCacheSystem::LoadDirList(const std::string &path) {
     return nullptr;
   }
 
-  DirectoryList* list = new DirectoryList();
+  DirectoryList *list = new DirectoryList();
 
   std::string line;
   while (std::getline(file, line)) {
     // Process the line (for now, just print it)
     auto [addr, name, statinfo] = Deserialize(line);
     DirectoryList::ListEntry *e =
-                new DirectoryList::ListEntry( addr, name, statinfo );
+        new DirectoryList::ListEntry(addr, name, statinfo);
     list->Add(e);
   }
 
@@ -144,7 +144,7 @@ DirectoryList *JCacheSystem::LoadDirList(const std::string &path) {
 //------------------------------------------------------------------------
 bool JCacheSystem::SaveDirList(const std::string &path,
                                DirectoryList *dirList) {
-  //std::cerr << "saving .. " << std::endl;
+  // std::cerr << "saving .. " << std::endl;
 
   std::string tmppath = path + ".tmp";
 
@@ -158,8 +158,8 @@ bool JCacheSystem::SaveDirList(const std::string &path,
   }
 
   for (auto entry = dirList->Begin(); entry != dirList->End(); ++entry) {
-    //std::cout << (*entry)->GetName() << "host:" << (*entry)->GetHostAddress()
-    //          << std::endl;
+    // std::cout << (*entry)->GetName() << "host:" << (*entry)->GetHostAddress()
+    //           << std::endl;
     file << Serialize((*entry)->GetHostAddress(), (*entry)->GetName(),
                       (*entry)->GetStatInfo());
   }
@@ -215,7 +215,14 @@ std::string JCacheSystem::Serialize(const std::string &hostaddress,
       return "";
     std::ostringstream oss;
     oss << stat->GetId() << '\t' << stat->GetSize() << '\t' << stat->GetFlags()
-        << '\t' << stat->GetModTime() << '\t';
+        << '\t' << stat->GetModTime() << '\t' << stat->GetAccessTime() << '\t'
+        << stat->GetChangeTime() << '\t';
+
+    if (stat->ExtendedFormat()) {
+      oss << stat->GetModeAsString() << '\t' << stat->GetOwner() << '\t'
+          << stat->GetGroup() << '\t' << stat->HasChecksum() << '\t'
+          << stat->GetChecksum() << '\t';
+    }
     return oss.str();
   };
 
@@ -264,6 +271,14 @@ JCacheSystem::Deserialize(const std::string &data) {
     uint64_t size;
     uint32_t flags;
     uint64_t modTime;
+    uint64_t changeTime;
+    uint64_t accessTime;
+    bool extended;
+    std::string mode;
+    std::string owner;
+    std::string group;
+    std::string checksum;
+
     std::getline(iss, id, '\t');
     std::getline(iss, token, '\t');
     size = std::stoull(token);
@@ -271,17 +286,42 @@ JCacheSystem::Deserialize(const std::string &data) {
     flags = std::stoul(token);
     std::getline(iss, token, '\t');
     modTime = std::stoull(token);
-    
-    std::cerr << "id:" << id <<  " size:" << size << " flags:" << flags << " modtime:" << modTime << std::endl;
-    XrdCl::StatInfo *stat = new XrdCl::StatInfo(id, size, flags, modTime);
+    std::getline(iss, token, '\t');
+    accessTime = std::stoull(token);
+    std::getline(iss, token, '\t');
+    changeTime = std::stoull(token);
+    std::getline(iss, token, '\t');
+    if (token.length()) {
+      extended = true;
+      mode = token;
+      std::getline(iss, token, '\t');
+      owner = token;
+      std::getline(iss, token, '\t');
+      group = token;
+      std::getline(iss, token, '\t');
+      if (token.length()) {
+        checksum = token;
+      }
+    }
+    //    std::cerr << "id:" << id <<  " size:" << size << " flags:" << flags <<
+    //    " modtime:" << modTime << std::endl;
+
+    XrdCl::StatInfo *stat;
+    if (extended) {
+      stat = new XrdCl::StatInfo(id, size, flags, modTime, changeTime,
+                                 accessTime, mode, owner, group, checksum);
+    } else {
+      stat = new XrdCl::StatInfo(id, size, flags, modTime);
+    }
+
     return stat;
   };
   auto idx1 = data.find('\t');
   auto idx2 = data.find('\t', idx1 + 1);
   std::string hostaddress = data.substr(0, idx1);
-  std::string name = data.substr(idx1 + 1, idx2);
+  std::string name = data.substr(idx1 + 1, idx2-idx1-1);
   std::string stat_str = data.substr(idx2 + 1);
-  std::cerr << stat_str << std::endl;
+  //  std::cerr << stat_str << std::endl;
   return std::make_tuple(url_decode(hostaddress), url_decode(name),
                          stat_decode(stat_str));
 }

@@ -22,7 +22,7 @@
 #include "XrdCl/XrdClConstants.hh"
 #include "XrdCl/XrdClUtils.hh"
 #include <cstdlib>
-
+#include <iostream>
 namespace XrdCl
 {
   //----------------------------------------------------------------------------
@@ -238,6 +238,34 @@ namespace XrdCl
     pImpl->pSize       = size;
     pImpl->pFlags      = flags;
     pImpl->pModifyTime = modTime;
+  }
+
+  //------------------------------------------------------------------------
+  // Constructor
+  //------------------------------------------------------------------------
+  StatInfo::StatInfo( const std::string &id,
+		      uint64_t size,
+		      uint32_t flags,
+		      uint64_t modTime,
+		      uint64_t changeTime,
+		      uint64_t accessTime,
+		      const std::string &mode,
+		      const std::string &owner,
+		      const std::string &group,
+		      const std::string &checksum ) : pImpl( new StatInfoImpl() )
+  {
+    pImpl->pId         = id;
+    pImpl->pSize       = size;
+    pImpl->pFlags      = flags;
+    pImpl->pModifyTime = modTime;
+    pImpl->pChangeTime = changeTime;
+    pImpl->pAccessTime = accessTime;
+    pImpl->pMode       = mode;
+    pImpl->pOwner      = owner;
+    pImpl->pGroup      = group;
+    pImpl->pCksum      = checksum;
+    pImpl->pHasCksum   = checksum.length()?true:false;
+    pImpl->pExtended   = true;
   }
 
   //------------------------------------------------------------------------
