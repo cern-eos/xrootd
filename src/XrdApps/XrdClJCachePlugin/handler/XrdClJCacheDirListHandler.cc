@@ -32,20 +32,15 @@
 
 namespace XrdCl {
 // ---------------------------------------------------------------------- //
-void JCacheDirListHandler::HandleResponse(XrdCl::XRootDStatus *pStatus, XrdCl::AnyObject *pResponse) {
-  std::cerr << "Handling DirList Response ..." << mPath << std::endl;
+void JCacheDirListHandler::HandleResponse(XrdCl::XRootDStatus *pStatus,
+                                          XrdCl::AnyObject *pResponse) {
   if (pStatus->IsOK()) {
     if (pResponse) {
       // save the listing
-      std::cerr << "Saving DirList: " << mPath << std::endl;
-      XrdCl::DirectoryList* lList;
+      XrdCl::DirectoryList *lList;
       pResponse->Get(lList);
       pSystem->SaveDirList(mPath, lList);
-    } else {
-      std::cerr << "Failed Listing: " << mPath << std::endl;
     }
-  } else {
-    std::cerr << "Failed Listing: " << mPath << std::endl;
   }
   mHandler->HandleResponse(pStatus, pResponse);
 }

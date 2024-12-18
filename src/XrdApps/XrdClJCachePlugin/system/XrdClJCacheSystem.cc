@@ -83,9 +83,7 @@ XRootDStatus JCacheSystem::DirList(const std::string &path,
 
   auto lhandler = new JCacheDirListHandler(handler, this, ListingPath);
 
-  std::cerr << "Creating handler for path: " << path << std::endl;
   XRootDStatus st = pSystem->DirList(path, flags, lhandler, timeout);
-  std::cerr << "Command sumbitted" << std::endl;
   if (!st.IsOK()) {
     std::cerr << "error: unable to get listing: " << path << std::endl;
   }
@@ -309,7 +307,7 @@ JCacheSystem::Deserialize(const std::string &data) {
   auto idx1 = data.find('\t');
   auto idx2 = data.find('\t', idx1 + 1);
   std::string hostaddress = data.substr(0, idx1);
-  std::string name = data.substr(idx1 + 1, idx2-idx1-1);
+  std::string name = data.substr(idx1 + 1, idx2 - idx1 - 1);
   std::string stat_str = data.substr(idx2 + 1);
   //  std::cerr << stat_str << std::endl;
   return std::make_tuple(url_decode(hostaddress), url_decode(name),
