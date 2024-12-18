@@ -230,6 +230,7 @@ add_library(
   XrdApps/XrdClJCachePlugin/system/XrdClJCacheSystem.cc
   XrdApps/XrdClJCachePlugin/vector/XrdClVectorCache.cc
   XrdApps/XrdClJCachePlugin/vector/XrdClVectorCache.hh
+  XrdApps/XrdClJCachePlugin/handler/XrdClJCacheDirListHandler.cc
   XrdApps/XrdClJCachePlugin/handler/XrdClJCacheOpenHandler.cc
   XrdApps/XrdClJCachePlugin/handler/XrdClJCacheOpenHandler.hh
   XrdApps/XrdClJCachePlugin/handler/XrdClJCacheReadHandler.hh

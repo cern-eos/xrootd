@@ -24,6 +24,7 @@
 #include "system/XrdClJCacheSystem.hh"
 #include "file/Hierarchy.hh"
 #include "file/XrdClJCacheFile.hh"
+#include "handler/XrdClJCacheDirListHandler.hh"
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -80,26 +81,15 @@ XRootDStatus JCacheSystem::DirList(const std::string &path,
   }
   // get the listing
 
-  XrdCl::DirectoryList *response = nullptr;
-  AnyObject *obj = new AnyObject();
+  auto lhandler = new JCacheDirListHandler(handler, this, ListingPath);
 
-  SyncResponseHandler lhandler;
-  XRootDStatus st = pSystem->DirList(path, flags, &lhandler, timeout);
+  std::cerr << "Creating handler for path: " << path << std::endl;
+  XRootDStatus st = pSystem->DirList(path, flags, lhandler, timeout);
+  std::cerr << "Command sumbitted" << std::endl;
   if (!st.IsOK()) {
     std::cerr << "error: unable to get listing: " << path << std::endl;
-    return st;
   }
 
-  st = MessageUtils::WaitForResponse(&lhandler, response);
-  if (!st.IsOK())
-    return st;
-
-  // save the listing
-  SaveDirList(ListingPath, response);
-
-  obj->Set(response);
-  XRootDStatus *ret_st = new XRootDStatus(XRootDStatus(stOK, 0));
-  handler->HandleResponse(ret_st, obj);
   return st;
 }
 

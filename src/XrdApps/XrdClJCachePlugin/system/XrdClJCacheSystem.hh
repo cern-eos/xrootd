@@ -223,15 +223,20 @@ public:
     return pSystem->GetProperty(name, value);
   }
 
+  XrdCl::FileSystem *System() { return pSystem; }
+
+  bool SaveDirList(const std::string &path, DirectoryList *dirList);
+
 private:
   XrdCl::FileSystem *pSystem;
   std::string mUrl;
 
-  DirectoryList* LoadDirList(const std::string& path);
-  bool SaveDirList(const std::string& path, DirectoryList* dirList);
+  DirectoryList *LoadDirList(const std::string &path);
 
-  std::string Serialize(const std::string& hostaddress, const std::string& name, XrdCl::StatInfo* stat);
-  std::tuple<std::string, std::string, XrdCl::StatInfo*> Deserialize(const std::string& data);
+  std::string Serialize(const std::string &hostaddress, const std::string &name,
+                        XrdCl::StatInfo *stat);
+  std::tuple<std::string, std::string, XrdCl::StatInfo *>
+  Deserialize(const std::string &data);
 };
 
-}
+} // namespace XrdCl
