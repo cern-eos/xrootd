@@ -106,7 +106,10 @@ static  int                Init(XrdOucErrInfo *einfo, char *KP=0, char *kfn=0);
 
 static  void               setOpts(int opts) {options = opts;}
 static  void               setClientOpts(int opts) {client_options = opts;}
-static  void               setParms(char *param) {Parms = param;}
+static  void               setParms(char *param)
+                                    {if (Parms) free(Parms);
+                                     Parms = param;
+                                    }
 static  void               setExpFile(char *expfile)
                                      {if (expfile)
                                          {int lt = strlen(expfile);
