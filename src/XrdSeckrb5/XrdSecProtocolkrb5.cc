@@ -457,9 +457,7 @@ int XrdSecProtocolkrb5::Authenticate(XrdSecCredentials *cred,
 
    CLDBG("protocol check");
 
-   char printit[4096];
-   sprintf(printit,"Step is %d",Step);
-   CLDBG(printit);
+   CLDBG("Step is " << (int)Step);
 // If this is not the first call the buffer contains a forwarded token:
 // we save it into a file and return signalling the end of the hand-shake
 //
@@ -999,7 +997,7 @@ char  *XrdSecProtocolkrb5Init(const char     mode,
 
 // Now initialize the server
 //
-   options |= XrdSecDEBUG;
+   if (getenv("XrdSecDEBUG")) options |= XrdSecDEBUG;
    XrdSecProtocolkrb5::setExpFile(ExpFile);
    XrdSecProtocolkrb5::setOpts(options);
    if (!XrdSecProtocolkrb5::Init(erp, KPrincipal, Keytab))
