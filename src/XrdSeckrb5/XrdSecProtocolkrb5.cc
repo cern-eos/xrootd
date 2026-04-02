@@ -725,7 +725,7 @@ int XrdSecProtocolkrb5::get_krbCreds(char *KP, krb5_creds **krb_creds)
 int XrdSecProtocolkrb5::get_krbFwdCreds(char *KP, krb5_data *outdata)
 {
     int rc;
-    krb5_principal client, server;
+    krb5_principal client = 0, server = 0;
 
 // Fill-in our principal
 //
@@ -738,6 +738,7 @@ int XrdSecProtocolkrb5::get_krbFwdCreds(char *KP, krb5_data *outdata)
 //
    if ((rc = krb5_parse_name(krb_client_context, KP, &server)))
       {CLDBG("get_krbFwdCreds: Cannot parse service principal;" <<krb_etxt(rc));
+       krb5_free_principal(krb_client_context, client);
        return rc;
       }
 
@@ -747,23 +748,25 @@ int XrdSecProtocolkrb5::get_krbFwdCreds(char *KP, krb5_data *outdata)
                                    KRB5_AUTH_CONTEXT_RET_TIME)))
       {CLDBG("Unable to set KRB5_AUTH_CONTEXT_RET_TIME"
                            " in the authentication context" << krb_etxt(rc));
+       krb5_free_principal(krb_client_context, client);
+       krb5_free_principal(krb_client_context, server);
        return rc;
       }
 
 // Acquire a TGT for use at a remote host system
 //
-   if ((rc = krb5_fwd_tgt_creds(krb_client_context, AuthClientContext, 0 /*host*/,
+   rc = krb5_fwd_tgt_creds(krb_client_context, AuthClientContext, 0 /*host*/,
                                      client, server, krb_client_ccache, true,
-                                     outdata)))
-      {CLDBG("get_krbFwdCreds: err getting forwarded ticket;" <<krb_etxt(rc));
-       return rc;
-      }
+                                     outdata);
+   if (rc)
+      {CLDBG("get_krbFwdCreds: err getting forwarded ticket;" <<krb_etxt(rc));}
 
-// Done
+// Free principals and return
 //
+   krb5_free_principal(krb_client_context, client);
+   krb5_free_principal(krb_client_context, server);
    return rc;
 }
-
 /******************************************************************************/
 /*                          e x p _ k r b T k n                               */
 /******************************************************************************/
