@@ -201,7 +201,6 @@ char                XrdSecProtocolkrb5::ExpFile[XrdSecMAXPATHLEN] = "/tmp/krb5cc
   
 void XrdSecProtocolkrb5::Delete()
 {
-     if (Parms)      {free(Parms); Parms = 0;}
      if (Creds)       krb5_free_creds(krb_context, Creds);
      if (Ticket)      krb5_free_ticket(krb_context, Ticket);
      if (AuthContext) krb5_auth_con_free(krb_context, AuthContext);
