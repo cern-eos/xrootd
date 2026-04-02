@@ -337,9 +337,14 @@ XrdSecCredentials *XrdSecProtocolkrb5::getCredentials(XrdSecParameters *noparm,
                 return (XrdSecCredentials *)0;
                } else {// Need to re-init
                        CLPRT("Ticket missing or invalid: re-init ");
-                       rc = system(reinitcmd);
+                       int sysrc = system(reinitcmd);
                        CLDBG("getCredentials: return code from '"<<reinitcmd<<
-                             "': "<< rc);
+                             "': "<< sysrc);
+                       if (sysrc != 0)
+                          {krbClientContext.UnLock();
+                           Fatal(error, EACCES, "kinit re-initialization failed", Service);
+                           return (XrdSecCredentials *)0;
+                          }
                        reinitdone = 1;
                        continue;
                       }
@@ -350,9 +355,14 @@ XrdSecCredentials *XrdSecProtocolkrb5::getCredentials(XrdSecParameters *noparm,
               { if ((client_options & XrdSecINITTKN) && !reinitdone && caninittkn)
                    { // Need to re-init
                     CLPRT("Existing ticket is not forwardable: re-init ");
-                    rc = system(reinitcmd);
+                    int sysrc = system(reinitcmd);
                     CLDBG("getCredentials: return code from '"<<reinitcmd<<
-                          "': "<< rc);
+                          "': "<< sysrc);
+                    if (sysrc != 0)
+                       {krbClientContext.UnLock();
+                        Fatal(error, EACCES, "kinit re-initialization failed", Service);
+                        return (XrdSecCredentials *)0;
+                       }
                     reinitdone = 1;
                     continue;
                    } else {
