@@ -41,6 +41,7 @@
 #include <cstring>
 #include <ctime>
 #include <atomic>
+#include <limits>
 #include <vector>
 
 #ifndef __FreeBSD__
@@ -442,7 +443,9 @@ XrdSecCredentials *XrdSecProtocolztn::readToken(XrdOucErrInfo *erp,
    struct stat Stat;
    const char *bTok;
    char *buff;
-   int rdLen, sz, tokFD;
+   int sz, tokFD;
+   ssize_t rdLen;
+   size_t tokenSize;
 
 // Be pessimistic
 //
@@ -468,19 +471,29 @@ XrdSecCredentials *XrdSecProtocolztn::readToken(XrdOucErrInfo *erp,
 
 // Make sure token is not too big and inaccessible by group/other.
 //
-   if (Stat.st_size > maxTSize)
+   if (Stat.st_size < 0)
+      {close(tokFD);
+       return readFail(erp, path, EOVERFLOW);
+      }
+   if (static_cast<uint64_t>(Stat.st_size) > static_cast<uint64_t>(maxTSize))
       {close(tokFD);
        return readFail(erp, path, EMSGSIZE);
+      }
+   if (static_cast<uint64_t>(Stat.st_size)
+   >  static_cast<uint64_t>(std::numeric_limits<ssize_t>::max()))
+      {close(tokFD);
+       return readFail(erp, path, EOVERFLOW);
       }
    if (Stat.st_mode & (S_IRWXG | S_IRWXO))
       {close(tokFD);
        return readFail(erp, path, EPERM);
       }
-   buff = (char *)alloca(Stat.st_size+1);
+   tokenSize = static_cast<size_t>(Stat.st_size);
+   buff = (char *)alloca(tokenSize+1);
 
 // Read in the token
 //
-   if ((rdLen = read(tokFD, buff, Stat.st_size)) != Stat.st_size)
+   if ((rdLen = read(tokFD, buff, tokenSize)) != static_cast<ssize_t>(tokenSize))
       {int rc = (rdLen < 0 ? errno : EIO);
        close(tokFD);
        return readFail(erp, path, rc);
@@ -489,7 +502,7 @@ XrdSecCredentials *XrdSecProtocolztn::readToken(XrdOucErrInfo *erp,
 
 // Make sure the token ends with a null byte
 //
-   buff[Stat.st_size] = 0;
+   buff[tokenSize] = 0;
 
 // Strip the token
 //
