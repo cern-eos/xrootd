@@ -773,46 +773,27 @@ int XrdSecProtocolkrb5::exp_krbTkn(XrdSecCredentials *cred, XrdOucErrInfo *erp)
    krb5_address      ipadd;
    int rc = 0;
 
-// Create the cache filename, expanding the keywords, if needed
+// Create the cache filename, expanding the keywords, if needed.
+// Use std::string to avoid fixed-buffer overflow during template expansion.
 //
-    char ccfile[XrdSecMAXPATHLEN];
-    strcpy(ccfile, XrdSecProtocolkrb5::ExpFile);
-    int nlen = strlen(ccfile);
-    char *pusr = (char *) strstr(&ccfile[0], "<user>");
-    if (pusr)
-       {int ln = strlen(CName);
-        if (ln != 6) {
-           // Adjust the space
-           int lm = strlen(ccfile) - (int)(pusr + 6 - &ccfile[0]); 
-           memmove(pusr+ln, pusr+6, lm);
-        }
-        // Copy the name
-        memcpy(pusr, CName, ln);
-        // Adjust the length
-        nlen += (ln - 6);
-        }
-    char *puid = (char *) strstr(&ccfile[0], "<uid>");
+    std::string ccpath(XrdSecProtocolkrb5::ExpFile);
+
+    std::string::size_type pos;
+    if ((pos = ccpath.find("<user>")) != std::string::npos)
+       ccpath.replace(pos, 6, CName);
+
     struct passwd *pw;
     XrdSysPwd thePwd(CName, &pw);
-    if (puid)
+    if ((pos = ccpath.find("<uid>")) != std::string::npos)
        {char cuid[20] = {0};
-        if (pw)
-           sprintf(cuid, "%d", pw->pw_uid);
-        int ln = strlen(cuid);
-        if (ln != 5) {
-           // Adjust the space
-           int lm = strlen(ccfile) - (int)(puid + 5 - &ccfile[0]); 
-           memmove(puid+ln, pusr+5, lm);
-        }
-        // Copy the name
-        memcpy(puid, cuid, ln);
-        // Adjust the length
-        nlen += (ln - 5);
-        }
+        if (pw) snprintf(cuid, sizeof(cuid), "%d", pw->pw_uid);
+        ccpath.replace(pos, 5, cuid);
+       }
 
-// Terminate to the new length
-//
-    ccfile[nlen] = 0;
+    if (ccpath.size() >= XrdSecMAXPATHLEN)
+       return Fatal(erp, ENAMETOOLONG,
+                    "Expanded credential cache path exceeds maximum length;",
+                    ccpath.c_str(), 0);
 
 // Point the received creds
 //
@@ -827,47 +808,55 @@ int XrdSecProtocolkrb5::exp_krbTkn(XrdSecCredentials *cred, XrdOucErrInfo *erp)
     if ((rc = krb5_get_server_rcache(krb_context,
                                      krb5_princ_component(krb_context, krb_principal, 0),
                                      &rcache)))
-       return rc;
+       {krbContext.UnLock(); return rc;}
     if ((rc = krb5_auth_con_setrcache(krb_context, AuthContext, rcache)))
-       return rc;
+       {krbContext.UnLock(); return rc;}
 
 // Fill-in remote address
 //
     SetAddr(ipadd);
     if ((rc = krb5_auth_con_setaddrs(krb_context, AuthContext, 0, &ipadd)))
-       return rc;
+       {krbContext.UnLock(); return rc;}
 
 // Readout the credentials
 //
     krb5_creds **creds = 0;
     if ((rc = krb5_rd_cred(krb_context, AuthContext,
                            &forwardCreds, &creds, 0)))
-       return rc;
+       {krbContext.UnLock(); return rc;}
 
 // Resolve cache name
     krb5_ccache cache = 0;
-    if ((rc = krb5_cc_resolve(krb_context, ccfile, &cache)))
-       return rc;
+    if ((rc = krb5_cc_resolve(krb_context, ccpath.c_str(), &cache)))
+       {krbContext.UnLock(); return rc;}
 
 // Init cache
 //
     if ((rc = krb5_cc_initialize(krb_context, cache,
                                  Ticket->enc_part2->client)))
-       return rc;
+       {krbContext.UnLock(); return rc;}
 
 // Store credentials in cache
 //
     if ((rc = krb5_cc_store_cred(krb_context, cache, *creds)))
-       return rc;
+       {krbContext.UnLock(); return rc;}
 
 // Close cache
     if ((rc = krb5_cc_close(krb_context, cache)))
-       return rc;
+       {krbContext.UnLock(); return rc;}
 
 // Change permission and ownership of the file
 //
-    if (chmod(ccfile, 0600) == -1)
-       return Fatal(erp, errno, "Unable to change file permissions;", ccfile, 0);
+    if (chmod(ccpath.c_str(), 0600) == -1)
+       {krbContext.UnLock();
+        return Fatal(erp, errno, "Unable to change file permissions;",
+                     ccpath.c_str(), 0);
+       }
+    if (pw && chown(ccpath.c_str(), pw->pw_uid, pw->pw_gid) == -1)
+       {krbContext.UnLock();
+        return Fatal(erp, errno, "Unable to change file ownership;",
+                     ccpath.c_str(), 0);
+       }
 
 // Done
 //
