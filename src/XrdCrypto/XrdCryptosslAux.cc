@@ -735,7 +735,7 @@ time_t XrdCryptosslASN1toUTC(const ASN1_TIME *tsn1)
 } 
 
 //____________________________________________________________________________
-void XrdCryptosslNameOneLine(X509_NAME *nm, XrdOucString &s)
+void XrdCryptosslNameOneLine(const X509_NAME *nm, XrdOucString &s)
 {
    // Function to convert X509_NAME into a one-line human readable string
 
@@ -756,4 +756,13 @@ void XrdCryptosslNameOneLine(X509_NAME *nm, XrdOucString &s)
 
    // Done
    return;
+}
+
+//____________________________________________________________________________
+void XrdCryptosslNameOneLine(X509_NAME *nm, XrdOucString &s)
+{
+   // Copy of above function with non-const first argument
+   // This function is unused -- only added to preserve old ABI
+   // Can be removed if soname changes
+   XrdCryptosslNameOneLine(const_cast<const X509_NAME *>(nm), s);
 }
