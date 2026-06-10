@@ -156,6 +156,8 @@ void XrdHttp1Session::completeHeaderValue()
 void XrdHttp1Session::markHeadersReady()
 {
   headersReady_ = true;
+  httpMajor_ = llhttp_get_http_major(&parser_);
+  httpMinor_ = llhttp_get_http_minor(&parser_);
 }
 
 XrdHttp1Session::XrdHttp1Session()
@@ -220,8 +222,8 @@ int XrdHttp1Session::parseHeaders(XrdHttpProtocol &prot, XrdHttpReq &req)
       return 1;
   }
 
-  char *data = nullptr;
-  const int avail = prot.BuffgetData(prot.BuffUsed(), &data, false);
+  int avail = 0;
+  char *data = prot.BuffPeek(avail);
   if (avail <= 0 || !data)
     return 1;
 
@@ -234,14 +236,21 @@ int XrdHttp1Session::parseHeaders(XrdHttpProtocol &prot, XrdHttpReq &req)
     if (consumed > static_cast<size_t>(avail))
       consumed = static_cast<size_t>(avail);
     prot.BuffConsume(static_cast<int>(consumed));
+    const int applied = applyTo(req);
     llhttp_reset(&parser_);
     parser_.data = sessionCtx_;
     resetMessage();
-    return applyTo(req);
+    if (applied < 0) {
+      reset();
+      return -1;
+    }
+    return applied;
   }
 
-  if (err == HPE_OK)
+  if (err == HPE_OK) {
+    prot.BuffConsume(avail);
     return 1;
+  }
 
   TRACE(ALL, " llhttp error "
         << llhttp_errno_name(err) << " "

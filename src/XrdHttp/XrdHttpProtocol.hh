@@ -305,6 +305,8 @@ private:
   
   /// Consume some bytes from the buffer
   void BuffConsume(int blen);
+  /// Return a pointer to contiguous buffered data without consuming it
+  char *BuffPeek(int &avail);
   /// Get a pointer, valid for up to blen bytes from the buffer. Returns the validity
   int BuffgetData(int blen, char **data, bool wait);
   /// Copy a full line of text from the buffer into dest. Zero if no line can be found in the buffer

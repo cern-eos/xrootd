@@ -855,8 +855,10 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
 
   // Compute and send the response. This may involve further reading from the socket
   rc = CurrentReq.ProcessHTTPReq();
-  if (rc < 0)
+  if (rc < 0) {
      CurrentReq.reset();
+     http1Session_.reset();
+  }
 
 
 
@@ -1474,6 +1476,25 @@ void XrdHttpProtocol::BuffConsume(int blen) {
 
   if (BuffUsed() == 0)
     myBuffStart = myBuffEnd = myBuff->buff;
+}
+
+/******************************************************************************/
+/*                             B u f f P e e k                                */
+/******************************************************************************/
+
+char *XrdHttpProtocol::BuffPeek(int &avail)
+{
+  if (myBuffEnd >= myBuffStart)
+    avail = myBuffEnd - myBuffStart;
+  else
+    avail = myBuff->buff + myBuff->bsize - myBuffStart;
+
+  if (avail <= 0) {
+    avail = 0;
+    return nullptr;
+  }
+
+  return myBuffStart;
 }
 
 /******************************************************************************/
