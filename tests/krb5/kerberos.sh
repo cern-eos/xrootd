@@ -54,6 +54,8 @@ function setup() {
 	kadmin.local -r XROOTD.ORG <<-EOF
 	add_principal -randkey -kvno 1 host/localhost@XROOTD.ORG
 	ktadd -k krb5.keytab host/localhost
+	add_principal -randkey -kvno 1 HTTP/localhost@XROOTD.ORG
+	ktadd -k krb5.keytab HTTP/localhost
 	add_principal xrootd@XROOTD.ORG
 	xrootd
 	xrootd

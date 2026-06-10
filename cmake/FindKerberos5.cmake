@@ -29,7 +29,19 @@ else()
     ${LIBRARY_PATH_PREFIX}
     ${LIB_SEARCH_OPTIONS})
 
+  find_library(
+    GSSAPI_KRB5_LIBRARY
+    NAMES gssapi_krb5 gss
+    HINTS
+    ${KERBEROS5_ROOT_DIR}
+    PATH_SUFFIXES
+    ${LIBRARY_PATH_PREFIX}
+    ${LIB_SEARCH_OPTIONS})
+
   set( KERBEROS5_LIBRARIES ${KERBEROS5_LIBRARY} ${COM_ERR_LIBRARY} )
+  if( GSSAPI_KRB5_LIBRARY )
+    list( APPEND KERBEROS5_LIBRARIES ${GSSAPI_KRB5_LIBRARY} )
+  endif()
 
   find_package_handle_standard_args(
     Kerberos5

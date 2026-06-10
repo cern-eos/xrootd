@@ -30,6 +30,9 @@
 #include "XrdTls/XrdTlsPeerCerts.hh"
 #include "XrdTls/XrdTlsContext.hh"
 #include "XrdOuc/XrdOucGMap.hh"
+#ifdef HAVE_HTTP_KRB5
+#include "XrdHttpKrb5.hh"
+#endif
 
 namespace XrdHttpProtoInfo
 {
@@ -276,3 +279,88 @@ int XrdHttpProtocol::GetVOMSData(XrdLink *lp)
 
   return 0;
 }
+
+#ifdef HAVE_HTTP_KRB5
+/******************************************************************************/
+/*                        H a n d l e K r b 5 A u t h                         */
+/******************************************************************************/
+
+static std::string principalUser(const std::string &displayName)
+{
+  auto at = displayName.find('@');
+  if (at == std::string::npos) return displayName;
+  return displayName.substr(0, at);
+}
+
+int XrdHttpProtocol::HandleKrb5Auth()
+{
+#undef  TRACELINK
+#define TRACELINK Link
+
+  if (!XrdHttpKrb5::IsEnabled())
+    return 0;
+
+  if (krb5Authed)
+    return 0;
+
+  if (!ishttps || !ssldone) {
+    TRACEI(ALL, " Kerberos authentication requires HTTPS.");
+    SendSimpleResp(403, nullptr, nullptr,
+                   "Kerberos authentication requires HTTPS.", 0, false);
+    return -1;
+  }
+
+  if (!krb5Auth)
+    krb5Auth = new XrdHttpKrb5();
+
+  const char *authHdr = nullptr;
+  for (const auto &hdr : CurrentReq.allheaders) {
+    if (!strcasecmp(hdr.first.c_str(), "Authorization")) {
+      authHdr = hdr.second.c_str();
+      break;
+    }
+  }
+
+  std::string outToken;
+  std::string principal;
+  std::string errMsg;
+
+  auto result = krb5Auth->Accept(authHdr, outToken, principal, errMsg);
+
+  if (result == XrdHttpKrb5::kFailed) {
+    TRACEI(ALL, " Kerberos authentication failed: " << errMsg);
+    SendSimpleResp(401, nullptr, nullptr,
+                   "Kerberos authentication failed.", 0, false);
+    return -1;
+  }
+
+  if (result == XrdHttpKrb5::kChallenge ||
+      result == XrdHttpKrb5::kContinue) {
+    std::string wwwAuth = "WWW-Authenticate: Negotiate";
+    if (!outToken.empty()) {
+      wwwAuth += " ";
+      wwwAuth += outToken;
+    }
+    TRACEI(DEBUG, " Sending Kerberos authentication challenge.");
+    SendSimpleResp(401, nullptr, wwwAuth.c_str(), nullptr, 0, true);
+    BuffConsume(BuffUsed());
+    CurrentReq.reset();
+    return 1;
+  }
+
+  // Authentication complete
+  krb5Authed = true;
+  strncpy(SecEntity.prot, "krb5", sizeof(SecEntity.prot));
+
+  if (SecEntity.name) free(SecEntity.name);
+  SecEntity.name = strdup(principalUser(principal).c_str());
+
+  if (SecEntity.moninfo) free(SecEntity.moninfo);
+  SecEntity.moninfo = strdup(principal.c_str());
+
+  TRACEI(REQ, " Kerberos authentication succeeded for " << principal);
+#undef  TRACELINK
+#define TRACELINK lp
+  return 0;
+}
+#endif
