@@ -14,7 +14,7 @@ add_subdirectory(XrdPosix)
 add_subdirectory(XrdHttpTests)
 
 add_subdirectory(XrdOucTests)
-
+add_subdirectory(XrdAccTokenTests)
 add_subdirectory(XrdThrottleTests)
 
 add_subdirectory( XrdSsiTests )
