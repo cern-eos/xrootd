@@ -77,6 +77,9 @@ class XrdHttpExtHandler;
 struct XrdVersionInfo;
 class XrdOucGMap;
 class XrdCryptoFactory;
+#ifdef HAVE_HTTP_KRB5
+class XrdHttpKrb5;
+#endif
 
 class XrdHttpProtocol : public XrdProtocol {
   
@@ -169,6 +172,12 @@ private:
   /// Handle authentication of the client
   /// @return 0 if successful, otherwise error
   int HandleAuthentication(XrdLink* lp);
+
+#ifdef HAVE_HTTP_KRB5
+  /// Handle Kerberos SPNEGO authentication over HTTP(S)
+  /// @return 0 if authenticated, 1 if challenge sent, -1 on error
+  int HandleKrb5Auth();
+#endif
 
   /// After the SSL handshake, retrieve the VOMS info and the various stuff
   /// that is needed for autorization
@@ -315,6 +324,12 @@ private:
 
   /// Tells that we are just logging in
   bool DoingLogin;
+
+#ifdef HAVE_HTTP_KRB5
+  /// Per-connection Kerberos authentication state
+  XrdHttpKrb5 *krb5Auth;
+  bool krb5Authed;
+#endif
 
   /// Indicates whether we've attempted to send app info.
   bool DoneSetInfo;

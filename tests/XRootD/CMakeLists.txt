@@ -10,8 +10,9 @@ if(ENABLE_HTTP_TESTS)
 endif()
 
 if(BUILD_KRB5 AND NOT APPLE)
-  list(APPEND XROOTD_CONFIGS krb5)
+  list(APPEND XROOTD_CONFIGS krb5 httpkrb5)
   list(APPEND krb5_FIXTURES Kerberos)
+  list(APPEND httpkrb5_FIXTURES Kerberos TLS)
 endif()
 
 # Note: HAVE_SCITOKEN_CONFIG_SET_STR is required to override the CA file

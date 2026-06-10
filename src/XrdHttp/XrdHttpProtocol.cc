@@ -41,6 +41,9 @@
 #include "XrdHttpUtils.hh"
 #include "XrdHttpSecXtractor.hh"
 #include "XrdHttpExtHandler.hh"
+#ifdef HAVE_HTTP_KRB5
+#include "XrdHttpKrb5.hh"
+#endif
 
 #include "XrdTls/XrdTls.hh"
 #include "XrdTls/XrdTlsContext.hh"
@@ -175,6 +178,10 @@ XrdHttpProtocol::XrdHttpProtocol(bool imhttps)
 SecEntity(""), CurrentReq(this, ReadRangeConfig) {
   myBuff = 0;
   Addr_str = 0;
+#ifdef HAVE_HTTP_KRB5
+  krb5Auth = 0;
+  krb5Authed = false;
+#endif
   Reset();
   ishttps = imhttps;
 
@@ -805,6 +812,15 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
   }
 
 
+
+#ifdef HAVE_HTTP_KRB5
+  // Kerberos SPNEGO authentication must succeed before login
+  if (!Bridge && XrdHttpKrb5::IsEnabled()) {
+    int krbRc = HandleKrb5Auth();
+    if (krbRc < 0) return -1;
+    if (krbRc > 0) return krbRc;
+  }
+#endif
 
   // Now we have everything that is needed to try the login
   // Remember that if there is an exthandler then it has the responsibility
@@ -1943,6 +1959,14 @@ void XrdHttpProtocol::Cleanup() {
   if (SecEntity.host) free(SecEntity.host);
   if (SecEntity.moninfo) free(SecEntity.moninfo);
 
+#ifdef HAVE_HTTP_KRB5
+  if (krb5Auth) {
+    delete krb5Auth;
+    krb5Auth = 0;
+  }
+  krb5Authed = false;
+#endif
+
   SecEntity.Reset();
 
   if (Addr_str) free(Addr_str);
@@ -1968,6 +1992,10 @@ void XrdHttpProtocol::Reset() {
 
   DoingLogin = false;
   DoneSetInfo = false;
+
+#ifdef HAVE_HTTP_KRB5
+  krb5Authed = false;
+#endif
 
   ResumeBytes = 0;
   Resume = 0;
@@ -3014,6 +3042,17 @@ int XrdHttpProtocol::xauth(XrdOucStream &Config) {
           eDest.Emsg("Config", "http.auth tpc value is invalid"); return 1;
         }
       }
+#ifdef HAVE_HTTP_KRB5
+    } else if(!strcmp("krb5", val)) {
+      char *keytab = Config.GetWord();
+      char *principal = Config.GetWord();
+      if (!keytab || !*keytab || !principal || !*principal) {
+        eDest.Emsg("Config", "http.auth krb5 requires a keytab and principal.");
+        return 1;
+      }
+      if (!XrdHttpKrb5::Init(eDest, keytab, principal))
+        return 1;
+#endif
     } else {
       eDest.Emsg("Config", "http.auth value is invalid"); return 1;
     }
