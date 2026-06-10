@@ -15,6 +15,13 @@ http.parser llhttp    # default
 http.parser legacy    # previous line-based parser
 ```
 
+## Tests
+
+- `tests/XRootD/httpparser` — llhttp smoke tests (GET/PUT/HEAD/DELETE, OPTIONS,
+  chunked upload, keep-alive, malformed request handling)
+- `tests/XRootD/httpparserlegacy` — legacy parser regression on port 7096
+- `tests/XRootD/http` — full HTTP integration suite (runs with `http.parser llhttp`)
+
 ## Phase 2
 
 HTTP/2 (`nghttp2`) will branch from `HttpConnection` after ALPN negotiation

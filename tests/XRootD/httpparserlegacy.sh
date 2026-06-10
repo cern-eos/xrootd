@@ -26,6 +26,12 @@ function test_httpparserlegacy() {
 	code=$(curl -s -o /dev/null -w '%{http_code}' -I "${HTTP_HOST}/legacy-upload.txt")
 	assert_eq 200 "${code}" "HEAD should return 200"
 
+	read -r code1 code2 <<< "$(curl -s -H 'Connection: Keep-Alive' \
+		-o /dev/null -w '%{http_code} ' "${HTTP_HOST}/legacy-upload.txt" \
+		--next -o /dev/null -w '%{http_code}' "${HTTP_HOST}/legacy-missing.txt")"
+	assert_eq 200 "${code1}" "keep-alive first GET should return 200"
+	assert_eq 404 "${code2}" "keep-alive second GET should return 404"
+
 	code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "${HTTP_HOST}/legacy-upload.txt")
 	assert_eq 200 "${code}" "DELETE should return 200"
 }

@@ -237,6 +237,12 @@ int XrdHttp1Session::parseHeaders(XrdHttpProtocol &prot, XrdHttpReq &req)
       consumed = static_cast<size_t>(avail);
     prot.BuffConsume(static_cast<int>(consumed));
     const int applied = applyTo(req);
+    if (applied == 0 && TRACING(TRACE_DEBUG)) {
+      TRACE(DEBUG, " llhttp parsed request: "
+            << method_ << " " << url_ << " HTTP/"
+            << httpMajor_ << "." << httpMinor_
+            << " (" << headers_.size() << " headers)");
+    }
     llhttp_reset(&parser_);
     parser_.data = sessionCtx_;
     resetMessage();
