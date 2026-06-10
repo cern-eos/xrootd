@@ -36,6 +36,7 @@
 #include "XrdHttpMon.hh"
 #include "XrdHttpTrace.hh"
 #include "XrdHttpProtocol.hh"
+#include "wire/XrdHttp1ResponseWriter.hh"
 
 #include <sys/stat.h>
 #include "XrdHttpUtils.hh"
@@ -129,6 +130,7 @@ XrdNetPMark * XrdHttpProtocol::pmarkHandle = nullptr;
 XrdHttpChecksumHandler XrdHttpProtocol::cksumHandler = XrdHttpChecksumHandler();
 XrdHttpReadRangeHandler::Configuration XrdHttpProtocol::ReadRangeConfig;
 bool XrdHttpProtocol::tpcForwardCreds = false;
+XrdHttpParserMode XrdHttpProtocol::parserMode = XrdHttpParserMode::kLlhttp;
 
 decltype(XrdHttpProtocol::m_staticheader_map) XrdHttpProtocol::m_staticheader_map;
 decltype(XrdHttpProtocol::m_staticheaders) XrdHttpProtocol::m_staticheaders;
@@ -175,7 +177,7 @@ XrdHttpProtocol::ProtStack("ProtStack",
 
 XrdHttpProtocol::XrdHttpProtocol(bool imhttps)
 : XrdProtocol("HTTP protocol handler"), ProtLink(this),
-SecEntity(""), CurrentReq(this, ReadRangeConfig) {
+SecEntity(""), http1Session_(), CurrentReq(this, ReadRangeConfig) {
   myBuff = 0;
   Addr_str = 0;
 #ifdef HAVE_HTTP_KRB5
@@ -192,8 +194,8 @@ SecEntity(""), CurrentReq(this, ReadRangeConfig) {
 
 /******************************************************************************/
 
-XrdHttpProtocol XrdHttpProtocol::operator =(const XrdHttpProtocol &rhs) {
-
+XrdHttpProtocol &XrdHttpProtocol::operator =(const XrdHttpProtocol &rhs) {
+  (void)rhs;
   return *this;
 }
 
@@ -543,6 +545,14 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
 
   if (!CurrentReq.headerok) {
 
+    if (parserMode == XrdHttpParserMode::kLlhttp) {
+      rc = http1Session_.parseHeaders(*this, CurrentReq);
+      if (rc < 0) {
+        SendSimpleResp(400, nullptr, nullptr,
+                       "Malformed HTTP request.", 0, false);
+        return -1;
+      }
+    } else {
     // Read as many lines as possible into the buffer. An empty line breaks
     while ((rc = BuffgetLine(tmpline)) > 0) {
       std::string traceLine = tmpline.c_str();
@@ -576,6 +586,7 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
       }
 
 
+    }
     }
 
     // Here we have CurrentReq loaded with the header, or its relevant fields
@@ -1020,6 +1031,7 @@ int XrdHttpProtocol::Config(const char *ConfigFN, XrdOucEnv *myEnv) {
       else if TS_Xeq("httpsmode", xhttpsmode);
       else if TS_Xeq("tlsreuse", xtlsreuse);
       else if TS_Xeq("auth", xauth);
+      else if TS_Xeq("parser", xparser);
       else if TS_Xeq("tlsclientauth", xtlsclientauth);
       else if TS_Xeq("maxdelay", xmaxdelay);
       else {
@@ -1549,52 +1561,8 @@ int XrdHttpProtocol::SendData(const char *body, int bodylen) {
 int XrdHttpProtocol::StartSimpleResp(int code, const char *desc,
                                      const char *header_to_add,
                                      long long bodylen, bool keepalive) {
-  std::stringstream ss;
-  const std::string crlf = "\r\n";
-
-  ss << "HTTP/1.1 " << code << " ";
-
-  if (desc) {
-    ss << desc;
-  } else {
-    ss << httpStatusToString(code);
-  }
-  ss << crlf;
-
-  if (keepalive && (code != 100))
-    ss << "Connection: Keep-Alive" << crlf;
-  else
-    ss << "Connection: Close" << crlf;
-
-  ss << "Server: XRootD" << crlf;
-
-  const auto iter = m_staticheaders.find(CurrentReq.requestverb);
-  if (iter != m_staticheaders.end()) {
-    ss << iter->second;
-  } else {
-    ss << m_staticheaders[""];
-  }
-
-  if(xrdcors) {
-    auto corsAllowOrigin = xrdcors->getCORSAllowOriginHeader(CurrentReq.m_origin);
-    if(corsAllowOrigin) {
-      ss << *corsAllowOrigin << crlf;
-    }
-  }
-
-  if ((bodylen >= 0) && (code != 100))
-    ss << "Content-Length: " << bodylen << crlf;
-
-  if (header_to_add && (header_to_add[0] != '\0')) ss << header_to_add << crlf;
-
-  ss << crlf;
-
-  const std::string &outhdr = ss.str();
-  TRACEI(RSP, "Sending resp: " << code << " header len:" << outhdr.size());
-  if (SendData(outhdr.c_str(), outhdr.size()))
-   return -1;
-
-  return 0;
+  return XrdHttp1ResponseWriter::startSimple(*this, code, desc, header_to_add,
+                                           bodylen, keepalive);
 }
 
 /******************************************************************************/
@@ -1602,21 +1570,8 @@ int XrdHttpProtocol::StartSimpleResp(int code, const char *desc,
 /******************************************************************************/
 
 int XrdHttpProtocol::StartChunkedResp(int code, const char *desc, const char *header_to_add, long long bodylen, bool keepalive) {
-  const std::string crlf = "\r\n";
-  std::stringstream ss;
-  CurrentReq.setHttpStatusCode(code);
-  XrdHttpMon::Record(CurrentReq, code);
-
-  if (header_to_add && (header_to_add[0] != '\0')) {
-    ss << header_to_add << crlf;
-  }
-
-  ss << "Transfer-Encoding: chunked";
-  TRACEI(RSP, "Starting chunked response");
-
-  int r = StartSimpleResp(code, desc, ss.str().c_str(), bodylen, keepalive);
-  if (r < 0) XrdHttpMon::Record(CurrentReq, code);
-  return r;
+  return XrdHttp1ResponseWriter::startChunked(*this, code, desc, header_to_add,
+                                              bodylen, keepalive);
 }
 
 /******************************************************************************/
@@ -1685,27 +1640,8 @@ int XrdHttpProtocol::ChunkRespFooter() {
 /// Returns 0 if OK
 
 int XrdHttpProtocol::SendSimpleResp(int code, const char *desc, const char *header_to_add, const char *body, long long bodylen, bool keepalive) {
-
-  int r{0};
-  CurrentReq.setHttpStatusCode(code);
-  XrdHttpMon::Record(CurrentReq, code);
-
-  long long content_length = bodylen;
-  if (bodylen <= 0) {
-    content_length = body ? strlen(body) : 0;
-  }
-
-  if (StartSimpleResp(code, desc, header_to_add, content_length, keepalive) < 0) {
-    XrdHttpMon::Record(CurrentReq, code);
-    return -1;
-  }
-
-
-  // Send the data
-  if (body) r = SendData(body, content_length);
-
-  XrdHttpMon::Record(CurrentReq, code);
-  return r;
+  return XrdHttp1ResponseWriter::sendSimple(*this, code, desc, header_to_add,
+                                            body, bodylen, keepalive);
 }
 
 /******************************************************************************/
@@ -1894,6 +1830,14 @@ bool XrdHttpProtocol::InitTLS() {
 // Enable or disable the config in the context
    xrdctx->SetTlsClientAuth(tlsClientAuth);
 
+   SSL_CTX *sslctx = static_cast<SSL_CTX *>(xrdctx->Context());
+   if (sslctx) {
+     static const unsigned char alpn[] = {
+       8, 'h','t','t','p','/','1','.','1'
+     };
+     SSL_CTX_set_alpn_protos(sslctx, alpn, sizeof(alpn));
+   }
+
 // All done
 //
    return true;
@@ -1996,6 +1940,8 @@ void XrdHttpProtocol::Reset() {
 #ifdef HAVE_HTTP_KRB5
   krb5Authed = false;
 #endif
+
+  http1Session_.reset();
 
   ResumeBytes = 0;
   Resume = 0;
@@ -3026,6 +2972,29 @@ int XrdHttpProtocol::xtlsclientauth(XrdOucStream &Config) {
      }
 
   eDest.Emsg("config", "invalid tlsclientauth parameter -", val);
+  return 1;
+}
+
+int XrdHttpProtocol::xparser(XrdOucStream &Config) {
+  char *val = Config.GetWord();
+  if (!val || !*val) {
+    eDest.Emsg("Config", "http.parser requires 'legacy' or 'llhttp'.");
+    return 1;
+  }
+
+  if (!strcmp(val, "legacy")) {
+    parserMode = XrdHttpParserMode::kLegacy;
+    eDest.Say("Config http.parser legacy selected.");
+    return 0;
+  }
+
+  if (!strcmp(val, "llhttp")) {
+    parserMode = XrdHttpParserMode::kLlhttp;
+    eDest.Say("Config http.parser llhttp selected.");
+    return 0;
+  }
+
+  eDest.Emsg("Config", "invalid http.parser value -", val);
   return 1;
 }
 

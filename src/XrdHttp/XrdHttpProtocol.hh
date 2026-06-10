@@ -46,6 +46,7 @@
 #include "XrdNet/XrdNetPMark.hh"
 #include "XrdHttpCors/XrdHttpCors.hh"
 #include "XrdHttpReq.hh"
+#include "wire/XrdHttp1Session.hh"
 
 #include <chrono>
 #include <cstdlib>
@@ -81,10 +82,18 @@ class XrdCryptoFactory;
 class XrdHttpKrb5;
 #endif
 
+enum class XrdHttpParserMode
+{
+  kLegacy,
+  kLlhttp
+};
+
 class XrdHttpProtocol : public XrdProtocol {
   
   friend class XrdHttpReq;
   friend class XrdHttpExtReq;
+  friend class XrdHttp1Session;
+  friend class XrdHttp1ResponseWriter;
   
 public:
 
@@ -122,8 +131,8 @@ public:
   int doChksum(const XrdOucString &fname);
 
   /// Ctor, dtors and copy ctor
-  XrdHttpProtocol(const XrdHttpProtocol&) = default;
-  XrdHttpProtocol operator =(const XrdHttpProtocol &rhs);
+  XrdHttpProtocol(const XrdHttpProtocol&) = delete;
+  XrdHttpProtocol &operator =(const XrdHttpProtocol &rhs);
   XrdHttpProtocol(bool imhttps);
   ~XrdHttpProtocol() {
     Cleanup();
@@ -237,6 +246,7 @@ private:
   static int xhttpsmode(XrdOucStream &Config);
   static int xtlsreuse(XrdOucStream &Config);
   static int xauth(XrdOucStream &Config);
+  static int xparser(XrdOucStream &Config);
   static int xtlsclientauth(XrdOucStream &Config);
   static int xmaxdelay(XrdOucStream &Config);
 
@@ -326,10 +336,11 @@ private:
   bool DoingLogin;
 
 #ifdef HAVE_HTTP_KRB5
-  /// Per-connection Kerberos authentication state
   XrdHttpKrb5 *krb5Auth;
   bool krb5Authed;
 #endif
+
+  XrdHttp1Session http1Session_;
 
   /// Indicates whether we've attempted to send app info.
   bool DoneSetInfo;
@@ -487,6 +498,8 @@ protected:
 
   /// If set to true, the HTTP TPC transfers will forward the credentials to redirected hosts
   static bool tpcForwardCreds;
+
+  static XrdHttpParserMode parserMode;
 
   /// The static headers to always return; map is from verb to a list of (header, val) pairs.
   static std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>> m_staticheader_map;

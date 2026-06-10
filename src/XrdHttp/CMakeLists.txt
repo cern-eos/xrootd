@@ -20,6 +20,11 @@ set(XRDHTTPUTILS_SRCS
                              XrdHttpTrace.hh
   XrdHttpUtils.cc            XrdHttpUtils.hh
   XrdHttpHeaderUtils.cc      XrdHttpHeaderUtils.hh
+  wire/XrdHttp1Session.cc    wire/XrdHttp1Session.hh
+  wire/XrdHttp1ResponseWriter.cc wire/XrdHttp1ResponseWriter.hh
+  vendor/llhttp/api.c
+  vendor/llhttp/http.c
+  vendor/llhttp/llhttp.c
 )
 
 if(BUILD_KRB5)
@@ -43,6 +48,8 @@ target_link_libraries(XrdHttpUtils
     OpenSSL::SSL
     OpenSSL::Crypto
 )
+
+target_include_directories(XrdHttpUtils PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 if(BUILD_KRB5)
   target_compile_definitions(XrdHttpUtils PRIVATE HAVE_HTTP_KRB5)
