@@ -32,6 +32,7 @@
 #include "cleaner/Cleaner.hh"
 #include "file/Art.hh"
 #include "file/CacheHeaders.hh"
+#include "file/OriginAllowlist.hh"
 #include "file/TimeBench.hh"
 #include "handler/XrdClJournalCacheOpenHandler.hh"
 #include "handler/XrdClJournalCachePgReadHandler.hh"
@@ -223,7 +224,17 @@ public:
   static void SetSize(uint64_t size) { sCleaner.SetSize(size, sCachePath); }
   static void SetAsync(bool async) { sOpenAsync = async; }
   static void SetFlatHierarchy(bool value) { sFlatHierarchy = value; }
-  static void SetThreadConnectionDemultiplexing(bool value) { sThreadConnectionDemultiplexing = value; }
+  static void SetThreadConnectionDemultiplexing(bool value) {
+    sThreadConnectionDemultiplexing = value;
+  }
+  static void SetMultiOriginUnwrap(bool value) { sMultiOriginUnwrap = value; }
+  static void SetAllowedOrigins(const std::string &patterns) {
+    sOriginAllowlist.clear();
+    sOriginAllowlist.addPatternsFromCsv(patterns);
+  }
+  static void AddAllowedOriginPattern(const std::string &pattern) {
+    sOriginAllowlist.addPattern(pattern);
+  }
 
   //----------------------------------------------------------------------------
   //! @brief static members pointing to cache settings
@@ -238,6 +249,8 @@ public:
   static bool sOpenAsync;
   static bool sFlatHierarchy;
   static bool sThreadConnectionDemultiplexing;
+  static bool sMultiOriginUnwrap;
+  static JournalCache::OriginAllowlist sOriginAllowlist;
 
   static JournalManager sJournalManager;
 

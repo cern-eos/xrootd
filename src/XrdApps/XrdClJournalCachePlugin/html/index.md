@@ -295,7 +295,7 @@ For browser clients that embed the upstream URL in the path (`/https://host/path
 
 ```ini
 # xrootd server
-pss.origin =http,https
+pss.origin =root,http,https
 pss.permit /* .example.org
 http.exthandler journalcache libXrdClJournalCacheHttpExt-5.so \
   /etc/xrootd/journalcache-http-forwarding.ext.conf
@@ -306,6 +306,32 @@ cache = /var/tmp/journalcache/
 ```
 
 Load **XrdClHttp** alongside JournalCache in the xrootd process client plugins. PSS fetches via HTTP(S); the ext handler parses each embedded URL for journal lookup, 304, and response headers.
+
+### Chained multi-origin URLs (`root://` and friends)
+
+Clients can name a dynamic upstream inside a proxy URL:
+
+```
+root://proxy.example:1095//root://origin.cern.ch:1094//store/file.dat
+```
+
+PSS forwarding (`pss.origin =root,http,https`) also accepts path-embedded upstreams such as `/root://origin.cern.ch:1094//store/file.dat`.
+
+| Key | Meaning |
+|-----|---------|
+| `multi_origin = 1` | Unwrap chained URLs to the inner upstream for open + journal cache key |
+| `allow_origin = <regex>` | Allowed upstream patterns (comma-separated or repeated); matched against full URL, location, or host |
+
+Environment overrides: `XRD_JOURNALCACHE_MULTI_ORIGIN`, `XRD_JOURNALCACHE_ALLOW_ORIGIN`.
+
+The HTTP ext handler accepts the same `allow_origin` lines (repeatable in `.ext.conf`) and rejects disallowed upstreams with **403**.
+
+```ini
+multi_origin = 1
+allow_origin = ^root://([a-z0-9.-]+\.)?cern\.ch(:1094)?/,^https://([a-z0-9.-]+\.)?example\.org/
+```
+
+On client-only deployments (no unwrap), omit `multi_origin` so chained URLs are passed through to the proxy unchanged.
 
 ---
 

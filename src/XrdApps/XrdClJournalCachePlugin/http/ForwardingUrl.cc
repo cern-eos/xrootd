@@ -19,9 +19,16 @@ std::string stripQuery(const std::string &path) {
   return path.substr(0, pos);
 }
 
-} // namespace
-
-namespace {
+bool isEmbeddedProtocolPrefix(const std::string &value) {
+  static const char *prefixes[] = {"https://",  "http://",   "roots://",
+                                     "root://",   "xroots://", "xroot://"};
+  for (const char *prefix : prefixes) {
+    if (startsWith(value, prefix)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 std::string normalizeRemotePath(const std::string &path) {
   if (path.empty()) {
@@ -33,20 +40,9 @@ std::string normalizeRemotePath(const std::string &path) {
   return "/" + path;
 }
 
-} // namespace
-
-EmbeddedFileUrl parseEmbeddedFileUrl(const std::string &path) {
+EmbeddedFileUrl canonicalizeFileUrl(const std::string &url) {
   EmbeddedFileUrl result;
-  std::string rest = stripQuery(path);
-  if (!rest.empty() && rest.front() == '/') {
-    rest.erase(0, 1);
-  }
-
-  if (!startsWith(rest, "https://") && !startsWith(rest, "http://")) {
-    return result;
-  }
-
-  XrdCl::URL parsed(rest);
+  XrdCl::URL parsed(url);
   if (!parsed.IsValid()) {
     return result;
   }
@@ -56,9 +52,49 @@ EmbeddedFileUrl parseEmbeddedFileUrl(const std::string &path) {
   clean.SetHostName(parsed.GetHostName());
   clean.SetPort(parsed.GetPort());
   clean.SetPath(parsed.GetPath());
+  clean.SetParams(parsed.GetParams());
   result.fileUrl = clean.GetURL();
   result.valid = !result.fileUrl.empty();
   return result;
+}
+
+EmbeddedFileUrl parseEmbeddedFromRest(std::string rest) {
+  EmbeddedFileUrl result;
+  while (!rest.empty() && rest.front() == '/') {
+    rest.erase(0, 1);
+  }
+  if (!isEmbeddedProtocolPrefix(rest)) {
+    return result;
+  }
+  return canonicalizeFileUrl(rest);
+}
+
+} // namespace
+
+EmbeddedFileUrl parseEmbeddedFileUrl(const std::string &path) {
+  return parseEmbeddedFromRest(stripQuery(path));
+}
+
+EmbeddedFileUrl parseChainedFileUrl(const std::string &url) {
+  // Path-only forwarding: /https://host/path or /root://host//path
+  if (!url.empty() && url.front() == '/') {
+    EmbeddedFileUrl embedded = parseEmbeddedFileUrl(url);
+    if (embedded.valid) {
+      return embedded;
+    }
+  }
+
+  XrdCl::URL outer(url);
+  if (!outer.IsValid()) {
+    return {};
+  }
+
+  EmbeddedFileUrl embedded = parseEmbeddedFileUrl(outer.GetPath());
+  if (embedded.valid) {
+    return embedded;
+  }
+
+  return canonicalizeFileUrl(url);
 }
 
 std::string resolveJournalDirWithSettings(const std::string &cacheRoot,

@@ -181,6 +181,8 @@ bool JournalCacheHttpExtHandler::loadConfig(const char *cfgfile) {
       mExcludePrefix = value;
     } else if (key == "forwarding") {
       mForwarding = parseBool(value);
+    } else if (key == "allow_origin") {
+      mOriginAllowlist.addPattern(value);
     } else if (key == "http_origin") {
       mHttpOrigin = value;
       if (!mHttpOrigin.empty() && mHttpOrigin.back() == '/') {
@@ -237,7 +239,7 @@ bool JournalCacheHttpExtHandler::pathMatches(const char *path) const {
   if (!mExcludePrefix.empty() && startsWith(path, mExcludePrefix)) {
     return false;
   }
-  if (mForwarding && !parseEmbeddedFileUrl(path).valid) {
+  if (mForwarding && !parseChainedFileUrl(path).valid) {
     return false;
   }
   return true;
@@ -259,7 +261,7 @@ std::string JournalCacheHttpExtHandler::resolveJournalPath(
     return {};
   }
 
-  const EmbeddedFileUrl embedded = parseEmbeddedFileUrl(path);
+  const EmbeddedFileUrl embedded = parseChainedFileUrl(path);
   if (embedded.valid) {
     return resolveJournalPathFromCacheKey(mCacheRoot, embedded.fileUrl,
                                           mFlatHierarchy, mBasePath);
@@ -355,9 +357,14 @@ bool JournalCacheHttpExtHandler::fetchHttpOriginParams(
     const std::string &path,
     std::vector<std::pair<std::string, std::string>> &params) {
 #ifdef JOURNALCACHE_HTTP_EXT_HAVE_CURL
-  const EmbeddedFileUrl embedded = parseEmbeddedFileUrl(path);
+  const EmbeddedFileUrl embedded = parseChainedFileUrl(path);
   if (embedded.valid) {
-    return fetchHttpHeadParams(embedded.fileUrl, mLog, params);
+    XrdCl::URL target(embedded.fileUrl);
+    if (target.IsValid() &&
+        (target.GetProtocol() == "http" || target.GetProtocol() == "https")) {
+      return fetchHttpHeadParams(embedded.fileUrl, mLog, params);
+    }
+    return false;
   }
 
   if (mHttpOrigin.empty()) {
@@ -400,6 +407,14 @@ JournalCacheHttpExtHandler::collectCgiParams(
 
 int JournalCacheHttpExtHandler::ProcessReq(XrdHttpExtReq &req) {
   const std::string path = stripQuery(req.resource);
+  const EmbeddedFileUrl target = parseChainedFileUrl(path);
+  if (target.valid && !mOriginAllowlist.isAllowed(target.fileUrl)) {
+    mLog->Emsg("JournalCacheHttpExt", "upstream origin not allowed:",
+               target.fileUrl.c_str());
+    return req.SendSimpleResp(403, nullptr, nullptr,
+                              "Upstream origin not allowed", 0);
+  }
+
   const CacheValidators validators = extractValidators(req.headers);
 
   CacheHeaders stored;
