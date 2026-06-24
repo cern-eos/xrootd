@@ -1,6 +1,6 @@
 #include "http/JournalCacheHttpExt.hh"
 #include "file/CacheHeaders.hh"
-#include "file/Digest.hh"
+#include "http/ForwardingUrl.hh"
 #include "http/HttpHeaderMap.hh"
 
 #include "XrdCl/XrdClDefaultEnv.hh"
@@ -56,44 +56,6 @@ bool parseBool(const std::string &value) {
   return value == "1" || value == "true" || value == "yes";
 }
 
-std::string normalizeRemotePath(const std::string &path) {
-  if (path.empty()) {
-    return "/";
-  }
-  if (path[0] == '/') {
-    return path;
-  }
-  return "/" + path;
-}
-
-std::string resolveJournalDirWithSettings(const std::string &cacheRoot,
-                                          const std::string &serverUrl,
-                                          const std::string &remotePath,
-                                          bool flatHierarchy,
-                                          const std::string &basePath) {
-  const std::string normPath = normalizeRemotePath(remotePath);
-  if (flatHierarchy) {
-    return cacheRoot + computeSHA256(serverUrl + normPath);
-  }
-
-  if (!basePath.empty()) {
-    const size_t pos = normPath.find(basePath);
-    if (pos != std::string::npos) {
-      return cacheRoot + normPath.substr(pos);
-    }
-    XrdCl::URL url(serverUrl);
-    const size_t urlPos = url.GetPath().find(basePath);
-    if (urlPos != std::string::npos) {
-      return cacheRoot + normPath;
-    }
-  }
-
-  XrdCl::URL url(serverUrl);
-  const std::string host =
-      url.GetHostName() + ":" + std::to_string(url.GetPort());
-  return cacheRoot + host + normPath;
-}
-
 void appendUnique(std::vector<std::pair<std::string, std::string>> &params,
                   const std::pair<std::string, std::string> &entry) {
   for (const auto &existing : params) {
@@ -123,6 +85,38 @@ size_t curlHeaderCallback(char *buffer, size_t size, size_t nitems, void *userda
     (*headers)[name] = value;
   }
   return total;
+}
+
+bool fetchHttpHeadParams(const std::string &url, XrdSysError *log,
+                         std::vector<std::pair<std::string, std::string>> &params) {
+  std::map<std::string, std::string> responseHeaders;
+
+  CURL *curl = curl_easy_init();
+  if (!curl) {
+    return false;
+  }
+
+  curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
+  curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, curlHeaderCallback);
+  curl_easy_setopt(curl, CURLOPT_HEADERDATA, &responseHeaders);
+  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+
+  const CURLcode rc = curl_easy_perform(curl);
+  curl_easy_cleanup(curl);
+  if (rc != CURLE_OK) {
+    if (log) {
+      log->Emsg("JournalCacheHttpExt", "HTTP HEAD failed for", url.c_str());
+    }
+    return false;
+  }
+
+  for (const auto &entry :
+       HttpHeaderMap::mapHeaders(responseHeaders, HttpHeaderMap::setterMappings())) {
+    appendUnique(params, entry);
+  }
+  return !params.empty();
 }
 #endif
 
@@ -185,6 +179,8 @@ bool JournalCacheHttpExtHandler::loadConfig(const char *cfgfile) {
       mPathPrefix = value;
     } else if (key == "exclude") {
       mExcludePrefix = value;
+    } else if (key == "forwarding") {
+      mForwarding = parseBool(value);
     } else if (key == "http_origin") {
       mHttpOrigin = value;
       if (!mHttpOrigin.empty() && mHttpOrigin.back() == '/') {
@@ -209,13 +205,23 @@ int JournalCacheHttpExtHandler::Init(const char *cfgfile) {
     return 1;
   }
   mLog->Say("++++++ JournalCache HTTP ext handler initialized");
-  mLog->Say("Config server=", mServerUrl.c_str(),
-            " prefix=", mPathPrefix.c_str());
+  if (mForwarding) {
+    mLog->Say("Config mode=forwarding prefix=", mPathPrefix.c_str());
+    if (mCacheRoot.empty()) {
+      mLog->Say("Config warning: cache= unset; 304/getter headers need on-disk journals");
+    }
+    if (!mHttpOrigin.empty()) {
+      mLog->Say("Config warning: http_origin ignored in forwarding mode");
+    }
+  } else {
+    mLog->Say("Config server=", mServerUrl.c_str(),
+              " prefix=", mPathPrefix.c_str());
+  }
   if (!mCacheRoot.empty()) {
     mLog->Say("Config cache=", mCacheRoot.c_str(),
               " flat=", mFlatHierarchy ? "1" : "0");
   }
-  if (!mHttpOrigin.empty()) {
+  if (!mForwarding && !mHttpOrigin.empty()) {
     mLog->Say("Config http_origin=", mHttpOrigin.c_str());
   }
   return 0;
@@ -229,6 +235,9 @@ bool JournalCacheHttpExtHandler::pathMatches(const char *path) const {
     return false;
   }
   if (!mExcludePrefix.empty() && startsWith(path, mExcludePrefix)) {
+    return false;
+  }
+  if (mForwarding && !parseEmbeddedFileUrl(path).valid) {
     return false;
   }
   return true;
@@ -250,10 +259,15 @@ std::string JournalCacheHttpExtHandler::resolveJournalPath(
     return {};
   }
 
-  const std::string journalDir =
-      resolveJournalDirWithSettings(mCacheRoot, mServerUrl, path, mFlatHierarchy,
-                                  mBasePath);
-  return journalDir + "/journal";
+  const EmbeddedFileUrl embedded = parseEmbeddedFileUrl(path);
+  if (embedded.valid) {
+    return resolveJournalPathFromCacheKey(mCacheRoot, embedded.fileUrl,
+                                          mFlatHierarchy, mBasePath);
+  }
+
+  return resolveJournalDirWithSettings(mCacheRoot, mServerUrl, path,
+                                       mFlatHierarchy, mBasePath) +
+         "/journal";
 }
 
 CacheValidators JournalCacheHttpExtHandler::extractValidators(
@@ -290,7 +304,7 @@ void JournalCacheHttpExtHandler::setResponseHeadersFromCache(
 bool JournalCacheHttpExtHandler::fetchXAttrParams(
     const std::string &path,
     std::vector<std::pair<std::string, std::string>> &params) {
-  if (mXAttrMappings.empty()) {
+  if (mForwarding || mXAttrMappings.empty()) {
     return false;
   }
 
@@ -341,6 +355,11 @@ bool JournalCacheHttpExtHandler::fetchHttpOriginParams(
     const std::string &path,
     std::vector<std::pair<std::string, std::string>> &params) {
 #ifdef JOURNALCACHE_HTTP_EXT_HAVE_CURL
+  const EmbeddedFileUrl embedded = parseEmbeddedFileUrl(path);
+  if (embedded.valid) {
+    return fetchHttpHeadParams(embedded.fileUrl, mLog, params);
+  }
+
   if (mHttpOrigin.empty()) {
     return false;
   }
@@ -354,33 +373,7 @@ bool JournalCacheHttpExtHandler::fetchHttpOriginParams(
     }
   }
 
-  std::string url = mHttpOrigin + resourcePath;
-  std::map<std::string, std::string> responseHeaders;
-
-  CURL *curl = curl_easy_init();
-  if (!curl) {
-    return false;
-  }
-
-  curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-  curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
-  curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, curlHeaderCallback);
-  curl_easy_setopt(curl, CURLOPT_HEADERDATA, &responseHeaders);
-  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-
-  const CURLcode rc = curl_easy_perform(curl);
-  curl_easy_cleanup(curl);
-  if (rc != CURLE_OK) {
-    mLog->Emsg("JournalCacheHttpExt", "HTTP HEAD failed for", url.c_str());
-    return false;
-  }
-
-  for (const auto &entry :
-       HttpHeaderMap::mapHeaders(responseHeaders, HttpHeaderMap::setterMappings())) {
-    appendUnique(params, entry);
-  }
-  return !params.empty();
+  return fetchHttpHeadParams(mHttpOrigin + resourcePath, mLog, params);
 #else
   (void)path;
   (void)params;

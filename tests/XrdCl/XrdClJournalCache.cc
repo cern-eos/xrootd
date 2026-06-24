@@ -4,6 +4,7 @@
 #include "cache/Journal.hh"
 #include "file/CachePath.hh"
 #include "file/CacheHeaders.hh"
+#include "http/ForwardingUrl.hh"
 #include "http/HttpHeaderMap.hh"
 #include "file/Digest.hh"
 #include "system/ListCache.hh"
@@ -696,3 +697,29 @@ TEST(HttpHeaderMapTest, BuildFileUrlAndMapSetterHeaders) {
   EXPECT_EQ(mapped[1].first, JournalCache::ETAG_CGI);
 }
 
+TEST(ForwardingUrlTest, ParseEmbeddedHttpUrl) {
+  const auto embedded = JournalCache::parseEmbeddedFileUrl(
+      "/https://cdn.example.org/store/file.dat");
+  ASSERT_TRUE(embedded.valid);
+  EXPECT_NE(embedded.fileUrl.find("cdn.example.org"), std::string::npos);
+  EXPECT_NE(embedded.fileUrl.find("/store/file.dat"), std::string::npos);
+
+  EXPECT_FALSE(
+      JournalCache::parseEmbeddedFileUrl("/store/file.dat").valid);
+  EXPECT_FALSE(JournalCache::parseEmbeddedFileUrl("/root://host/file").valid);
+}
+
+TEST(ForwardingUrlTest, ResolveJournalPathMatchesFilePluginLayout) {
+  const std::string cacheRoot = "/cache/";
+  const std::string fileUrl = "https://cdn.example.org:443/store/file.dat";
+
+  const std::string journalPath = JournalCache::resolveJournalPathFromCacheKey(
+      cacheRoot, fileUrl, false, "");
+  EXPECT_EQ(journalPath,
+            "/cache/cdn.example.org:443/store/file.dat/journal");
+
+  const std::string flatPath = JournalCache::resolveJournalPathFromCacheKey(
+      cacheRoot, fileUrl, true, "");
+  EXPECT_EQ(flatPath.substr(0, 7), "/cache/");
+  EXPECT_EQ(flatPath.substr(flatPath.size() - 8), "/journal");
+}

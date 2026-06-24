@@ -42,6 +42,7 @@ private:
   std::string mExcludePrefix;
   std::string mHttpOrigin;
   std::string mHttpOriginStrip;
+  bool mForwarding = false;
   bool mFlatHierarchy = false;
   std::vector<std::pair<std::string, std::string>> mXAttrMappings;
 };

@@ -289,6 +289,24 @@ xrdfs setxattr /store/data/file.root http.etag '"abc123"'
 xrdfs setxattr /store/data/file.root http.last-modified 'Wed, 21 Oct 2015 07:28:00 GMT'
 ```
 
+### HTTP forwarding proxy (dynamic origins)
+
+For browser clients that embed the upstream URL in the path (`/https://host/path`), enable PSS forwarding and set `forwarding = 1` in the HTTP ext config. Example files: `http/journalcache-forwarding.cf`, `http/journalcache-http-forwarding.ext.conf`, `http/journalcache-forwarding-client.conf`.
+
+```ini
+# xrootd server
+pss.origin =http,https
+pss.permit /* .example.org
+http.exthandler journalcache libXrdClJournalCacheHttpExt-5.so \
+  /etc/xrootd/journalcache-http-forwarding.ext.conf
+
+# ext handler
+forwarding = 1
+cache = /var/tmp/journalcache/
+```
+
+Load **XrdClHttp** alongside JournalCache in the xrootd process client plugins. PSS fetches via HTTP(S); the ext handler parses each embedded URL for journal lookup, 304, and response headers.
+
 ---
 
 ## Proxy and HTTP front-end setup

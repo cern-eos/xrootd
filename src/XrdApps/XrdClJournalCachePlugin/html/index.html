@@ -513,6 +513,19 @@ http_origin_strip = /store
       <p>Origin files can publish cache policy by setting xattrs, for example:</p>
       <pre><code>xrdfs setxattr /store/data/file.root http.cache-control 'public, s-maxage=3600'
 xrdfs setxattr /store/data/file.root http.etag '"abc123"'</code></pre>
+
+      <h3>HTTP forwarding proxy (dynamic origins)</h3>
+      <p>For browser clients that embed the upstream URL in the path (<code>/https://host/path</code>), enable PSS forwarding and set <code>forwarding = 1</code> in the HTTP ext config. Example files live under <code>http/</code>: <code>journalcache-forwarding.cf</code>, <code>journalcache-http-forwarding.ext.conf</code>, <code>journalcache-forwarding-client.conf</code>.</p>
+      <pre><code># xrootd server
+pss.origin =http,https
+pss.permit /* .example.org
+http.exthandler journalcache libXrdClJournalCacheHttpExt-5.so \
+  /etc/xrootd/journalcache-http-forwarding.ext.conf
+
+# ext handler
+forwarding = 1
+cache = /var/tmp/journalcache/</code></pre>
+      <p>Load <strong>XrdClHttp</strong> alongside JournalCache in the xrootd process client plugins. PSS fetches via HTTP(S); the ext handler parses each embedded URL for journal lookup, 304, and response headers.</p>
     </section>
 
     <section id="proxy">
