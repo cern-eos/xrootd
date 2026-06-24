@@ -56,7 +56,8 @@ target_link_libraries(XrdHttpUtils
     OpenSSL::Crypto
 )
 
-target_include_directories(XrdHttpUtils PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# PUBLIC: consumers including XrdHttpProtocol.hh transitively need wire/ and vendor/.
+target_include_directories(XrdHttpUtils PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 if(BUILD_KRB5)
   target_compile_definitions(XrdHttpUtils PRIVATE HAVE_HTTP_KRB5)
