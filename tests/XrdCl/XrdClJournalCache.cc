@@ -918,5 +918,17 @@ TEST(XjcdRenderTest, RendersConfigsAndOpenPolicy) {
   EXPECT_TRUE(policy.multiOriginUnwrap);
   EXPECT_TRUE(policy.originAllowlist.patterns().empty());
 
+  const std::string unitPath = state.systemdUnitPath();
+  ASSERT_TRUE(fs::exists(unitPath));
+  std::ifstream unitIn(unitPath);
+  std::string unitText((std::istreambuf_iterator<char>(unitIn)),
+                       std::istreambuf_iterator<char>());
+  EXPECT_NE(unitText.find("ExecStart=/usr/bin/xrootd -c " + xrootdPath),
+            std::string::npos);
+  EXPECT_NE(unitText.find("EnvironmentFile=-" + state.systemdEnvPath()),
+            std::string::npos);
+  EXPECT_NE(unitText.find("RequiresMountsFor=" + state.journal),
+            std::string::npos);
+
   fs::remove_all(dir);
 }

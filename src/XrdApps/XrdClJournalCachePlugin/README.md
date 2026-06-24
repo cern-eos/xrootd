@@ -576,6 +576,7 @@ xjc redirect add /live/ https://stream.example.org/live/
 | `$journal/.xjc/etc/journalcache-http.ext.conf` | HTTP ext (forwarding mode) |
 | `$journal/.xjc/etc/client.plugins.d/journalcache.conf` | Client plugins for the xrootd/PSS process |
 | `$journal/.xjc/etc/xjcd.env` | `EnvironmentFile` snippet for systemd |
+| `$journal/.xjc/etc/xjcd.service` | Generated systemd unit (install into `/etc/systemd/system/`) |
 
 Initial policy is **open** (no `allow_origin` lines) until you add rules with **`xjc`**. TLS certificate and key paths are **required** at init time.
 
@@ -589,14 +590,15 @@ xjcd validate --journal /var/tmp/journalcache
 xjcd render --journal /var/tmp/journalcache   # after editing state.conf
 ```
 
-Example systemd unit:
+Install and start via systemd:
 
-```ini
-[Service]
-EnvironmentFile=/var/tmp/journalcache/.xjc/etc/xjcd.env
-ExecStart=/usr/bin/xrootd -c /var/tmp/journalcache/.xjc/etc/xrootd.cf -R daemon
-Restart=on-failure
+```bash
+sudo install -m 0644 /var/tmp/journalcache/.xjc/etc/xjcd.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now xjcd.service
 ```
+
+Re-run `xjcd render` after changing `state.conf`, then `systemctl restart xjcd.service`. For multiple journals on one host, install each generated unit under a distinct name (for example `journalcache-foo.service`).
 
 # 8 JournalCache in a Proxy server
 

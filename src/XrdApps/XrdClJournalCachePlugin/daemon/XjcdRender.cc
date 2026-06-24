@@ -105,11 +105,61 @@ XRD_JOURNALCACHE_POLICY={{policy_path}}
 )";
 }
 
+std::string systemdUnitTemplate() {
+  return R"([Unit]
+Description=JournalCache forwarding proxy (xjcd) on {{journal}}
+Documentation=file:{{xrootd_conf}}
+After=network-online.target local-fs.target remote-fs.target time-sync.target
+Wants=network-online.target local-fs.target remote-fs.target time-sync.target
+RequiresMountsFor={{journal}}
+
+[Service]
+Type=simple
+User=xrootd
+Group=xrootd
+Environment="TZ=:/etc/localtime"
+EnvironmentFile=-{{systemd_env}}
+ExecStart=/usr/bin/xrootd -c {{xrootd_conf}} -R daemon
+KillMode=control-group
+LimitNOFILE=524288
+Restart=on-abnormal
+RestartSec=10
+UMask=0027
+
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+LockPersonality=true
+MemoryDenyWriteExecute=true
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProtectSystem=full
+RemoveIPC=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
+)";
+}
+
 std::string systemdUnitHint(const XjcdState &state) {
   std::ostringstream out;
-  out << "# Suggested systemd unit (install separately):\n"
-      << "#   xrootd -c " << state.xrootdConfigPath() << " -R daemon\n"
-      << "# EnvironmentFile=" << state.systemdEnvPath() << "\n";
+  out << "# Install the generated unit:\n"
+      << "#   sudo install -m 0644 " << state.systemdUnitPath()
+      << " /etc/systemd/system/\n"
+      << "#   sudo systemctl daemon-reload\n"
+      << "#   sudo systemctl enable --now xjcd.service\n";
   return out.str();
 }
 
@@ -130,6 +180,7 @@ std::string substituteTemplate(const std::string &tmpl, const XjcdState &state,
   replaceAll(out, "{{http_ext_conf}}", state.httpExtConfigPath());
   replaceAll(out, "{{client_plugin_dir}}", state.clientPluginDir());
   replaceAll(out, "{{xrootd_conf}}", state.xrootdConfigPath());
+  replaceAll(out, "{{systemd_env}}", state.systemdEnvPath());
   return out;
 }
 
@@ -181,11 +232,14 @@ bool renderXjcdConfigs(const XjcdState &state, const std::string &hostname) {
       substituteTemplate(clientPluginTemplate(), state, hostname);
   const std::string env =
       substituteTemplate(systemdEnvTemplate(), state, hostname);
+  const std::string unit =
+      substituteTemplate(systemdUnitTemplate(), state, hostname);
 
   if (!writeTextFile(state.xrootdConfigPath(), xrootd) ||
       !writeTextFile(state.httpExtConfigPath(), httpExt) ||
       !writeTextFile(state.clientPluginConfigPath(), clientPlugin) ||
-      !writeTextFile(state.systemdEnvPath(), env)) {
+      !writeTextFile(state.systemdEnvPath(), env) ||
+      !writeTextFile(state.systemdUnitPath(), unit)) {
     return false;
   }
 
