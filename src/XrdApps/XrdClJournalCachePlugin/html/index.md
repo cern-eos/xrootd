@@ -503,11 +503,14 @@ size = 10000000000
 export XRD_JOURNALCACHE_SIZE=10000000000
 ```
 
-Standalone cleaner for complex deployments:
+Standalone cleaner daemon (config file under `$journal/.xjc/cleaner.conf`, edited with `xjc cleaner`):
 
 ```bash
-xrdclcacheclean <directory> <highwatermark> <lowwatermark> <interval_seconds>
+xjc cleaner enable on
+xjccleand --journal /var/tmp/journalcache
 ```
+
+`xjcd init --install-systemd` installs both `xjcd.service` and `xjccleand.service`.
 
 ---
 

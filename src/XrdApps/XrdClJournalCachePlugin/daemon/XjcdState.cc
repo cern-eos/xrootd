@@ -1,5 +1,6 @@
 #include "daemon/XjcdState.hh"
 
+#include "file/CleanerConfig.hh"
 #include "file/PolicyConfig.hh"
 
 #include <cctype>
@@ -89,6 +90,18 @@ std::string XjcdState::systemdEnvPath() const {
 
 std::string XjcdState::systemdUnitPath() const {
   return joinPath(etcDir(), "xjcd.service");
+}
+
+std::string XjcdState::cleanerPath() const {
+  return defaultCleanerPath(journal + "/");
+}
+
+std::string XjcdState::cleanerSystemdEnvPath() const {
+  return joinPath(etcDir(), "xjccleand.env");
+}
+
+std::string XjcdState::cleanerSystemdUnitPath() const {
+  return joinPath(etcDir(), "xjccleand.service");
 }
 
 bool XjcdState::isComplete() const {
