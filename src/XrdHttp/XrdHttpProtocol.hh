@@ -151,7 +151,6 @@ public:
   int processHttp2(XrdLink *lp);
   void detectWireMode();
   bool Http2OutboundPending() const;
-  bool HttpsShutdownReceived() const;
 #endif
 
   /// Ctor, dtors and copy ctor
@@ -177,6 +176,12 @@ public:
 
   /// called via https
   bool isHTTPS() { return ishttps; }
+
+  /// Bytes already decrypted by OpenSSL but not yet consumed from the wire buffer.
+  int sslPendingBytes() const
+  {
+    return (ishttps && ssldone && ssl) ? SSL_pending(ssl) : 0;
+  }
 
 private:
 

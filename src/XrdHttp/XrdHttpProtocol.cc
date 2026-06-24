@@ -573,7 +573,8 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
   }
 
 #ifdef HAVE_NGHTTP2
-  if (wireMode_ == XrdHttpWireMode::kHttp2)
+  if (wireMode_ == XrdHttpWireMode::kHttp2 ||
+      http2Session_.nghttp2SessionHandle() != nullptr)
     return processHttp2(lp);
 #endif
 
@@ -1751,11 +1752,6 @@ bool XrdHttpProtocol::Http2OutboundPending() const
       return true;
   }
   return http2Session_.hasPendingSend();
-}
-
-bool XrdHttpProtocol::HttpsShutdownReceived() const
-{
-  return ishttps && ssl && (SSL_get_shutdown(ssl) & SSL_RECEIVED_SHUTDOWN);
 }
 #endif
 

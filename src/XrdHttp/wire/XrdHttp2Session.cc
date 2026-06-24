@@ -276,15 +276,12 @@ int XrdHttp2Session::dispatchReadyRequest(XrdHttpProtocol &prot, XrdLink *lp)
   activeStreamId_ = stream_id;
   if (flushSend(prot) < 0)
     return -1;
-  if (hasPendingSend())
-    return 1;
   return rc;
 }
 
-bool XrdHttp2Session::needsReschedule(XrdHttpProtocol &prot) const
+bool XrdHttp2Session::needsContinueProcessing(XrdHttpProtocol &prot) const
 {
-  if (requestReady_ || hasPendingSend() || pendingResponse_.active ||
-      prot.BuffUsed() > 0 || prot.CurrentReq.headerok ||
+  if (requestReady_ || prot.BuffUsed() > 0 || prot.CurrentReq.headerok ||
       prot.CurrentReq.reqstate > 0 || prot.DoingLogin)
     return true;
   return false;
@@ -295,8 +292,6 @@ int XrdHttp2Session::drive(XrdHttpProtocol &prot, XrdLink *lp)
   if (session_) {
     if (flushSend(prot) < 0)
       return -1;
-    if (hasPendingSend())
-      return 1;
   }
 
   if (!session_) {
@@ -328,27 +323,21 @@ int XrdHttp2Session::drive(XrdHttpProtocol &prot, XrdLink *lp)
     nghttp2_submit_settings(session, NGHTTP2_FLAG_NONE, settings, 1);
     if (flushSend(prot) < 0)
       return -1;
-    if (hasPendingSend())
-      return 1;
   }
 
   if (!lp) {
     if (!prot.CurrentReq.headerok && !prot.DoingLogin) {
+      if (requestReady_)
+        return dispatchReadyRequest(prot, nullptr);
       if (flushSend(prot) < 0)
         return -1;
-      if (hasPendingSend())
-        return 1;
-      return 0;
+      return 1;
     }
     const int rc = prot.processParsedRequest(nullptr);
     if (rc < 0)
       return rc;
-    if (session_) {
-      if (flushSend(prot) < 0)
-        return -1;
-      if (hasPendingSend())
-        return 1;
-    }
+    if (session_ && flushSend(prot) < 0)
+      return -1;
     return rc;
   }
 
@@ -358,20 +347,9 @@ int XrdHttp2Session::drive(XrdHttpProtocol &prot, XrdLink *lp)
     const int rc = prot.processParsedRequest(lp);
     if (rc < 0)
       return rc;
-    if (session_) {
-      if (flushSend(prot) < 0)
-        return -1;
-      if (hasPendingSend())
-        return 1;
-    }
-    return rc;
-  }
-
-  if (session_ && hasPendingSend()) {
-    if (flushSend(prot) < 0)
+    if (session_ && flushSend(prot) < 0)
       return -1;
-    if (hasPendingSend())
-      return 1;
+    return rc;
   }
 
   if (lp && prot.BuffUsed() <= 0) {
@@ -397,8 +375,8 @@ int XrdHttp2Session::drive(XrdHttpProtocol &prot, XrdLink *lp)
       if (prot.getDataOneShot(prot.BuffAvailable()) < 0)
         return -1;
     }
-  } else if (!requestReady_ && lp && needsReschedule(prot)) {
-    return 1;
+  } else if (!requestReady_ && lp && needsContinueProcessing(prot)) {
+    return 0;
   }
 
   if (requestReady_) {
@@ -406,7 +384,7 @@ int XrdHttp2Session::drive(XrdHttpProtocol &prot, XrdLink *lp)
         (prot.CurrentReq.reqstate > 0 || prot.DoingLogin)) {
       if (!lp)
         return prot.processParsedRequest(nullptr);
-      return 1;
+      return 0;
     }
     if (prot.CurrentReq.headerok && prot.CurrentReq.reqstate == 0)
       prot.CurrentReq.headerok = false;
@@ -414,12 +392,8 @@ int XrdHttp2Session::drive(XrdHttpProtocol &prot, XrdLink *lp)
     return dispatchReadyRequest(prot, lp);
   }
 
-  if (session_) {
-    if (flushSend(prot) < 0)
-      return -1;
-    if (hasPendingSend())
-      return 1;
-  }
+  if (session_ && flushSend(prot) < 0)
+    return -1;
 
   if (!pendingResponse_.active && activeStreamId_ >= 0 &&
       !prot.CurrentReq.headerok && prot.CurrentReq.reqstate == 0 &&
@@ -427,12 +401,6 @@ int XrdHttp2Session::drive(XrdHttpProtocol &prot, XrdLink *lp)
     activeStreamId_ = -1;
   }
 
-  if (lp && !requestReady_ && !hasPendingSend() && !pendingResponse_.active &&
-      !prot.CurrentReq.headerok && prot.CurrentReq.reqstate == 0 &&
-      !prot.DoingLogin && prot.BuffUsed() <= 0 &&
-      prot.HttpsShutdownReceived()) {
-    return -1;
-  }
-
-  return needsReschedule(prot) ? 1 : 0;
+  // rc=0 continues Transit reInvoke / in-request work; rc=1 waits for poll I/O.
+  return needsContinueProcessing(prot) ? 0 : 1;
 }

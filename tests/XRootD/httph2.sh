@@ -26,13 +26,12 @@ function test_httph2() {
 		-I "${HTTPS_HOST}/h2-upload.txt")
 	assert_eq 200 "${code}" "HEAD over HTTP/2 should return 200"
 
-	# Sequential GETs (separate connections; same-connection reuse is not yet covered)
-	code1=$(curl --http2 --cacert "${CURL_CA}" -s -o /dev/null -w '%{http_code}' \
-		"${HTTPS_HOST}/h2-upload.txt")
-	code2=$(curl --http2 --cacert "${CURL_CA}" -s -o /dev/null -w '%{http_code}' \
-		"${HTTPS_HOST}/h2-missing.txt")
-	assert_eq 200 "${code1}" "HTTP/2 GET should return 200"
-	assert_eq 404 "${code2}" "HTTP/2 GET for missing file should return 404"
+	read -r code1 code2 <<< "$(curl --http2 --cacert "${CURL_CA}" -s \
+		-o /dev/null -w '%{http_code} ' "${HTTPS_HOST}/h2-upload.txt" \
+		--next --http2 --cacert "${CURL_CA}" \
+		-o /dev/null -w '%{http_code}' "${HTTPS_HOST}/h2-missing.txt")"
+	assert_eq 200 "${code1}" "HTTP/2 first GET on same connection should return 200"
+	assert_eq 404 "${code2}" "HTTP/2 second GET on same connection should return 404"
 
 	alphabet="${tmpdir}/alphabet.txt"
 	printf 'abcdefghijklmnopqrstuvwxyz' > "${alphabet}"

@@ -70,9 +70,9 @@ public:
   bool requestReady() const { return requestReady_; }
   void consumeRequestReady() { requestReady_ = false; }
 
-  bool needsReschedule(XrdHttpProtocol &prot) const;
-
 private:
+
+  bool needsContinueProcessing(XrdHttpProtocol &prot) const;
 
   int applyTo(XrdHttpReq &req);
   int dispatchReadyRequest(XrdHttpProtocol &prot, XrdLink *lp);
