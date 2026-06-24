@@ -13,7 +13,7 @@ struct EmbeddedFileUrl {
 //! Parse `/https://host/path`, `/root://host//path`, etc.
 EmbeddedFileUrl parseEmbeddedFileUrl(const std::string &path);
 
-//! Parse `root://proxy//root://origin//path` and path-embedded upstream URLs.
+//! Parse chained URLs and unwrap through N embedded proxies to the innermost upstream.
 EmbeddedFileUrl parseChainedFileUrl(const std::string &url);
 
 std::string resolveJournalDirWithSettings(const std::string &cacheRoot,

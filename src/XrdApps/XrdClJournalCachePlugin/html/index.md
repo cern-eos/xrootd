@@ -315,12 +315,20 @@ Clients can name a dynamic upstream inside a proxy URL:
 root://proxy.example:1095//root://origin.cern.ch:1094//store/file.dat
 ```
 
-PSS forwarding (`pss.origin =root,http,https`) also accepts path-embedded upstreams such as `/root://origin.cern.ch:1094//store/file.dat`.
+Longer chains with **N proxies** are supported; JournalCache unwraps through every embedded hop to the innermost upstream:
+
+```
+root://proxy1//root://proxy2//root://proxy3//root://origin.cern.ch:1094//store/file.dat
+```
+
+Use the usual XRootD `//` separator before each path segment (including each embedded URL).
+
+PSS forwarding (`pss.origin =root,http,https`) also accepts path-embedded upstreams such as `/root://origin.cern.ch:1094//store/file.dat`. Each PSS hop forwards one layer; with `multi_origin = 1`, JournalCache on a proxy unwraps the full chain in one step for open, allowlist checks, and cache keys.
 
 | Key | Meaning |
 |-----|---------|
-| `multi_origin = 1` | Unwrap chained URLs to the inner upstream for open + journal cache key |
-| `allow_origin = <regex>` | Allowed upstream patterns (comma-separated or repeated); matched against full URL, location, or host |
+| `multi_origin = 1` | Unwrap chained URLs to the innermost upstream for open + journal cache key |
+| `allow_origin = <regex>` | Allowed upstream patterns (comma-separated or repeated); matched against the fully unwrapped URL, location, or host |
 
 Environment overrides: `XRD_JOURNALCACHE_MULTI_ORIGIN`, `XRD_JOURNALCACHE_ALLOW_ORIGIN`.
 

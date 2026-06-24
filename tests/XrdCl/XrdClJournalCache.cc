@@ -728,6 +728,35 @@ TEST(ForwardingUrlTest, ParseChainedRootUrl) {
   EXPECT_EQ(chained.fileUrl.find("proxy.cern.ch"), std::string::npos);
 }
 
+TEST(ForwardingUrlTest, ParseChainedTripleRootUrl) {
+  const auto chained = JournalCache::parseChainedFileUrl(
+      "root://proxy1:1095//root://proxy2:1096//root://origin.cern.ch:1094//"
+      "store/file.dat");
+  ASSERT_TRUE(chained.valid);
+  EXPECT_NE(chained.fileUrl.find("origin.cern.ch"), std::string::npos);
+  EXPECT_NE(chained.fileUrl.find("/store/file.dat"), std::string::npos);
+  EXPECT_EQ(chained.fileUrl.find("proxy1"), std::string::npos);
+  EXPECT_EQ(chained.fileUrl.find("proxy2"), std::string::npos);
+}
+
+TEST(ForwardingUrlTest, ParseChainedTripleEmbeddedPath) {
+  const auto chained = JournalCache::parseChainedFileUrl(
+      "/root://proxy2:1096//root://origin.cern.ch:1094//store/file.dat");
+  ASSERT_TRUE(chained.valid);
+  EXPECT_NE(chained.fileUrl.find("origin.cern.ch"), std::string::npos);
+  EXPECT_EQ(chained.fileUrl.find("proxy2"), std::string::npos);
+}
+
+TEST(ForwardingUrlTest, ParseChainedMixedProtocols) {
+  const auto chained = JournalCache::parseChainedFileUrl(
+      "root://proxy:1095//root://relay:1096//https://cdn.example.org/store/"
+      "file.dat");
+  ASSERT_TRUE(chained.valid);
+  EXPECT_NE(chained.fileUrl.find("cdn.example.org"), std::string::npos);
+  EXPECT_EQ(chained.fileUrl.find("proxy"), std::string::npos);
+  EXPECT_EQ(chained.fileUrl.find("relay"), std::string::npos);
+}
+
 TEST(OriginAllowlistTest, AllowsMatchingHostOrUrl) {
   JournalCache::OriginAllowlist allowlist;
   allowlist.addPattern(R"(^root://([a-z0-9.-]+\.)?cern\.ch(:1094)?/)");

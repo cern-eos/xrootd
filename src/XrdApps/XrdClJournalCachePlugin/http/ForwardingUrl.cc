@@ -69,6 +69,26 @@ EmbeddedFileUrl parseEmbeddedFromRest(std::string rest) {
   return canonicalizeFileUrl(rest);
 }
 
+EmbeddedFileUrl unwrapFullyChained(const EmbeddedFileUrl &first) {
+  EmbeddedFileUrl result = first;
+  if (!result.valid) {
+    return result;
+  }
+
+  while (true) {
+    XrdCl::URL current(result.fileUrl);
+    if (!current.IsValid()) {
+      break;
+    }
+    const EmbeddedFileUrl inner = parseEmbeddedFileUrl(current.GetPath());
+    if (!inner.valid) {
+      break;
+    }
+    result = inner;
+  }
+  return result;
+}
+
 } // namespace
 
 EmbeddedFileUrl parseEmbeddedFileUrl(const std::string &path) {
@@ -80,7 +100,7 @@ EmbeddedFileUrl parseChainedFileUrl(const std::string &url) {
   if (!url.empty() && url.front() == '/') {
     EmbeddedFileUrl embedded = parseEmbeddedFileUrl(url);
     if (embedded.valid) {
-      return embedded;
+      return unwrapFullyChained(embedded);
     }
   }
 
@@ -91,7 +111,7 @@ EmbeddedFileUrl parseChainedFileUrl(const std::string &url) {
 
   EmbeddedFileUrl embedded = parseEmbeddedFileUrl(outer.GetPath());
   if (embedded.valid) {
-    return embedded;
+    return unwrapFullyChained(embedded);
   }
 
   return canonicalizeFileUrl(url);

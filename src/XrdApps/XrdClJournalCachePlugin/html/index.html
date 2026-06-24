@@ -530,11 +530,13 @@ cache = /var/tmp/journalcache/</code></pre>
       <h3>Chained multi-origin URLs (<code>root://</code> and friends)</h3>
       <p>Clients can name a dynamic upstream inside a proxy URL:</p>
       <pre><code>root://proxy.example:1095//root://origin.cern.ch:1094//store/file.dat</code></pre>
-      <p>PSS forwarding (<code>pss.origin =root,http,https</code>) also accepts path-embedded upstreams such as <code>/root://origin.cern.ch:1094//store/file.dat</code>.</p>
+      <p>Longer chains with <strong>N proxies</strong> are supported; JournalCache unwraps through every embedded hop to the innermost upstream:</p>
+      <pre><code>root://proxy1//root://proxy2//root://proxy3//root://origin.cern.ch:1094//store/file.dat</code></pre>
+      <p>Use the usual XRootD <code>//</code> separator before each path segment. PSS forwarding (<code>pss.origin =root,http,https</code>) also accepts path-embedded upstreams such as <code>/root://origin.cern.ch:1094//store/file.dat</code>. Each PSS hop forwards one layer; with <code>multi_origin = 1</code>, JournalCache unwraps the full chain in one step for open, allowlist checks, and cache keys.</p>
       <table>
         <tr><th>Key</th><th>Meaning</th></tr>
-        <tr><td><code>multi_origin = 1</code></td><td>Unwrap chained URLs to the inner upstream for open + journal cache key</td></tr>
-        <tr><td><code>allow_origin = &lt;regex&gt;</code></td><td>Allowed upstream patterns (comma-separated or repeated)</td></tr>
+        <tr><td><code>multi_origin = 1</code></td><td>Unwrap chained URLs to the innermost upstream for open + journal cache key</td></tr>
+        <tr><td><code>allow_origin = &lt;regex&gt;</code></td><td>Allowed upstream patterns; matched against the fully unwrapped URL</td></tr>
       </table>
       <p>Environment overrides: <code>XRD_JOURNALCACHE_MULTI_ORIGIN</code>, <code>XRD_JOURNALCACHE_ALLOW_ORIGIN</code>. The HTTP ext handler accepts the same <code>allow_origin</code> lines and rejects disallowed upstreams with <strong>403</strong>.</p>
       <pre><code>multi_origin = 1
