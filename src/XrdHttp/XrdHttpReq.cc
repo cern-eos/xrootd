@@ -1137,6 +1137,7 @@ int XrdHttpReq::ProcessHTTPReq() {
           // We want to be invoked again after this request is finished
           return 0;
           }
+          [[fallthrough]];
         }
         case 1: // Checksum request
           if (!(fileflags & kXR_isDir) && (!m_want_digest.empty() || !m_want_repr_digest.empty())) {

@@ -296,7 +296,6 @@ int XrdHttpProtocol::HandleKrb5Auth()
 {
 #undef  TRACELINK
 #define TRACELINK Link
-  EPNAME("HandleKrb5Auth");
 
   if (!XrdHttpKrb5::IsEnabled())
     return 0;
