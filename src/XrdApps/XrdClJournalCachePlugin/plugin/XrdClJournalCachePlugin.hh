@@ -284,6 +284,21 @@ public:
       Journal::sDefaultEnableCrc = JournalCacheFile::sEnableJournalCrc;
 
       Log *log = DefaultEnv::GetLog();
+      Journal::SetLogCallback(
+          [](void *ctx, int level, const char *msg) {
+            auto *journalLog = static_cast<Log *>(ctx);
+            if (!journalLog) {
+              return;
+            }
+            if (level <= 1) {
+              journalLog->Error(1, "Journal : %s", msg);
+            } else if (level == 2) {
+              journalLog->Warning(1, "Journal : %s", msg);
+            } else {
+              journalLog->Info(1, "Journal : %s", msg);
+            }
+          },
+          log);
       log->Info(1, "JournalCache : cache directory: %s",
                 JournalCacheFile::sCachePath.c_str());
       log->Info(1, "JournalCache : caching reads in journal cache: %s",
