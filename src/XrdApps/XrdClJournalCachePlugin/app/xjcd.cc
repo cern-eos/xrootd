@@ -15,7 +15,7 @@ void usage() {
       << "Commands:\n"
       << "  init [--journal PATH] --xroot-port N --https-port N "
          "--tls-cert PATH --tls-key PATH [--install-systemd] "
-         "[--systemd-unit NAME]\n"
+         "[--systemd-unit NAME] [--systemd-cleaner-unit NAME]\n"
       << "  render\n"
       << "  show\n"
       << "  validate\n"
@@ -23,7 +23,8 @@ void usage() {
       << "Generates XRootD + JournalCache configs under $journal/.xjc/etc/.\n"
       << "Runtime policy is written to $journal/.xjc/policy.conf (edit with xjc).\n"
       << "Start xrootd via systemd using the generated xrootd.cf and xjcd.env.\n"
-      << "Use --install-systemd on init to install and enable the unit (requires root).\n";
+      << "Use --install-systemd on init to install and enable xjcd.service and "
+         "xjccleand.service (requires root).\n";
 }
 
 std::string getHostname() {
@@ -111,6 +112,8 @@ int main(int argc, char **argv) {
 
     bool installSystemd = false;
     std::string systemdUnit = JournalCache::defaultSystemdUnitName();
+    std::string cleanerSystemdUnit =
+        JournalCache::defaultCleanerSystemdUnitName();
     std::string value;
     while (argi < argc) {
       const std::string flag = argv[argi++];
@@ -125,6 +128,15 @@ int main(int argc, char **argv) {
           return 1;
         }
         systemdUnit = value;
+      } else if (flag == "--systemd-cleaner-unit" &&
+                 requireArg(argc, argv, argi, "cleaner systemd unit name",
+                            value)) {
+        if (!JournalCache::isValidSystemdUnitName(value)) {
+          std::cerr << "xjcd: invalid cleaner systemd unit name: " << value
+                    << "\n";
+          return 1;
+        }
+        cleanerSystemdUnit = value;
       } else if (flag == "--xroot-port" && requireArg(argc, argv, argi, "xroot port", value)) {
         if (!parsePort(value, state.xrootPort)) {
           std::cerr << "xjcd: invalid xroot port\n";
@@ -176,15 +188,22 @@ int main(int argc, char **argv) {
     std::cout << "xjcd: initialized " << state.journal << "\n";
     std::cout << "xjcd: xrootd config " << state.xrootdConfigPath() << "\n";
     std::cout << "xjcd: policy file " << state.policyPath() << "\n";
+    std::cout << "xjcd: cleaner config " << state.cleanerPath() << "\n";
     if (installSystemd) {
       std::string error;
-      if (!JournalCache::installXjcdSystemdUnit(state, systemdUnit, true, error)) {
+      if (!JournalCache::installXjcdSystemdUnits(state, systemdUnit,
+                                               cleanerSystemdUnit, true,
+                                               error)) {
         std::cerr << "xjcd: " << error << "\n";
         return 1;
       }
       std::cout << "xjcd: installed "
                 << JournalCache::systemdUnitInstallPath(systemdUnit) << "\n";
-      std::cout << "xjcd: enabled and started " << systemdUnit << "\n";
+      std::cout << "xjcd: installed "
+                << JournalCache::systemdUnitInstallPath(cleanerSystemdUnit)
+                << "\n";
+      std::cout << "xjcd: enabled and started " << systemdUnit << " and "
+                << cleanerSystemdUnit << "\n";
     }
     return 0;
   }
@@ -217,11 +236,16 @@ int main(int argc, char **argv) {
     std::cout << "policy        = " << state.policyPath() << "\n";
     std::cout << "systemd env   = " << state.systemdEnvPath() << "\n";
     std::cout << "systemd unit  = " << state.systemdUnitPath() << "\n";
+    std::cout << "cleaner conf  = " << state.cleanerPath() << "\n";
+    std::cout << "cleaner unit  = " << state.cleanerSystemdUnitPath() << "\n";
+    std::cout << "cleaner env   = " << state.cleanerSystemdEnvPath() << "\n";
     std::cout << "\n# install and start:\n";
     std::cout << "sudo install -m 0644 " << state.systemdUnitPath()
               << " /etc/systemd/system/\n";
+    std::cout << "sudo install -m 0644 " << state.cleanerSystemdUnitPath()
+              << " /etc/systemd/system/\n";
     std::cout << "sudo systemctl daemon-reload\n";
-    std::cout << "sudo systemctl enable --now xjcd.service\n";
+    std::cout << "sudo systemctl enable --now xjcd.service xjccleand.service\n";
     return 0;
   }
 

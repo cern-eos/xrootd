@@ -8,6 +8,7 @@
 #include "http/HttpHeaderMap.hh"
 #include "file/OriginAllowlist.hh"
 #include "file/ExternalRedirect.hh"
+#include "file/CleanerConfig.hh"
 #include "file/PolicyConfig.hh"
 #include "file/PolicyRuntime.hh"
 #include "daemon/XjcdRender.hh"
@@ -930,7 +931,35 @@ TEST(XjcdRenderTest, RendersConfigsAndOpenPolicy) {
   EXPECT_NE(unitText.find("RequiresMountsFor=" + state.journal),
             std::string::npos);
 
+  const std::string cleanerPath = state.cleanerPath();
+  ASSERT_TRUE(fs::exists(cleanerPath));
+  ASSERT_TRUE(fs::exists(state.cleanerSystemdUnitPath()));
+  std::ifstream cleanerUnitIn(state.cleanerSystemdUnitPath());
+  std::string cleanerUnitText((std::istreambuf_iterator<char>(cleanerUnitIn)),
+                              std::istreambuf_iterator<char>());
+  EXPECT_NE(cleanerUnitText.find("ExecStart=/usr/bin/xjccleand --journal " +
+                                 state.journal),
+            std::string::npos);
+
   fs::remove_all(dir);
+}
+
+TEST(CleanerConfigTest, RoundTripCleanerFile) {
+  JournalCache::CleanerSettings settings;
+  settings.enabled = true;
+  settings.journal = "/var/tmp/journalcache";
+  settings.highWatermark = 10000000000ull;
+  settings.lowWatermark = 0;
+  settings.interval = 60;
+  settings.configPoll = 2;
+
+  const std::string text = JournalCache::formatCleanerFile(settings);
+  JournalCache::CleanerSettings loaded;
+  ASSERT_TRUE(JournalCache::parseCleanerText(text, loaded));
+  EXPECT_TRUE(loaded.enabled);
+  EXPECT_EQ(loaded.journal, settings.journal);
+  EXPECT_EQ(loaded.highWatermark, settings.highWatermark);
+  EXPECT_EQ(JournalCache::effectiveLowWatermark(loaded), 9000000000ull);
 }
 
 TEST(XjcdSystemdTest, ValidatesUnitName) {

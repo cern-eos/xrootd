@@ -574,8 +574,11 @@ external_redirect = /live/ https://stream.example.org/live/</code></pre>
       <pre><code>xjc --policy /var/tmp/journalcache/.xjc/policy.conf show
 xjc bypass off
 xjc allow-origin add '^https://.*\.example\.org/'
-xjc redirect add /live/ https://stream.example.org/live/</code></pre>
-      <p>See <strong>xjc(1)</strong> for the full command reference.</p>
+xjc redirect add /live/ https://stream.example.org/live/
+xjc cleaner show
+xjc cleaner enable on
+xjc cleaner set high 10000000000</code></pre>
+      <p>See <strong>xjc(1)</strong> for the full command reference. Cleaner settings live in <code>$cache/.xjc/cleaner.conf</code> and are reloaded by <strong>xjccleand</strong>.</p>
     </section>
 
     <section id="xjcd">
@@ -589,14 +592,17 @@ xjc redirect add /live/ https://stream.example.org/live/</code></pre>
         <tr><td><code>$journal/.xjc/etc/journalcache-http.ext.conf</code></td><td>HTTP ext (forwarding mode)</td></tr>
         <tr><td><code>$journal/.xjc/etc/client.plugins.d/journalcache.conf</code></td><td>Client plugins for the xrootd/PSS process</td></tr>
         <tr><td><code>$journal/.xjc/etc/xjcd.env</code></td><td><code>EnvironmentFile</code> snippet for systemd</td></tr>
-        <tr><td><code>$journal/.xjc/etc/xjcd.service</code></td><td>Generated systemd unit</td></tr>
+        <tr><td><code>$journal/.xjc/etc/xjcd.service</code></td><td>Generated systemd unit for xrootd</td></tr>
+        <tr><td><code>$journal/.xjc/etc/xjccleand.service</code></td><td>Generated systemd unit for xjccleand</td></tr>
+        <tr><td><code>$journal/.xjc/etc/xjccleand.env</code></td><td>EnvironmentFile for xjccleand</td></tr>
+        <tr><td><code>$journal/.xjc/cleaner.conf</code></td><td>Cleaner config — edit with <strong>xjc cleaner</strong></td></tr>
       </table>
       <p>Initial policy is <strong>open</strong> (no <code>allow_origin</code> lines) until you add rules with <strong>xjc</strong>. TLS certificate and key paths are <strong>required</strong> at init time.</p>
       <pre><code>sudo xjcd init --journal /var/tmp/journalcache \
   --xroot-port 1094 --https-port 8443 \
   --tls-cert /etc/xrootd/tls.crt --tls-key /etc/xrootd/tls.key \
   --install-systemd</code></pre>
-      <p>With <code>--install-systemd</code>, init copies the generated unit into <code>/etc/systemd/system/</code>, runs <code>systemctl daemon-reload</code>, and <code>systemctl enable --now xjcd.service</code> (requires root). Use <code>--systemd-unit NAME</code> for a non-default unit name when running multiple journals on one host.</p>
+      <p>With <code>--install-systemd</code>, init installs <code>xjcd.service</code> and <code>xjccleand.service</code>, runs <code>systemctl daemon-reload</code>, and <code>systemctl enable --now xjcd.service xjccleand.service</code> (requires root).</p>
       <p>Manual install (without the flag):</p>
       <pre><code>xjcd init --journal /var/tmp/journalcache \
   --xroot-port 1094 --https-port 8443 \
@@ -607,9 +613,10 @@ xjcd validate --journal /var/tmp/journalcache
 xjcd render --journal /var/tmp/journalcache
 
 sudo install -m 0644 /var/tmp/journalcache/.xjc/etc/xjcd.service /etc/systemd/system/
+sudo install -m 0644 /var/tmp/journalcache/.xjc/etc/xjccleand.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now xjcd.service</code></pre>
-      <p>Re-run <code>xjcd render</code> after changing <code>state.conf</code>, then <code>systemctl restart xjcd.service</code>.</p>
+sudo systemctl enable --now xjcd.service xjccleand.service</code></pre>
+      <p>Re-run <code>xjcd render</code> after changing <code>state.conf</code>, then <code>systemctl restart xjcd.service xjccleand.service</code>.</p>
       <p>See <strong>xjcd(1)</strong> for the full command reference.</p>
     </section>
 
@@ -666,8 +673,11 @@ size = 10000000000
 # Or via environment
 export XRD_JOURNALCACHE_SIZE=10000000000</code></pre>
 
-      <p>Standalone cleaner for complex deployments:</p>
-      <pre><code>xrdclcacheclean &lt;directory&gt; &lt;highwatermark&gt; &lt;lowwatermark&gt; &lt;interval_seconds&gt;</code></pre>
+      <p>Standalone cleaner daemon. Config lives at <code>$journal/.xjc/cleaner.conf</code> and is edited with <strong>xjc cleaner</strong>; <strong>xjccleand</strong> reloads on mtime change.</p>
+      <pre><code>xjc cleaner enable on
+xjc cleaner set high 10000000000
+xjccleand --journal /var/tmp/journalcache</code></pre>
+      <p><code>xjcd init --install-systemd</code> installs both <code>xjcd.service</code> and <code>xjccleand.service</code>.</p>
     </section>
 
     <section id="stats">

@@ -70,12 +70,17 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
   target_link_libraries(${XrdClJournalCachePlugin} PRIVATE stdc++fs)
 endif()
 
-add_executable(xrdclcacheclean
-  XrdClJournalCachePlugin/app/XrdClCacheCleaner.cc)
+add_executable(xjccleand
+  XrdClJournalCachePlugin/app/xjccleand.cc
+  XrdClJournalCachePlugin/file/CleanerConfig.cc)
+
+target_include_directories(xjccleand
+  PRIVATE "${CMAKE_SOURCE_DIR}/src/XrdApps/XrdClJournalCachePlugin/")
 
 add_executable(xjc
   XrdClJournalCachePlugin/app/xjc.cc
   XrdClJournalCachePlugin/file/PolicyConfig.cc
+  XrdClJournalCachePlugin/file/CleanerConfig.cc
   XrdClJournalCachePlugin/file/OriginAllowlist.cc
   XrdClJournalCachePlugin/file/ExternalRedirect.cc)
 
@@ -95,6 +100,7 @@ add_executable(xjcd
   XrdClJournalCachePlugin/daemon/XjcdState.cc
   XrdClJournalCachePlugin/daemon/XjcdRender.cc
   XrdClJournalCachePlugin/file/PolicyConfig.cc
+  XrdClJournalCachePlugin/file/CleanerConfig.cc
   XrdClJournalCachePlugin/file/OriginAllowlist.cc
   XrdClJournalCachePlugin/file/ExternalRedirect.cc)
 
@@ -112,7 +118,7 @@ endif()
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
   AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.1
   AND NOT APPLE)
-  target_link_libraries(xrdclcacheclean PRIVATE stdc++fs)
+  target_link_libraries(xjccleand PRIVATE stdc++fs)
 endif()
 
 if(BUILD_HTTP AND NOT XRDCL_ONLY)
@@ -159,7 +165,7 @@ target_link_libraries(xrdreplay
 install(
   TARGETS
     xrdreplay
-    xrdclcacheclean
+    xjccleand
     xjc
     xjcd
     XrdAppUtils

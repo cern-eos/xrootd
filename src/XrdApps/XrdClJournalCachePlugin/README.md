@@ -276,12 +276,25 @@ or via the environment variable XRD_JOURNALCACHE_SIZE=1000000000
 
 The minimum cleaner size is 1GB, otherwise it is ignored. The cleaner thread by default runs every minutes and when the given size is exceeded (high water mark), it cleans the cache directory to 90% starting with the oldest files by access time. Setting the size to 0 disables the cleaning (default behaviour). 
 
-In more complex environments the cleaner can be run as a daemon using a standalone application:
+In more complex environments the cleaner runs as **`xjccleand`**, configured via **`$journal/.xjc/cleaner.conf`** (edit with **`xjc cleaner`**, hot-reloaded on mtime change):
 
+```ini
+enabled = 1
+journal = /var/tmp/journalcache
+high_watermark = 10000000000
+low_watermark = 0
+interval = 60
+config_poll = 2
 ```
-xrdclcacheclean 
-Usage: xrdclcacheclean <directory> <highwatermark> <lowwatermark> <interval> 
+
+```bash
+xjc cleaner show
+xjc cleaner enable on
+xjc cleaner set high 10000000000
+xjccleand --journal /var/tmp/journalcache
 ```
+
+`xjcd init` seeds `cleaner.conf`, generates `xjccleand.service` / `xjccleand.env`, and `--install-systemd` enables both `xjcd.service` and `xjccleand.service`.
 
 # 7 HTTP cache integration
 
@@ -576,7 +589,10 @@ xjc redirect add /live/ https://stream.example.org/live/
 | `$journal/.xjc/etc/journalcache-http.ext.conf` | HTTP ext (forwarding mode) |
 | `$journal/.xjc/etc/client.plugins.d/journalcache.conf` | Client plugins for the xrootd/PSS process |
 | `$journal/.xjc/etc/xjcd.env` | `EnvironmentFile` snippet for systemd |
-| `$journal/.xjc/etc/xjcd.service` | Generated systemd unit (install into `/etc/systemd/system/`) |
+| `$journal/.xjc/etc/xjcd.service` | Generated systemd unit for xrootd |
+| `$journal/.xjc/etc/xjccleand.service` | Generated systemd unit for xjccleand |
+| `$journal/.xjc/etc/xjccleand.env` | EnvironmentFile for xjccleand |
+| `$journal/.xjc/cleaner.conf` | Cleaner daemon config — edit with **`xjc cleaner`** |
 
 Initial policy is **open** (no `allow_origin` lines) until you add rules with **`xjc`**. TLS certificate and key paths are **required** at init time.
 
@@ -587,7 +603,7 @@ xjcd init --journal /var/tmp/journalcache \
   --install-systemd
 ```
 
-With `--install-systemd`, init installs `$journal/.xjc/etc/xjcd.service` into `/etc/systemd/system/`, runs `systemctl daemon-reload`, and `systemctl enable --now xjcd.service` (requires root). Use `--systemd-unit NAME` for a non-default unit name when running multiple journals on one host.
+With `--install-systemd`, init installs `$journal/.xjc/etc/xjcd.service` and `xjccleand.service` into `/etc/systemd/system/`, runs `systemctl daemon-reload`, and `systemctl enable --now xjcd.service xjccleand.service` (requires root). Use `--systemd-unit NAME` / `--systemd-cleaner-unit NAME` for non-default unit names when running multiple journals on one host.
 
 Manual install (without the flag):
 
@@ -603,11 +619,12 @@ xjcd render --journal /var/tmp/journalcache   # after editing state.conf
 
 ```bash
 sudo install -m 0644 /var/tmp/journalcache/.xjc/etc/xjcd.service /etc/systemd/system/
+sudo install -m 0644 /var/tmp/journalcache/.xjc/etc/xjccleand.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now xjcd.service
+sudo systemctl enable --now xjcd.service xjccleand.service
 ```
 
-Re-run `xjcd render` after changing `state.conf`, then `systemctl restart xjcd.service`.
+Re-run `xjcd render` after changing `state.conf`, then `systemctl restart xjcd.service xjccleand.service`.
 
 See **xjcd(1)** for the full command reference.
 
@@ -670,7 +687,7 @@ env XRD_PLUGIN=/usr/lib64/libXrdClJournalCachePlugin-5.so XRD_JOURNALCACHE_CACHE
 ## Open
 
 - Add optional dynamic read-ahead with window scaling
-- Make `xrdclcacheclean` a daemon with systemd support
+- Make `xjccleand` systemd support part of xjcd bootstrap :white_check_mark:
 - Add automatic connection de-multiplexing if contention to storage servers is detected
 - ~~Add a CGI option to force cleaning of journal cache for a given file~~ :white_check_mark:
 - ~~Add a CGI option to bypass journal cache for a given file~~ :white_check_mark:

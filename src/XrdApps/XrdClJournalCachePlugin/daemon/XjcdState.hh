@@ -23,6 +23,9 @@ struct XjcdState {
   std::string clientPluginConfigPath() const;
   std::string systemdEnvPath() const;
   std::string systemdUnitPath() const;
+  std::string cleanerPath() const;
+  std::string cleanerSystemdEnvPath() const;
+  std::string cleanerSystemdUnitPath() const;
 
   bool load(const std::string &journalRoot);
   bool save() const;
