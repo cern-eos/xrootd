@@ -234,6 +234,8 @@
         <li><a href="#journal">Journal layout</a></li>
         <li><a href="#filesystem">Filesystem cache</a></li>
         <li><a href="#http">HTTP cache</a></li>
+        <li><a href="#xjc">Runtime policy (xjc)</a></li>
+        <li><a href="#xjcd">xjcd bootstrap</a></li>
         <li><a href="#proxy">Proxy setup</a></li>
         <li><a href="#cleaning">Cleaning</a></li>
         <li><a href="#stats">Statistics</a></li>
@@ -553,6 +555,62 @@ allow_origin = ^root://([a-z0-9.-]+\.)?cern\.ch(:1094)?/,^https://([a-z0-9.-]+\.
       <p>Environment override: <code>XRD_JOURNALCACHE_EXTERNAL_REDIRECT</code>.</p>
       <pre><code>external_redirect = /live/ https://stream.example.org/live/
 external_redirect = /store/raw/ root://data.cern.ch:1094//store/raw/</code></pre>
+    </section>
+
+    <section id="xjc">
+      <h2>Runtime policy and <code>xjc</code></h2>
+      <p>Hot-reloadable policy knobs live in a runtime file (default: <code>$cache/.xjc/policy.conf</code>):</p>
+      <pre><code>bypass = 0
+multi_origin = 1
+allow_origin = ^root://([a-z0-9.-]+\.)?cern\.ch(:1094)?/
+external_redirect = /live/ https://stream.example.org/live/</code></pre>
+      <table>
+        <tr><th>Key</th><th>Meaning</th></tr>
+        <tr><td><code>policy = /path/to/policy.conf</code></td><td>Override runtime policy path (plugin + HTTP ext)</td></tr>
+        <tr><td><code>policy_poll = 2</code></td><td>Mtime poll interval in seconds (<code>0</code> disables watch)</td></tr>
+      </table>
+      <p>Environment: <code>XRD_JOURNALCACHE_POLICY</code>, <code>XRD_JOURNALCACHE_POLICY_POLL</code>.</p>
+      <p>Both the file plugin and HTTP ext watch the policy file and reload when its mtime changes. Edit with <strong>xjc</strong>:</p>
+      <pre><code>xjc --policy /var/tmp/journalcache/.xjc/policy.conf show
+xjc bypass off
+xjc allow-origin add '^https://.*\.example\.org/'
+xjc redirect add /live/ https://stream.example.org/live/</code></pre>
+      <p>See <strong>xjc(1)</strong> for the full command reference.</p>
+    </section>
+
+    <section id="xjcd">
+      <h2><code>xjcd</code> — forwarding proxy bootstrap</h2>
+      <p><strong>xjcd</strong> writes the static XRootD + JournalCache layout under <code>$journal/.xjc/</code> and leaves process startup to <strong>systemd</strong> (no <code>xjcd run</code>).</p>
+      <table>
+        <tr><th>Path</th><th>Purpose</th></tr>
+        <tr><td><code>$journal/.xjc/state.conf</code></td><td>Bootstrap parameters (ports, TLS paths, lib dir)</td></tr>
+        <tr><td><code>$journal/.xjc/policy.conf</code></td><td>Runtime policy — edit with <strong>xjc</strong></td></tr>
+        <tr><td><code>$journal/.xjc/etc/xrootd.cf</code></td><td>Generated XRootD config</td></tr>
+        <tr><td><code>$journal/.xjc/etc/journalcache-http.ext.conf</code></td><td>HTTP ext (forwarding mode)</td></tr>
+        <tr><td><code>$journal/.xjc/etc/client.plugins.d/journalcache.conf</code></td><td>Client plugins for the xrootd/PSS process</td></tr>
+        <tr><td><code>$journal/.xjc/etc/xjcd.env</code></td><td><code>EnvironmentFile</code> snippet for systemd</td></tr>
+        <tr><td><code>$journal/.xjc/etc/xjcd.service</code></td><td>Generated systemd unit</td></tr>
+      </table>
+      <p>Initial policy is <strong>open</strong> (no <code>allow_origin</code> lines) until you add rules with <strong>xjc</strong>. TLS certificate and key paths are <strong>required</strong> at init time.</p>
+      <pre><code>sudo xjcd init --journal /var/tmp/journalcache \
+  --xroot-port 1094 --https-port 8443 \
+  --tls-cert /etc/xrootd/tls.crt --tls-key /etc/xrootd/tls.key \
+  --install-systemd</code></pre>
+      <p>With <code>--install-systemd</code>, init copies the generated unit into <code>/etc/systemd/system/</code>, runs <code>systemctl daemon-reload</code>, and <code>systemctl enable --now xjcd.service</code> (requires root). Use <code>--systemd-unit NAME</code> for a non-default unit name when running multiple journals on one host.</p>
+      <p>Manual install (without the flag):</p>
+      <pre><code>xjcd init --journal /var/tmp/journalcache \
+  --xroot-port 1094 --https-port 8443 \
+  --tls-cert /etc/xrootd/tls.crt --tls-key /etc/xrootd/tls.key
+
+xjcd show --journal /var/tmp/journalcache
+xjcd validate --journal /var/tmp/journalcache
+xjcd render --journal /var/tmp/journalcache
+
+sudo install -m 0644 /var/tmp/journalcache/.xjc/etc/xjcd.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now xjcd.service</code></pre>
+      <p>Re-run <code>xjcd render</code> after changing <code>state.conf</code>, then <code>systemctl restart xjcd.service</code>.</p>
+      <p>See <strong>xjcd(1)</strong> for the full command reference.</p>
     </section>
 
     <section id="proxy">

@@ -7,6 +7,7 @@ set(MAN1PAGES
   xrdfs.1
   xrdmapc.1
   xrootd-config.1
+  xjcd.1
 )
 
 set(MAN8PAGES
