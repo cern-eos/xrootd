@@ -1116,6 +1116,9 @@ int XrdHttpReq::ProcessHTTPReq() {
       switch (reqstate) {
         case 0: // Open the path for reading.
         {
+          if (fopened) {
+            reqstate = 1;
+          } else {
           memset(&xrdreq, 0, sizeof (ClientRequest));
           xrdreq.open.requestid = htons(kXR_open);
           l = resourceplusopaque.length() + 1;
@@ -1133,6 +1136,7 @@ int XrdHttpReq::ProcessHTTPReq() {
 
           // We want to be invoked again after this request is finished
           return 0;
+          }
         }
         case 1: // Checksum request
           if (!(fileflags & kXR_isDir) && (!m_want_digest.empty() || !m_want_repr_digest.empty())) {
@@ -1229,6 +1233,10 @@ int XrdHttpReq::ProcessHTTPReq() {
           // --------- CLOSE
           if ( closeAfterError || readChunkList.empty() )
           {
+#ifdef HAVE_NGHTTP2
+            if (prot->Http2OutboundPending())
+              return 1;
+#endif
 
             memset(&xrdreq, 0, sizeof (ClientRequest));
             xrdreq.close.requestid = htons(kXR_close);

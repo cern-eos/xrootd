@@ -6,13 +6,16 @@
 #ifndef XRDHTTP1SESSION_HH
 #define XRDHTTP1SESSION_HH
 
-#include "XrdHttpReq.hh"
+class XrdHttpProtocol;
+class XrdHttpReq;
+
+#include <string>
+#include <utility>
+#include <vector>
 
 extern "C" {
 #include "vendor/llhttp/llhttp.h"
 }
-
-class XrdHttpProtocol;
 
 class XrdHttp1Session
 {

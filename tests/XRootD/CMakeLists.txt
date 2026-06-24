@@ -7,6 +7,10 @@ endif()
 
 if(ENABLE_HTTP_TESTS)
   list(APPEND XROOTD_CONFIGS http httpparser httpparserlegacy)
+  if(BUILD_HTTP2)
+    list(APPEND XROOTD_CONFIGS httph2)
+    list(APPEND httph2_FIXTURES TLS)
+  endif()
 endif()
 
 if(BUILD_KRB5 AND NOT APPLE)

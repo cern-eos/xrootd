@@ -37,6 +37,9 @@
 #include "XrdHttpTrace.hh"
 #include "XrdHttpProtocol.hh"
 #include "wire/XrdHttp1ResponseWriter.hh"
+#ifdef HAVE_NGHTTP2
+#include "wire/XrdHttp2ResponseWriter.hh"
+#endif
 
 #include <sys/stat.h>
 #include "XrdHttpUtils.hh"
@@ -177,7 +180,12 @@ XrdHttpProtocol::ProtStack("ProtStack",
 
 XrdHttpProtocol::XrdHttpProtocol(bool imhttps)
 : XrdProtocol("HTTP protocol handler"), ProtLink(this),
-SecEntity(""), http1Session_(), CurrentReq(this, ReadRangeConfig) {
+SecEntity(""), http1Session_()
+#ifdef HAVE_NGHTTP2
+, http2Session_(), wireMode_(XrdHttpWireMode::kHttp1)
+#endif
+, CurrentReq(this, ReadRangeConfig)
+{
   myBuff = 0;
   Addr_str = 0;
 #ifdef HAVE_HTTP_KRB5
@@ -406,6 +414,7 @@ BIO *XrdHttpProtocol::CreateBIO(XrdLink *lp)
 
 int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
 {
+  XrdSysMutexHelper xGuard(&procMutex_);
   int rc = 0;
 
   TRACEI(DEBUG, " Process. lp:"<<(void *)lp<<" reqstate: "<<CurrentReq.reqstate);
@@ -452,7 +461,7 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
         secxtractor->InitSSL(ssl, sslcadir);
 
       SSL_set_bio(ssl, sbio, sbio);
-      //SSL_set_connect_state(ssl);
+      SSL_set_accept_state(ssl);
 
       //SSL_set_fd(ssl, Link->FDnum());
       struct timeval tv;
@@ -464,10 +473,13 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
       TRACEI(DEBUG, " Entering SSL_accept...");
       int res = SSL_accept(ssl);
       TRACEI(DEBUG, " SSL_accept returned :" << res);
-      if ((res == -1) && (SSL_get_error(ssl, res) == SSL_ERROR_WANT_READ)) {
-          TRACEI(DEBUG, " SSL_accept wants to read more bytes... err:" << SSL_get_error(ssl, res));
+      if (res == -1) {
+        const int err = SSL_get_error(ssl, res);
+        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+          TRACEI(DEBUG, " SSL_accept wants more I/O err:" << err);
           return 1;
         }
+      }
 
       if(res <= 0) {
           ERR_print_errors(sslbio_err);
@@ -479,7 +491,7 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
           }
       }
 
-      BIO_set_nbio(sbio, 0);
+      BIO_set_nbio(sbio, 1);
 
       strcpy(SecEntity.prot, "https");
 
@@ -498,11 +510,26 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
 
 
 
+#ifdef HAVE_NGHTTP2
+  if (ishttps && ssldone && wireMode_ == XrdHttpWireMode::kHttp1 &&
+      !CurrentReq.headerok && !DoingLogin && lp) {
+    if (BuffUsed() == 0 && SSL_pending(ssl) <= 0)
+      getDataOneShot(BuffAvailable());
+    detectWireMode();
+  }
+#endif
+
   if (!DoingLogin) {
     // Re-invocations triggered by the bridge have lp==0
     // In this case we keep track of a different request state
     if (lp) {
 
+#ifdef HAVE_NGHTTP2
+      if (wireMode_ == XrdHttpWireMode::kHttp2) {
+        // HTTP/2 reads are driven by XrdHttp2Session::drive().
+      } else
+#endif
+      {
       // This is an invocation that was triggered by a socket event
       // Read all the data that is available, throw it into the buffer
       if ((rc = getDataOneShot(BuffAvailable())) < 0) {
@@ -512,10 +539,15 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
 
       // If we need more bytes, let's wait for another invokation
       if (BuffUsed() < ResumeBytes) return 1;
+      }
 
-
-    } else
-      CurrentReq.reqstate++;
+    } else {
+#ifdef HAVE_NGHTTP2
+      if (!(wireMode_ == XrdHttpWireMode::kHttp2 && !CurrentReq.headerok &&
+            !DoingLogin))
+#endif
+        CurrentReq.reqstate++;
+    }
   } else if (!DoneSetInfo && !CurrentReq.userAgent().empty()) { // DoingLogin is true, meaning the login finished.
     std::string mon_info = "monitor info " + CurrentReq.userAgent();
     DoneSetInfo = true;
@@ -539,6 +571,11 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
   } else {
     DoingLogin = false;
   }
+
+#ifdef HAVE_NGHTTP2
+  if (wireMode_ == XrdHttpWireMode::kHttp2)
+    return processHttp2(lp);
+#endif
 
   // Read the next request header, that is, read until a double CRLF is found
 
@@ -610,6 +647,13 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
     }
 
   }
+
+  return processParsedRequest(lp);
+}
+
+int XrdHttpProtocol::processParsedRequest(XrdLink *lp)
+{
+  int rc = 0;
 
   // If we are in self-redirect mode, then let's do it
   // Do selfredirect only with 'simple' requests, otherwise poor clients may misbehave
@@ -853,18 +897,22 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
     return 0;
   }
 
-  // Compute and send the response. This may involve further reading from the socket
   rc = CurrentReq.ProcessHTTPReq();
   if (rc < 0) {
-     CurrentReq.reset();
-     http1Session_.reset();
+    CurrentReq.reset();
+#ifdef HAVE_NGHTTP2
+    if (wireMode_ == XrdHttpWireMode::kHttp2)
+      http2Session_.reset();
+    else
+#endif
+      http1Session_.reset();
   }
 
-
-
   TRACEI(REQ, "Process is exiting rc:" << rc);
+  (void)lp;
   return rc;
 }
+
 /******************************************************************************/
 /*                               R e c y c l e                                */
 /******************************************************************************/
@@ -1341,9 +1389,9 @@ int XrdHttpProtocol::getDataOneShot(int blen, bool wait) {
     int sslavail = maxread;
 
     if (!wait) {
-      int l = SSL_pending(ssl);
-      if (l > 0)
-        sslavail = std::min(maxread, SSL_pending(ssl));
+      const int pending = SSL_pending(ssl);
+      if (pending > 0)
+        sslavail = std::min(maxread, pending);
     }
 
     if (sslavail < 0) {
@@ -1362,6 +1410,12 @@ int XrdHttpProtocol::getDataOneShot(int blen, bool wait) {
 
     rlen = SSL_read(ssl, myBuffEnd, sslavail);
     if (rlen <= 0) {
+      const int err = SSL_get_error(ssl, rlen);
+      if (rlen < 0 &&
+          (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE))
+        return 0;
+      if (rlen == 0 && err == SSL_ERROR_ZERO_RETURN)
+        return 0;
       Link->setEtext("link SSL read error");
       ERR_print_errors(sslbio_err);
       return -1;
@@ -1438,6 +1492,13 @@ int XrdHttpProtocol::BuffUsed() {
   }
 
   return r;
+}
+
+int XrdHttpProtocol::SSLPending() const
+{
+  if (!ishttps || !ssl)
+    return 0;
+  return SSL_pending(ssl);
 }
 
 /******************************************************************************/
@@ -1557,6 +1618,11 @@ int XrdHttpProtocol::SendData(const char *body, int bodylen) {
 
   if (body && bodylen) {
     TRACE(REQ, "Sending " << bodylen << " bytes");
+#ifdef HAVE_NGHTTP2
+    if (wireMode_ == XrdHttpWireMode::kHttp2 &&
+        http2Session_.pendingResponse().active)
+      return XrdHttp2ResponseWriter::sendStreamData(*this, body, bodylen);
+#endif
     if (ishttps) {
       r = SSL_write(ssl, body, bodylen);
       if (r <= 0) {
@@ -1575,6 +1641,124 @@ int XrdHttpProtocol::SendData(const char *body, int bodylen) {
   return r <= 0 ? -1 : 0;
 }
 
+int XrdHttpProtocol::SendWireData(const char *body, int bodylen)
+{
+  if (!body || bodylen <= 0)
+    return 0;
+
+  int total = 0;
+  while (total < bodylen) {
+    int r = 0;
+    if (ishttps) {
+      r = SSL_write(ssl, body + total, bodylen - total);
+      if (r <= 0) {
+        const int err = SSL_get_error(ssl, r);
+        if (r < 0 && (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE))
+          return total > 0 ? total : 0;
+        ERR_print_errors(sslbio_err);
+        CurrentReq.monState = XrdHttpMonState::ERR_NET;
+        return -1;
+      }
+    } else if (Link) {
+      r = Link->Send(body + total, bodylen - total);
+      if (r <= 0) {
+        CurrentReq.monState = XrdHttpMonState::ERR_NET;
+        return -1;
+      }
+    } else {
+      return -1;
+    }
+    total += r;
+  }
+
+  return total;
+}
+
+void XrdHttpProtocol::BuffInject(const char *data, int len)
+{
+  if (!myBuff || !data || len <= 0)
+    return;
+
+  for (int i = 0; i < len; ++i) {
+    if (BuffFree() <= 0)
+      break;
+    *myBuffEnd++ = data[i];
+    if (myBuffEnd >= myBuff->buff + myBuff->bsize)
+      myBuffEnd = myBuff->buff;
+  }
+}
+
+#ifdef HAVE_NGHTTP2
+void XrdHttpProtocol::detectWireMode()
+{
+  wireMode_ = XrdHttpWireMode::kHttp1;
+  if (!ssl)
+    return;
+
+  const unsigned char *alpn = nullptr;
+  unsigned int alpn_len = 0;
+  SSL_get0_alpn_selected(ssl, &alpn, &alpn_len);
+  if (alpn_len == 2 && alpn[0] == 'h' && alpn[1] == '2') {
+    wireMode_ = XrdHttpWireMode::kHttp2;
+    return;
+  }
+
+  static const char kPreface[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+  const size_t kPrefaceLen = sizeof(kPreface) - 1;
+  int avail = 0;
+  char *data = BuffPeek(avail);
+  if (avail >= static_cast<int>(kPrefaceLen) &&
+      !memcmp(data, kPreface, kPrefaceLen)) {
+    wireMode_ = XrdHttpWireMode::kHttp2;
+    return;
+  }
+
+  // h2 over TLS does not send the connection preface; detect a SETTINGS frame.
+  if (avail >= 9) {
+    const auto *b = reinterpret_cast<const unsigned char *>(data);
+    const unsigned char type = b[3];
+    if (type <= 0x0a) {
+      const uint32_t sid =
+          (static_cast<uint32_t>(b[5]) << 24) |
+          (static_cast<uint32_t>(b[6]) << 16) |
+          (static_cast<uint32_t>(b[7]) << 8) |
+          static_cast<uint32_t>(b[8]);
+      if (!(sid & 0x80000000u))
+        wireMode_ = XrdHttpWireMode::kHttp2;
+    }
+  }
+}
+
+int XrdHttpProtocol::processHttp2(XrdLink *lp)
+{
+  const int rc = http2Session_.drive(*this, lp);
+  if (rc < 0) {
+    CurrentReq.reset();
+    http2Session_.reset();
+  }
+  return rc;
+}
+
+bool XrdHttpProtocol::Http2OutboundPending() const
+{
+  if (wireMode_ != XrdHttpWireMode::kHttp2)
+    return false;
+
+  const XrdHttp2PendingResponse &pending = http2Session_.pendingResponse();
+  if (pending.active) {
+    if (pending.streaming &&
+        pending.bytes_sent < pending.content_length)
+      return true;
+  }
+  return http2Session_.hasPendingSend();
+}
+
+bool XrdHttpProtocol::HttpsShutdownReceived() const
+{
+  return ishttps && ssl && (SSL_get_shutdown(ssl) & SSL_RECEIVED_SHUTDOWN);
+}
+#endif
+
 /******************************************************************************/
 /*                       S t a r t S i m p l e R e s p                        */
 /******************************************************************************/
@@ -1582,6 +1766,11 @@ int XrdHttpProtocol::SendData(const char *body, int bodylen) {
 int XrdHttpProtocol::StartSimpleResp(int code, const char *desc,
                                      const char *header_to_add,
                                      long long bodylen, bool keepalive) {
+#ifdef HAVE_NGHTTP2
+  if (wireMode_ == XrdHttpWireMode::kHttp2)
+    return XrdHttp2ResponseWriter::startSimple(*this, code, desc, header_to_add,
+                                               bodylen, keepalive);
+#endif
   return XrdHttp1ResponseWriter::startSimple(*this, code, desc, header_to_add,
                                            bodylen, keepalive);
 }
@@ -1590,7 +1779,20 @@ int XrdHttpProtocol::StartSimpleResp(int code, const char *desc,
 /*                      S t a r t C h u n k e d R e s p                       */
 /******************************************************************************/
 
-int XrdHttpProtocol::StartChunkedResp(int code, const char *desc, const char *header_to_add, long long bodylen, bool keepalive) {
+int XrdHttpProtocol::StartChunkedResp(int code, const char *desc,
+                                      const char *header_to_add,
+                                      long long bodylen, bool keepalive) {
+#ifdef HAVE_NGHTTP2
+  if (wireMode_ == XrdHttpWireMode::kHttp2) {
+    std::stringstream ss;
+    if (header_to_add && header_to_add[0])
+      ss << header_to_add;
+    return XrdHttp2ResponseWriter::startSimple(*this, code, desc,
+                                               ss.str().empty() ? nullptr
+                                                                : ss.str().c_str(),
+                                               bodylen, keepalive);
+  }
+#endif
   return XrdHttp1ResponseWriter::startChunked(*this, code, desc, header_to_add,
                                               bodylen, keepalive);
 }
@@ -1604,6 +1806,26 @@ int XrdHttpProtocol::ChunkResp(const char *body, long long bodylen) {
   long long header_len = (bodylen < 0) ? 0 : content_length;
   int code = CurrentReq.getInitialStatusCode();
   if (code < 200) code = CurrentReq.getHttpStatusCode();
+
+#ifdef HAVE_NGHTTP2
+  if (wireMode_ == XrdHttpWireMode::kHttp2) {
+    if (body && SendData(body, static_cast<int>(content_length))) {
+      XrdHttpMon::Record(CurrentReq, code);
+      return -1;
+    }
+    if (content_length == 0 || bodylen == -1) {
+      if (XrdHttp2ResponseWriter::finishStream(*this) < 0) {
+        XrdHttpMon::Record(CurrentReq, code);
+        return -1;
+      }
+      if (CurrentReq.xrdresp == kXR_error &&
+          CurrentReq.monState == XrdHttpMonState::ACTIVE)
+        CurrentReq.monState = XrdHttpMonState::ERR_PROT;
+      XrdHttpMon::Record(CurrentReq, code);
+    }
+    return 0;
+  }
+#endif
 
   if (ChunkRespHeader(header_len)) {
     XrdHttpMon::Record(CurrentReq, code);
@@ -1661,6 +1883,11 @@ int XrdHttpProtocol::ChunkRespFooter() {
 /// Returns 0 if OK
 
 int XrdHttpProtocol::SendSimpleResp(int code, const char *desc, const char *header_to_add, const char *body, long long bodylen, bool keepalive) {
+#ifdef HAVE_NGHTTP2
+  if (wireMode_ == XrdHttpWireMode::kHttp2)
+    return XrdHttp2ResponseWriter::sendSimple(*this, code, desc, header_to_add,
+                                              body, bodylen, keepalive);
+#endif
   return XrdHttp1ResponseWriter::sendSimple(*this, code, desc, header_to_add,
                                             body, bodylen, keepalive);
 }
@@ -1804,6 +2031,29 @@ int XrdHttpProtocol::parseHeader2CGI(XrdOucStream &Config, XrdSysError & err,std
 }
 
 
+#ifdef HAVE_NGHTTP2
+namespace {
+static const unsigned char kServerAlpn[] = {
+  2, 'h','2',
+  8, 'h','t','t','p','/','1','.','1'
+};
+
+static int AlpnSelectCb(SSL * /*ssl*/,
+                        const unsigned char **out,
+                        unsigned char *outlen,
+                        const unsigned char *in,
+                        unsigned int inlen,
+                        void * /*arg*/)
+{
+  if (SSL_select_next_proto(const_cast<unsigned char **>(out), outlen,
+                            kServerAlpn, sizeof(kServerAlpn),
+                            in, inlen) == OPENSSL_NPN_NEGOTIATED)
+    return SSL_TLSEXT_ERR_OK;
+  return SSL_TLSEXT_ERR_NOACK;
+}
+}
+#endif
+
 /******************************************************************************/
 /*                               I n i t T L S                                */
 /******************************************************************************/
@@ -1853,10 +2103,14 @@ bool XrdHttpProtocol::InitTLS() {
 
    SSL_CTX *sslctx = static_cast<SSL_CTX *>(xrdctx->Context());
    if (sslctx) {
+#ifdef HAVE_NGHTTP2
+     SSL_CTX_set_alpn_select_cb(sslctx, AlpnSelectCb, nullptr);
+#else
      static const unsigned char alpn[] = {
        8, 'h','t','t','p','/','1','.','1'
      };
      SSL_CTX_set_alpn_protos(sslctx, alpn, sizeof(alpn));
+#endif
    }
 
 // All done
@@ -1963,6 +2217,11 @@ void XrdHttpProtocol::Reset() {
 #endif
 
   http1Session_.reset();
+
+#ifdef HAVE_NGHTTP2
+  wireMode_ = XrdHttpWireMode::kHttp1;
+  http2Session_.reset();
+#endif
 
   ResumeBytes = 0;
   Resume = 0;

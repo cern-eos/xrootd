@@ -6,6 +6,7 @@
 
 #include "wire/XrdHttp1Session.hh"
 #include "XrdHttpProtocol.hh"
+#include "XrdHttpReq.hh"
 #include "XrdHttpTrace.hh"
 
 extern "C" {

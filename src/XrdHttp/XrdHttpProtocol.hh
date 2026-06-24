@@ -47,6 +47,10 @@
 #include "XrdHttpCors/XrdHttpCors.hh"
 #include "XrdHttpReq.hh"
 #include "wire/XrdHttp1Session.hh"
+#include "wire/XrdHttpConnection.hh"
+#ifdef HAVE_NGHTTP2
+#include "wire/XrdHttp2Session.hh"
+#endif
 
 #include <chrono>
 #include <cstdlib>
@@ -94,6 +98,10 @@ class XrdHttpProtocol : public XrdProtocol {
   friend class XrdHttpExtReq;
   friend class XrdHttp1Session;
   friend class XrdHttp1ResponseWriter;
+#ifdef HAVE_NGHTTP2
+  friend class XrdHttp2Session;
+  friend class XrdHttp2ResponseWriter;
+#endif
   
 public:
 
@@ -129,6 +137,22 @@ public:
 
   /// Perform a checksum request
   int doChksum(const XrdOucString &fname);
+
+  /// Send wire bytes (used by HTTP/2 framing)
+  int SendWireData(const char *body, int bodylen);
+
+  /// Append bytes to the read buffer (used by HTTP/2 request bodies)
+  void BuffInject(const char *data, int len);
+
+  /// Handle a fully parsed HTTP request (shared by HTTP/1 and HTTP/2)
+  int processParsedRequest(XrdLink *lp);
+
+#ifdef HAVE_NGHTTP2
+  int processHttp2(XrdLink *lp);
+  void detectWireMode();
+  bool Http2OutboundPending() const;
+  bool HttpsShutdownReceived() const;
+#endif
 
   /// Ctor, dtors and copy ctor
   XrdHttpProtocol(const XrdHttpProtocol&) = delete;
@@ -300,6 +324,8 @@ private:
   int BuffAvailable();
   /// How many bytes in the buffer
   int BuffUsed();
+  /// Bytes available in the TLS read buffer without calling SSL_read
+  int SSLPending() const;
   /// How many bytes free in the buffer
   int BuffFree();
   
@@ -344,6 +370,11 @@ private:
 
   XrdHttp1Session http1Session_;
 
+#ifdef HAVE_NGHTTP2
+  XrdHttp2Session http2Session_;
+  XrdHttpWireMode wireMode_;
+#endif
+
   /// Indicates whether we've attempted to send app info.
   bool DoneSetInfo;
   
@@ -358,6 +389,9 @@ private:
 
   /// bio to print SSL errors
   static BIO *sslbio_err;
+
+  /// Serialize concurrent Process() entry (bridge callbacks vs poll thread)
+  XrdSysRecMutex procMutex_;
 
   /// Tells if the client is https
   bool ishttps;
