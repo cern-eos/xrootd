@@ -90,6 +90,25 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
   target_link_libraries(xjc PRIVATE stdc++fs)
 endif()
 
+add_executable(xjcd
+  XrdClJournalCachePlugin/app/xjcd.cc
+  XrdClJournalCachePlugin/daemon/XjcdState.cc
+  XrdClJournalCachePlugin/daemon/XjcdRender.cc
+  XrdClJournalCachePlugin/file/PolicyConfig.cc
+  XrdClJournalCachePlugin/file/OriginAllowlist.cc
+  XrdClJournalCachePlugin/file/ExternalRedirect.cc)
+
+target_include_directories(xjcd
+  PRIVATE "${CMAKE_SOURCE_DIR}/src/XrdApps/XrdClJournalCachePlugin/")
+
+target_link_libraries(xjcd PRIVATE XrdCl)
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+  AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.1
+  AND NOT APPLE)
+  target_link_libraries(xjcd PRIVATE stdc++fs)
+endif()
+
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
   AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.1
   AND NOT APPLE)
@@ -142,6 +161,7 @@ install(
     xrdreplay
     xrdclcacheclean
     xjc
+    xjcd
     XrdAppUtils
     ${XrdClProxyPlugin}
     ${XrdClRecorder}

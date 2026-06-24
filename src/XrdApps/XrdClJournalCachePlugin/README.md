@@ -564,6 +564,40 @@ xjc allow-origin add '^https://.*\.example\.org/'
 xjc redirect add /live/ https://stream.example.org/live/
 ```
 
+## 7.11 `xjcd` — forwarding proxy bootstrap
+
+**`xjcd`** writes the static XRootD + JournalCache layout under `$journal/.xjc/` and leaves process startup to **systemd** (no `xjcd run`).
+
+| Path | Purpose |
+|------|---------|
+| `$journal/.xjc/state.conf` | Bootstrap parameters (ports, TLS paths, lib dir) |
+| `$journal/.xjc/policy.conf` | Runtime policy — edit with **`xjc`** |
+| `$journal/.xjc/etc/xrootd.cf` | Generated XRootD config |
+| `$journal/.xjc/etc/journalcache-http.ext.conf` | HTTP ext (forwarding mode) |
+| `$journal/.xjc/etc/client.plugins.d/journalcache.conf` | Client plugins for the xrootd/PSS process |
+| `$journal/.xjc/etc/xjcd.env` | `EnvironmentFile` snippet for systemd |
+
+Initial policy is **open** (no `allow_origin` lines) until you add rules with **`xjc`**. TLS certificate and key paths are **required** at init time.
+
+```bash
+xjcd init --journal /var/tmp/journalcache \
+  --xroot-port 1094 --https-port 8443 \
+  --tls-cert /etc/xrootd/tls.crt --tls-key /etc/xrootd/tls.key
+
+xjcd show --journal /var/tmp/journalcache
+xjcd validate --journal /var/tmp/journalcache
+xjcd render --journal /var/tmp/journalcache   # after editing state.conf
+```
+
+Example systemd unit:
+
+```ini
+[Service]
+EnvironmentFile=/var/tmp/journalcache/.xjc/etc/xjcd.env
+ExecStart=/usr/bin/xrootd -c /var/tmp/journalcache/.xjc/etc/xrootd.cf -R daemon
+Restart=on-failure
+```
+
 # 8 JournalCache in a Proxy server
 
 To run a proxy server with JournalCache you create a usual proxy configuration file:

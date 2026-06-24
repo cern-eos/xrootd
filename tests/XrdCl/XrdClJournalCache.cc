@@ -10,6 +10,8 @@
 #include "file/ExternalRedirect.hh"
 #include "file/PolicyConfig.hh"
 #include "file/PolicyRuntime.hh"
+#include "daemon/XjcdRender.hh"
+#include "daemon/XjcdState.hh"
 #include "file/Digest.hh"
 #include "system/ListCache.hh"
 
@@ -850,4 +852,71 @@ TEST(ForwardingUrlTest, ResolveJournalPathMatchesFilePluginLayout) {
       cacheRoot, fileUrl, true, "");
   EXPECT_EQ(flatPath.substr(0, 7), "/cache/");
   EXPECT_EQ(flatPath.substr(flatPath.size() - 8), "/journal");
+}
+
+TEST(XjcdStateTest, RoundTripStateFile) {
+  char tmpl[] = "/tmp/xjcd_state_XXXXXX";
+  char *dir = mkdtemp(tmpl);
+  ASSERT_NE(dir, nullptr);
+
+  JournalCache::XjcdState state;
+  state.journal = dir;
+  state.xrootPort = 1094;
+  state.httpsPort = 8443;
+  state.tlsCert = "/etc/ssl/cert.pem";
+  state.tlsKey = "/etc/ssl/key.pem";
+  state.libDir = "/usr/lib64";
+  state.pluginSuffix = "5";
+
+  ASSERT_TRUE(state.save());
+
+  JournalCache::XjcdState loaded;
+  ASSERT_TRUE(loaded.load(dir));
+  EXPECT_EQ(loaded.journal, state.journal);
+  EXPECT_EQ(loaded.xrootPort, 1094u);
+  EXPECT_EQ(loaded.httpsPort, 8443u);
+  EXPECT_EQ(loaded.tlsCert, state.tlsCert);
+  EXPECT_EQ(loaded.tlsKey, state.tlsKey);
+
+  fs::remove_all(dir);
+}
+
+TEST(XjcdRenderTest, RendersConfigsAndOpenPolicy) {
+  char tmpl[] = "/tmp/xjcd_render_XXXXXX";
+  char *dir = mkdtemp(tmpl);
+  ASSERT_NE(dir, nullptr);
+
+  JournalCache::XjcdState state;
+  state.journal = dir;
+  state.xrootPort = 1094;
+  state.httpsPort = 8443;
+  state.tlsCert = "/etc/ssl/cert.pem";
+  state.tlsKey = "/etc/ssl/key.pem";
+  state.libDir = "/usr/lib64";
+  state.pluginSuffix = "5";
+
+  ASSERT_TRUE(JournalCache::renderXjcdConfigs(state, "testhost"));
+
+  const std::string xrootdPath = state.xrootdConfigPath();
+  const std::string policyPath = state.policyPath();
+  ASSERT_TRUE(fs::exists(xrootdPath));
+  ASSERT_TRUE(fs::exists(policyPath));
+
+  std::ifstream xrootdIn(xrootdPath);
+  std::string xrootdText((std::istreambuf_iterator<char>(xrootdIn)),
+                         std::istreambuf_iterator<char>());
+  EXPECT_NE(xrootdText.find("port 1094"), std::string::npos);
+  EXPECT_NE(xrootdText.find("port tls 8443"), std::string::npos);
+  EXPECT_NE(xrootdText.find("http.cert /etc/ssl/cert.pem"), std::string::npos);
+  EXPECT_NE(xrootdText.find("http.key /etc/ssl/key.pem"), std::string::npos);
+  EXPECT_NE(xrootdText.find("libXrdClJournalCacheHttpExt-5.so"),
+            std::string::npos);
+
+  JournalCache::PolicySettings policy;
+  ASSERT_TRUE(JournalCache::loadPolicyFile(policyPath, policy));
+  EXPECT_FALSE(policy.bypass);
+  EXPECT_TRUE(policy.multiOriginUnwrap);
+  EXPECT_TRUE(policy.originAllowlist.patterns().empty());
+
+  fs::remove_all(dir);
 }
