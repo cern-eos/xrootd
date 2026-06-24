@@ -226,10 +226,44 @@ TEST_F(JournalTest, JournalManagerReusesInstance) {
 
   first.reset();
   second.reset();
-  manager.detach("file-a");
+  manager.release("file-a");
 
   std::shared_ptr<Journal> third = manager.attach("file-a");
   ASSERT_NE(third, nullptr);
+}
+
+TEST_F(JournalTest, DetachSyncsAndClosesFd) {
+  Journal journal;
+  ASSERT_EQ(journal.attach(path, 1000, 0, 4096, false), 0);
+
+  char writeBuf[32];
+  fillPattern(writeBuf, sizeof(writeBuf), 'd');
+  EXPECT_EQ(journal.pwrite(writeBuf, sizeof(writeBuf), 128), (ssize_t)sizeof(writeBuf));
+  EXPECT_EQ(journal.detach(), 0);
+
+  Journal reopened;
+  ASSERT_EQ(reopened.attach(path, 1000, 0, 4096, true), 0);
+
+  char readBuf[32] = {};
+  bool eof = false;
+  EXPECT_EQ(reopened.pread(readBuf, sizeof(readBuf), 128, eof),
+            (ssize_t)sizeof(readBuf));
+  EXPECT_EQ(std::memcmp(writeBuf, readBuf, sizeof(writeBuf)), 0);
+}
+
+TEST_F(JournalTest, ReattachInvalidatesOnMtimeChange) {
+  Journal journal;
+  ASSERT_EQ(journal.attach(path, 1000, 0, 4096, false), 0);
+
+  char writeBuf[32];
+  fillPattern(writeBuf, sizeof(writeBuf), 'e');
+  EXPECT_EQ(journal.pwrite(writeBuf, sizeof(writeBuf), 64), (ssize_t)sizeof(writeBuf));
+
+  ASSERT_EQ(journal.attach(path, 5000, 0, 4096, false), 0);
+
+  char readBuf[32] = {};
+  bool eof = false;
+  EXPECT_EQ(journal.pread(readBuf, sizeof(readBuf), 64, eof), 0);
 }
 
 class JournalCrcTest : public JournalTest {
@@ -310,6 +344,44 @@ TEST_F(JournalCrcTest, CorruptChecksumTreatedAsMiss) {
   char readBuf[32] = {};
   bool eof = false;
   EXPECT_EQ(reloaded.pread(readBuf, sizeof(readBuf), 128, eof), 0);
+}
+
+TEST_F(JournalCrcTest, CorruptEntrySkippedOnLoad) {
+  const uint64_t mtime = 4000;
+  const uint64_t filesize = 4096;
+
+  {
+    Journal journal;
+    ASSERT_EQ(journal.attach(path, mtime, 0, filesize, false), 0);
+
+    char good[32];
+    fillPattern(good, sizeof(good), 'g');
+    EXPECT_EQ(journal.pwrite(good, sizeof(good), 0), (ssize_t)sizeof(good));
+    EXPECT_EQ(journal.pwrite(good, sizeof(good), 256), (ssize_t)sizeof(good));
+    EXPECT_EQ(journal.sync(), 0);
+  }
+
+  struct stat st {};
+  ASSERT_EQ(stat(path.c_str(), &st), 0);
+  std::vector<char> file(st.st_size);
+  int fd = open(path.c_str(), O_RDWR);
+  ASSERT_GE(fd, 0);
+  ASSERT_EQ(read(fd, file.data(), file.size()), (ssize_t)file.size());
+  file.back() ^= 0xff;
+  ASSERT_EQ(lseek(fd, 0, SEEK_SET), 0);
+  ASSERT_EQ(write(fd, file.data(), file.size()), (ssize_t)file.size());
+  close(fd);
+
+  Journal reloaded;
+  ASSERT_EQ(reloaded.attach(path, mtime, 0, filesize, true), 0);
+
+  char readBuf[32] = {};
+  bool eof = false;
+  EXPECT_EQ(reloaded.pread(readBuf, sizeof(readBuf), 0, eof), (ssize_t)sizeof(readBuf));
+  char expected[32];
+  fillPattern(expected, sizeof(expected), 'g');
+  EXPECT_EQ(std::memcmp(expected, readBuf, sizeof(readBuf)), 0);
+  EXPECT_EQ(reloaded.pread(readBuf, sizeof(readBuf), 256, eof), 0);
 }
 
 TEST_F(JournalTest, LegacyJournalRemainsReadableWithCrcEnabled) {

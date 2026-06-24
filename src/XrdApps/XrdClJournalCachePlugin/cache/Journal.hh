@@ -26,15 +26,18 @@
 /*----------------------------------------------------------------------------*/
 #include "IntervalTree.hh"
 /*----------------------------------------------------------------------------*/
+#include <cstdint>
 #include <map>
+#include <memory>
 #include <mutex>
-#include <stdint.h>
 #include <string>
+#include <vector>
 /*----------------------------------------------------------------------------*/
 class Journal {
   static constexpr uint64_t JOURNAL_MAGIC = 0xcafecafecafecafe;
   static constexpr uint32_t JOURNAL_VERSION_LEGACY = 1;
   static constexpr uint32_t JOURNAL_VERSION_CRC32C = 2;
+  static constexpr uint64_t MTIME_TOLERANCE_SEC = 5;
 
   struct jheader_t {
     jheader_t() {
@@ -59,6 +62,10 @@ class Journal {
 public:
   //! Default for newly created journals; existing journals keep on-disk version.
   static bool sDefaultEnableCrc;
+
+  //! Optional log callback: level 1=error, 2=warning, 3=info.
+  using LogCallback = void (*)(void *ctx, int level, const char *msg);
+  static void SetLogCallback(LogCallback cb, void *ctx = nullptr);
 
   struct chunk_t {
 
@@ -138,7 +145,14 @@ private:
 
   jheader_t jheader;
   int write_jheader();
-  void read_jheader();
+  //! @return true if the journal was purged/reset.
+  bool read_jheader();
+
+  void close_fd();
+  void log(int level, const char *fmt, ...) const;
+
+  static LogCallback sLogCallback;
+  static void *sLogContext;
 
   std::string path;
   size_t cachesize;
@@ -160,32 +174,20 @@ public:
   JournalManager() {}
   virtual ~JournalManager() {}
 
-  // Attach method: creates or retrieves a Journal object by key
   std::shared_ptr<Journal> attach(const std::string &key) {
     std::lock_guard<std::mutex> guard(jMutex);
     auto it = journals.find(key);
     if (it == journals.end()) {
-      // Create a new Journal object if it doesn't exist
       auto journal = std::make_shared<Journal>();
       journals[key] = journal;
       return journal;
-    } else {
-      // Return the existing Journal object
-      return it->second;
     }
+    return it->second;
   }
 
-  // Detach method: checks reference count and removes Journal object if
-  // necessary
-  void detach(const std::string &key) {
+  //! Remove a journal from the pool when the owning file is closed.
+  void release(const std::string &key) {
     std::lock_guard<std::mutex> guard(jMutex);
-    auto it = journals.find(key);
-    if (it != journals.end()) {
-      if (it->second.use_count() == 1) {
-        // Only one reference exists, so erase the entry from the map
-        journals.erase(it);
-      }
-      // If more than one reference exists, do nothing
-    }
+    journals.erase(key);
   }
 };

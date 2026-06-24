@@ -327,8 +327,11 @@ XRootDStatus JournalCacheFile::Close(ResponseHandler *handler, time_t timeout) {
     } else {
       st = XRootDStatus(stOK, 0);
     }
-    if (sEnableJournalCache && pJournal) {
+    if (sEnableJournalCache && pJournal && !pJournalPath.empty()) {
+      pJournal->sync();
       pJournal->detach();
+      sJournalManager.release(pJournalPath);
+      pJournal.reset();
     }
   } else {
     st = XRootDStatus(stOK, 0);
@@ -768,7 +771,7 @@ bool JournalCacheFile::AttachForRead() {
     if (sEnableJournalCache && pFile) {
       mLog->Info(1, "JournalCache : attaching via journalmanager to '%s'",
                  pUrl.c_str());
-      pJournal = sJournalManager.attach(pUrl);
+      pJournal = sJournalManager.attach(pJournalPath);
 
       // try to attach to an existing journal (disconnected mode)
       if (mOpenAsync && !mMustRevalidate) {

@@ -28,6 +28,8 @@
 #include "XrdOuc/XrdOucCRC32C.hh"
 #include <algorithm>
 #include <cerrno>
+#include <cstdarg>
+#include <cstdio>
 #include <cstring>
 #include <fcntl.h>
 #include <iostream>
@@ -63,9 +65,41 @@ ssize_t write_full(int fd, const void *buf, size_t count, off_t offset) {
   return static_cast<ssize_t>(count);
 }
 
+uint64_t abs_u64_diff(uint64_t a, uint64_t b) {
+  return a > b ? a - b : b - a;
+}
+
 } // namespace
 
 bool Journal::sDefaultEnableCrc = false;
+Journal::LogCallback Journal::sLogCallback = nullptr;
+void *Journal::sLogContext = nullptr;
+
+void Journal::SetLogCallback(LogCallback cb, void *ctx) {
+  sLogCallback = cb;
+  sLogContext = ctx;
+}
+
+void Journal::log(int level, const char *fmt, ...) const {
+  char buffer[512];
+  va_list ap;
+  va_start(ap, fmt);
+  std::vsnprintf(buffer, sizeof(buffer), fmt, ap);
+  va_end(ap);
+
+  if (sLogCallback) {
+    sLogCallback(sLogContext, level, buffer);
+    return;
+  }
+
+  if (level <= 1) {
+    std::cerr << "error: " << buffer << std::endl;
+  } else if (level == 2) {
+    std::cerr << "warning: " << buffer << std::endl;
+  } else {
+    std::cerr << buffer << std::endl;
+  }
+}
 
 //------------------------------------------------------------------------------
 //! Journal Constructor
@@ -82,44 +116,51 @@ Journal::Journal() : cachesize(0), max_offset(0), fd(-1) {
   jheader.placeholder4 = 0;
   journal_version = JOURNAL_VERSION_LEGACY;
 }
+
+void Journal::close_fd() {
+  if (fd == -1) {
+    return;
+  }
+
+  sync();
+
+  struct flock lock;
+  std::memset(&lock, 0, sizeof(lock));
+  lock.l_type = F_UNLCK;
+  if (fcntl(fd, F_SETLK, &lock) == -1) {
+    log(1, "failed to unlock journal %s: %s", path.c_str(),
+        std::strerror(errno));
+  }
+
+  if (close(fd) != 0) {
+    log(1, "failed to close journal %s: %s", path.c_str(),
+        std::strerror(errno));
+  }
+
+  fd = -1;
+}
+
 //------------------------------------------------------------------------------
 //! Journal Destructor
 //------------------------------------------------------------------------------
 Journal::~Journal() {
   std::lock_guard<std::mutex> guard(mtx);
-  if (fd != -1) {
-    struct flock lock;
-    std::memset(&lock, 0, sizeof(lock));
-
-    lock.l_type = F_UNLCK;
-    if (fcntl(fd, F_SETLK, &lock) == -1) {
-      std::cerr << "error: failed to unlock journal: " << std::strerror(errno)
-                << std::endl;
-    }
-
-    if (close(fd) != 0) {
-      std::cerr << "error: failed to close journal: " << std::strerror(errno)
-                << std::endl;
-    }
-
-    fd = -1;
-  }
+  close_fd();
 }
 
 //------------------------------------------------------------------------------
 //! Routine to read a journal header
 //------------------------------------------------------------------------------
-void Journal::read_jheader() {
+bool Journal::read_jheader() {
   jheader_t fheader;
   bool exists = false;
   auto hr = ::pread64(fd, &fheader, sizeof(jheader), 0);
   if ((hr > 0) &&
       ((hr != sizeof(jheader)) || (fheader.magic != JOURNAL_MAGIC))) {
-    std::cerr
-        << "warning: inconsistent journal header found (I) - purging path:"
-        << path << std::endl;
+    log(2, "inconsistent journal header found (I) - purging path: %s",
+        path.c_str());
     reset();
-    return;
+    return true;
   }
 
   exists = (hr == sizeof(jheader));
@@ -128,28 +169,23 @@ void Journal::read_jheader() {
     jheader.placeholder1 = fheader.placeholder1;
   }
 
-  // TODO: understand why the mtime is +-1s
   if (jheader.mtime) {
     if (exists) {
-      // we only compare if there was a header in the journal
-      if ((abs((int)(fheader.mtime - jheader.mtime)) > 5) ||
+      if ((abs_u64_diff(fheader.mtime, jheader.mtime) > MTIME_TOLERANCE_SEC) ||
           (fheader.mtime_nsec != jheader.mtime_nsec) ||
           (jheader.filesize && (fheader.filesize != jheader.filesize))) {
-        std::cerr << "warning: remote file change detected - purging path:"
-                  << path << std::endl;
-        std::cerr << fheader.mtime << ":" << jheader.mtime << " "
-                  << fheader.mtime_nsec << ":" << jheader.mtime_nsec << " "
-                  << fheader.filesize << ":" << jheader.filesize << std::endl;
+        log(2, "remote file change detected - purging path: %s", path.c_str());
         reset();
-        return;
+        return true;
       }
     }
   } else {
-    // we assume the contents referenced in the header is ok to allow
-    // disconnected ops
     jheader.mtime = fheader.mtime;
+    jheader.mtime_nsec = fheader.mtime_nsec;
     jheader.filesize = fheader.filesize;
   }
+
+  return false;
 }
 
 //------------------------------------------------------------------------------
@@ -158,8 +194,7 @@ void Journal::read_jheader() {
 int Journal::write_jheader() {
   auto hw = ::pwrite64(fd, &jheader, sizeof(jheader), 0);
   if ((hw != sizeof(jheader))) {
-    std::cerr << "warning: failed to write journal header - purging path:"
-              << path << std::endl;
+    log(2, "failed to write journal header - purging path: %s", path.c_str());
     return -errno;
   }
   return 0;
@@ -225,23 +260,44 @@ bool Journal::update_entry_crc(uint64_t header_offset, uint64_t data_size) {
 //------------------------------------------------------------------------------
 int Journal::read_journal() {
   journal.clear();
+  max_offset = 0;
   const size_t bufsize = sizeof(header_t);
   char buffer[bufsize];
-  ssize_t bytesRead = 0, totalBytesRead = sizeof(jheader_t);
+  ssize_t bytesRead = 0;
+  ssize_t totalBytesRead = sizeof(jheader_t);
 
   do {
     bytesRead = ::pread(fd, buffer, bufsize, totalBytesRead);
     if (bytesRead < (ssize_t)bufsize) {
-      if ( bytesRead ) {
-        std::cerr << "warning: inconsistent journal found - purging path:"
-                  << path << std::endl;
+      if (bytesRead) {
+        log(2, "inconsistent journal found - purging path: %s", path.c_str());
         reset();
-        return cachesize; // sizeof (jheader_t) ;
+        return cachesize;
       }
     } else {
       header_t *header = reinterpret_cast<header_t *>(buffer);
-      journal.insert(header->offset, header->offset + header->size,
-                     totalBytesRead);
+      const uint64_t header_off = totalBytesRead;
+      const uint64_t data_size = header->size;
+      const off_t data_off = header_off + sizeof(header_t);
+
+      if (uses_crc()) {
+        std::vector<char> data(data_size);
+        if (::pread(fd, data.data(), data_size, data_off) !=
+            (ssize_t)data_size) {
+          log(2, "failed to read journal entry at %s offset %llu - skipping",
+              path.c_str(), static_cast<unsigned long long>(header_off));
+          totalBytesRead += sizeof(header_t) + data_size + sizeof(uint32_t);
+          continue;
+        }
+        if (!verify_entry_crc(header_off, data_size, data.data())) {
+          log(2, "journal crc mismatch at %s offset %llu - skipping entry",
+              path.c_str(), static_cast<unsigned long long>(header_off));
+          totalBytesRead += sizeof(header_t) + data_size + sizeof(uint32_t);
+          continue;
+        }
+      }
+
+      journal.insert(header->offset, header->offset + header->size, header_off);
       if (header->offset + header->size > (uint64_t)max_offset) {
         max_offset = header->offset + header->size;
       }
@@ -252,6 +308,7 @@ int Journal::read_journal() {
       }
     }
   } while (bytesRead);
+
   return totalBytesRead;
 }
 
@@ -261,6 +318,11 @@ int Journal::read_journal() {
 int Journal::attach(const std::string &lpath, uint64_t mtime,
                     uint64_t mtime_nsec, uint64_t size, bool ifexists) {
   std::lock_guard<std::mutex> guard(mtx);
+
+  if (fd != -1 && !path.empty() && path != lpath) {
+    close_fd();
+  }
+
   path = lpath;
 
   if (!ifexists) {
@@ -274,67 +336,71 @@ int Journal::attach(const std::string &lpath, uint64_t mtime,
 
   if (ifexists) {
     struct stat buf;
-    // check if there is already a journal for this file known
     if (::stat(path.c_str(), &buf)) {
       return -ENOENT;
-    } else {
-      if ((size_t)buf.st_size < sizeof(jheader_t)) {
-        return -EINVAL;
-      }
+    }
+    if ((size_t)buf.st_size < sizeof(jheader_t)) {
+      return -EINVAL;
     }
   }
+
   if (fd == -1) {
-    // need to open the file
-    size_t tries = 0;
+    fd = open(path.c_str(), O_CREAT | O_RDWR, S_IRWXU);
+    if (fd < 0) {
+      return -errno;
+    }
 
-    do {
-      fd = open(path.c_str(), O_CREAT | O_RDWR, S_IRWXU);
+    struct flock lock;
+    std::memset(&lock, 0, sizeof(lock));
+    lock.l_type = F_WRLCK;
+    lock.l_whence = SEEK_SET;
+    lock.l_start = 0;
+    lock.l_len = 0;
 
-      if (fd < 0) {
-        if (errno == ENOENT) {
-          tries++;
-          if (tries < 10) {
-            continue;
-          } else {
-            return -errno;
-          }
-        }
-
-        return -errno;
+    if (fcntl(fd, F_SETLK, &lock) == -1) {
+      if (errno == EACCES || errno == EAGAIN) {
+        log(1, "journal file is already locked by another process: %s",
+            path.c_str());
+      } else {
+        log(1, "failed to lock journal file %s: %s", path.c_str(),
+            std::strerror(errno));
       }
+      close(fd);
+      fd = -1;
+      return -errno;
+    }
 
-      // get a POSIX lock on the file
-      struct flock lock;
-      std::memset(&lock, 0, sizeof(lock));
-      lock.l_type = F_WRLCK;    // Request a write lock
-      lock.l_whence = SEEK_SET; // Lock from the beginning of the file
-      lock.l_start = 0;         // Starting offset for lock
-      lock.l_len = 0;           // 0 means to lock the entire file
+    const uint64_t attach_mtime = jheader.mtime;
+    const uint64_t attach_mtime_nsec = jheader.mtime_nsec;
+    const uint64_t attach_filesize = jheader.filesize;
 
-      if (fcntl(fd, F_SETLK, &lock) == -1) {
-        if (errno == EACCES || errno == EAGAIN) {
-          std::cerr
-              << "error: journal file is already locked by another process."
-              << std::endl;
-          close(fd);
-          fd = -1;
-          return -errno;
-        } else {
-          std::cerr << "error: failed to lock journal file: "
-                    << std::strerror(errno) << std::endl;
-          close(fd);
-          fd = -1;
-          return -errno;
-        }
-      }
-
-      break;
-    } while (1);
-
-    read_jheader();
+    const bool purged = read_jheader();
     sync_journal_version();
+    if (purged && !ifexists) {
+      jheader.mtime = attach_mtime;
+      jheader.mtime_nsec = attach_mtime_nsec;
+      jheader.filesize = attach_filesize;
+    }
     cachesize = read_journal();
     if (write_jheader()) {
+      return -errno;
+    }
+  } else {
+    const uint64_t attach_mtime = jheader.mtime;
+    const uint64_t attach_mtime_nsec = jheader.mtime_nsec;
+    const uint64_t attach_filesize = jheader.filesize;
+
+    const bool purged = read_jheader();
+    sync_journal_version();
+    if (purged) {
+      if (!ifexists) {
+        jheader.mtime = attach_mtime;
+        jheader.mtime_nsec = attach_mtime_nsec;
+        jheader.filesize = attach_filesize;
+      }
+      cachesize = read_journal();
+    }
+    if (!ifexists && write_jheader()) {
       return -errno;
     }
   }
@@ -347,6 +413,7 @@ int Journal::attach(const std::string &lpath, uint64_t mtime,
 //------------------------------------------------------------------------------
 int Journal::detach() {
   std::lock_guard<std::mutex> guard(mtx);
+  close_fd();
   return 0;
 }
 
@@ -372,7 +439,8 @@ ssize_t Journal::pread(void *buf, size_t count, off_t offset, bool &eof) {
     return 0;
   }
 
-  // rewrite reads to not go over EOF!
+  std::lock_guard<std::mutex> guard(mtx);
+
   if ((off_t)(offset + count) > (off_t)jheader.filesize) {
     if ((off_t)jheader.filesize > offset) {
       count = (off_t)jheader.filesize - offset;
@@ -382,10 +450,8 @@ ssize_t Journal::pread(void *buf, size_t count, off_t offset, bool &eof) {
     eof = true;
   }
 
-  std::lock_guard<std::mutex> guard(mtx);
   auto result = journal.query(offset, offset + count);
 
-  // there is not a single interval that overlaps
   if (result.empty()) {
     return 0;
   }
@@ -411,8 +477,7 @@ ssize_t Journal::pread(void *buf, size_t count, off_t offset, bool &eof) {
           return 0;
         }
         if (!verify_entry_crc(header_off, frag_size, fragment.data())) {
-          std::cerr << "warning: journal crc mismatch at path: " << path
-                    << std::endl;
+          log(2, "journal crc mismatch at path: %s", path.c_str());
           return 0;
         }
         std::memcpy(buffer, fragment.data() + skip, bufsize);
@@ -463,35 +528,28 @@ void Journal::process_intersection(
 
   const interval_tree<uint64_t, const void *>::iterator to_wrt =
       *result.begin();
-  // the intersection
   uint64_t low = std::max(to_wrt->low, itr->low);
   uint64_t high = std::min(to_wrt->high, itr->high);
-  // update
   chunk_t update;
   update.offset = offset_for_update(itr->value, low - itr->low);
   update.size = high - low;
   update.buff = static_cast<const char *>(to_wrt->value) + (low - to_wrt->low);
   updates.push_back(std::move(update));
-  // update the 'to write' intervals
   uint64_t wrtlow = to_wrt->low;
   uint64_t wrthigh = to_wrt->high;
   const void *wrtbuff = to_wrt->value;
   to_write.erase(wrtlow, wrthigh);
 
-  // the intersection overlaps with the given
-  // interval so there is nothing more to do
   if (low == wrtlow && high == wrthigh) {
     return;
   }
 
   if (high < wrthigh) {
-    // the remaining right-hand-side interval
     const char *buff = static_cast<const char *>(wrtbuff) + (high - wrtlow);
     to_write.insert(high, wrthigh, buff);
   }
 
   if (low > wrtlow) {
-    // the remaining left-hand-side interval
     to_write.insert(wrtlow, low, wrtbuff);
   }
 }
@@ -670,17 +728,17 @@ std::vector<Journal::chunk_t> Journal::get_chunks(off_t offset, size_t size) {
       off_t data_off = header_off + sizeof(header_t);
       if (::pread(fd, fragment.data(), frag_size, data_off) !=
           (ssize_t)frag_size) {
-        return ret;
+        continue;
       }
       if (!verify_entry_crc(header_off, frag_size, fragment.data())) {
-        return ret;
+        continue;
       }
       std::memcpy(buffer.get(), fragment.data() + skip, count);
     } else {
       uint64_t cacheoff = header_off + sizeof(header_t) + skip;
       ssize_t rc = ::pread(fd, buffer.get(), count, cacheoff);
       if (rc < 0 || (size_t)rc != count) {
-        return ret;
+        continue;
       }
     }
 
