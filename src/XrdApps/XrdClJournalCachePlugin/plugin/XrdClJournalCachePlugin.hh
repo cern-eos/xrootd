@@ -28,6 +28,8 @@
 #include "XrdCl/XrdClPlugInInterface.hh"
 /*----------------------------------------------------------------------------*/
 #include "../file/XrdClJournalCacheFile.hh"
+#include "../file/PolicyConfig.hh"
+#include "../file/PolicyRuntime.hh"
 #include "../system/XrdClJournalCacheSystem.hh"
 /*----------------------------------------------------------------------------*/
 #include <map>
@@ -113,6 +115,11 @@ public:
       auto itao = config->find("allow_origin");
       if (itao != config->end() && !itao->second.empty()) {
         JournalCacheFile::SetAllowedOrigins(itao->second);
+      }
+
+      auto iterd = config->find("external_redirect");
+      if (iterd != config->end() && !iterd->second.empty()) {
+        JournalCacheFile::SetExternalRedirects(iterd->second);
       }
 
       // if we are supposed to load also the System plug-in
@@ -205,6 +212,10 @@ public:
         JournalCacheFile::SetAllowedOrigins(v);
       }
 
+      if (const char *v = getenv("XRD_JOURNALCACHE_EXTERNAL_REDIRECT")) {
+        JournalCacheFile::SetExternalRedirects(v);
+      }
+
       if (const char *v = getenv("XRD_JOURNALCACHE_SYSTEM")) {
         sEnableFileSystem =
             ((std::string(v) == "true") || (std::string(v) == "1")) ? true
@@ -240,6 +251,36 @@ public:
         JournalCacheFile::SetBypass(true);
       }
 
+      unsigned policyPoll = 2;
+      auto itpp = config->find("policy_poll");
+      if (itpp != config->end() && !itpp->second.empty()) {
+        policyPoll = static_cast<unsigned>(std::stoul(itpp->second));
+      }
+
+      std::string policyPath;
+      auto itpol = config->find("policy");
+      if (itpol != config->end()) {
+        policyPath = itpol->second;
+      }
+      if (const char *v = getenv("XRD_JOURNALCACHE_POLICY")) {
+        policyPath = v;
+      }
+      if (policyPath.empty()) {
+        policyPath =
+            JournalCache::defaultPolicyPath(JournalCacheFile::sCachePath);
+      }
+      if (const char *v = getenv("XRD_JOURNALCACHE_POLICY_POLL")) {
+        policyPoll = static_cast<unsigned>(std::stoul(v));
+      }
+
+      JournalCache::PolicySettings bootstrap;
+      bootstrap.bypass = JournalCacheFile::sEnableBypass;
+      bootstrap.multiOriginUnwrap = JournalCacheFile::sMultiOriginUnwrap;
+      bootstrap.originAllowlist = JournalCacheFile::sOriginAllowlist;
+      bootstrap.externalRedirect = JournalCacheFile::sExternalRedirect;
+      JournalCache::PolicyRuntime::instance().configure(policyPath, bootstrap);
+      JournalCache::PolicyRuntime::instance().startWatcher(policyPoll);
+
       Journal::sDefaultEnableCrc = JournalCacheFile::sEnableJournalCrc;
 
       Log *log = DefaultEnv::GetLog();
@@ -262,6 +303,12 @@ public:
       log->Info(1, "JournalCache : allowed origin regex: %s",
                 JournalCacheFile::sOriginAllowlist.empty() ? "none"
                                                            : "configured");
+      log->Info(1, "JournalCache : external redirect rules: %zu",
+                JournalCacheFile::sExternalRedirect.rules().size());
+      if (!policyPath.empty()) {
+        log->Info(1, "JournalCache : runtime policy file: %s (poll=%us)",
+                  policyPath.c_str(), policyPoll);
+      }
       log->Info(1, "JournalCache : running app: %s", appName.c_str());
 
       log->Info(1, "JournalCache : basepath: '%s'", JournalCacheFile::sBasePath.c_str());

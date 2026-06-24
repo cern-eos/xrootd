@@ -11,6 +11,9 @@ add_executable(xrdcl-unit-tests
   ../../src/XrdApps/XrdClJournalCachePlugin/file/CacheHeaders.cc
   ../../src/XrdApps/XrdClJournalCachePlugin/file/Digest.cc
   ../../src/XrdApps/XrdClJournalCachePlugin/file/OriginAllowlist.cc
+  ../../src/XrdApps/XrdClJournalCachePlugin/file/ExternalRedirect.cc
+  ../../src/XrdApps/XrdClJournalCachePlugin/file/PolicyConfig.cc
+  ../../src/XrdApps/XrdClJournalCachePlugin/file/PolicyRuntime.cc
   ../../src/XrdApps/XrdClJournalCachePlugin/http/ForwardingUrl.cc
   ../../src/XrdApps/XrdClJournalCachePlugin/system/ListCache.cc
   )

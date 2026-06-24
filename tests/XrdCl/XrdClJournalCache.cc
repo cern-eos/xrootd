@@ -7,6 +7,9 @@
 #include "http/ForwardingUrl.hh"
 #include "http/HttpHeaderMap.hh"
 #include "file/OriginAllowlist.hh"
+#include "file/ExternalRedirect.hh"
+#include "file/PolicyConfig.hh"
+#include "file/PolicyRuntime.hh"
 #include "file/Digest.hh"
 #include "system/ListCache.hh"
 
@@ -735,6 +738,74 @@ TEST(OriginAllowlistTest, AllowsMatchingHostOrUrl) {
   EXPECT_TRUE(
       allowlist.isAllowed("https://cdn.example.org/store/file.dat"));
   EXPECT_FALSE(allowlist.isAllowed("root://evil.example.net//store/file.dat"));
+}
+
+TEST(ExternalRedirectTest, ResolvesLongestPrefixMatch) {
+  JournalCache::ExternalRedirect redirects;
+  redirects.addRule("/store/", "root://origin.cern.ch:1094//store/");
+  redirects.addRule("/store/live/", "https://stream.example.org/live/");
+
+  EXPECT_EQ(redirects.resolve("/store/data/file.dat"),
+            "root://origin.cern.ch:1094//store/data/file.dat");
+  EXPECT_EQ(redirects.resolve("/store/live/event/1"),
+            "https://stream.example.org/live/event/1");
+  EXPECT_EQ(redirects.resolve("/other/file.dat"), "");
+}
+
+TEST(ExternalRedirectTest, PreservesQuerySuffix) {
+  JournalCache::ExternalRedirect redirects;
+  redirects.addRule("/live/", "https://stream.example.org/live/");
+
+  EXPECT_EQ(redirects.resolve("/live/event/1", "?token=abc"),
+            "https://stream.example.org/live/event/1?token=abc");
+}
+
+TEST(ExternalRedirectTest, ParsesPipeSeparatedConfig) {
+  JournalCache::ExternalRedirect redirects;
+  redirects.addRulesFromCsv(
+      "/live/|https://stream.example.org/live/,/raw/|root://data.cern.ch//raw/");
+
+  EXPECT_NE(redirects.resolve("/live/foo").find("stream.example.org"),
+            std::string::npos);
+  EXPECT_NE(redirects.resolve("/raw/bar").find("data.cern.ch"),
+            std::string::npos);
+}
+
+TEST(PolicyConfigTest, RoundTripPolicyFile) {
+  JournalCache::PolicySettings settings;
+  settings.bypass = true;
+  settings.multiOriginUnwrap = true;
+  settings.originAllowlist.addPattern(R"(^https://example\.org/)");
+  settings.externalRedirect.addRule("/live/", "https://stream.example.org/live/");
+
+  const std::string text = JournalCache::formatPolicyFile(settings);
+  JournalCache::PolicySettings loaded;
+  ASSERT_TRUE(JournalCache::parsePolicyText(text, loaded));
+  EXPECT_TRUE(loaded.bypass);
+  EXPECT_TRUE(loaded.multiOriginUnwrap);
+  EXPECT_EQ(loaded.originAllowlist.patterns().size(), 1u);
+  EXPECT_EQ(loaded.externalRedirect.rules().size(), 1u);
+}
+
+TEST(PolicyRuntimeTest, ReloadsWhenMtimeChanges) {
+  const std::string path =
+      (std::filesystem::temp_directory_path() / "xjc-policy-test.conf").string();
+  std::filesystem::remove(path);
+
+  JournalCache::PolicySettings bootstrap;
+  bootstrap.bypass = false;
+  auto &runtime = JournalCache::PolicyRuntime::instance();
+  runtime.stopWatcher();
+  runtime.configure(path, bootstrap);
+
+  JournalCache::PolicySettings updated = bootstrap;
+  updated.bypass = true;
+  ASSERT_TRUE(JournalCache::savePolicyFile(path, updated));
+
+  runtime.reloadIfChanged();
+  EXPECT_TRUE(runtime.snapshot().bypass);
+
+  std::filesystem::remove(path);
 }
 
 TEST(ForwardingUrlTest, ResolveJournalPathMatchesFilePluginLayout) {

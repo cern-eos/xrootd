@@ -333,6 +333,22 @@ allow_origin = ^root://([a-z0-9.-]+\.)?cern\.ch(:1094)?/,^https://([a-z0-9.-]+\.
 
 On client-only deployments (no unwrap), omit `multi_origin` so chained URLs are passed through to the proxy unchanged.
 
+### External redirect (bypass cache for subtrees)
+
+Path prefixes can be redirected to an external URL instead of being served through JournalCache. Works for HTTP (302) and native XRootD clients (`errRedirect` on open).
+
+| Key | Meaning |
+|-----|---------|
+| `external_redirect = <prefix> <target>` | Repeatable in HTTP ext config |
+| `external_redirect = <prefix>\|<target>,...` | Comma-separated pairs in client plugin config |
+
+Environment override: `XRD_JOURNALCACHE_EXTERNAL_REDIRECT`.
+
+```ini
+external_redirect = /live/ https://stream.example.org/live/
+external_redirect = /store/raw/ root://data.cern.ch:1094//store/raw/
+```
+
 ---
 
 ## Proxy and HTTP front-end setup

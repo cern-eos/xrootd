@@ -33,6 +33,8 @@
 #include "file/Art.hh"
 #include "file/CacheHeaders.hh"
 #include "file/OriginAllowlist.hh"
+#include "file/PolicyConfig.hh"
+#include "file/PolicyRuntime.hh"
 #include "file/TimeBench.hh"
 #include "handler/XrdClJournalCacheOpenHandler.hh"
 #include "handler/XrdClJournalCachePgReadHandler.hh"
@@ -235,6 +237,16 @@ public:
   static void AddAllowedOriginPattern(const std::string &pattern) {
     sOriginAllowlist.addPattern(pattern);
   }
+  static void SetExternalRedirects(const std::string &rules) {
+    sExternalRedirect.clear();
+    sExternalRedirect.addRulesFromCsv(rules);
+  }
+  static void AddExternalRedirectRule(const std::string &rule) {
+    sExternalRedirect.addRuleFromSpec(rule);
+  }
+  static std::string ResolveExternalRedirect(const XrdCl::URL &url);
+  static JournalCache::PolicySettings activePolicySettings();
+  static bool policyBypass();
 
   //----------------------------------------------------------------------------
   //! @brief static members pointing to cache settings
@@ -251,6 +263,7 @@ public:
   static bool sThreadConnectionDemultiplexing;
   static bool sMultiOriginUnwrap;
   static JournalCache::OriginAllowlist sOriginAllowlist;
+  static JournalCache::ExternalRedirect sExternalRedirect;
 
   static JournalManager sJournalManager;
 
@@ -283,7 +296,7 @@ private:
   bool CanServeFromJournalCache() const;
 
   //! @brief return true when journal caching is bypassed for this file
-  bool bypassCache() const { return sEnableBypass || mFileBypass; }
+  bool bypassCache() const { return policyBypass() || mFileBypass; }
 
   //! @brief atomic variable to track if file is attached for read
   std::atomic<bool> mAttachedForRead;

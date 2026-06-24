@@ -503,6 +503,59 @@ allow_origin = ^root://([a-z0-9.-]+\.)?cern\.ch(:1094)?/,^https://([a-z0-9.-]+\.
 
 On client-only deployments (no unwrap), omit `multi_origin` so chained URLs are passed through to the proxy unchanged.
 
+## 7.9 External redirect (bypass cache for subtrees)
+
+Path prefixes can be redirected to an external URL instead of being served through JournalCache. This works for **HTTP** (302 redirect) and **native XRootD** clients (`errRedirect` on open).
+
+| Key | Meaning |
+|-----|---------|
+| `external_redirect = <prefix> <target>` | Repeatable in HTTP ext config; prefix is a path subtree, target is a full URL base |
+| `external_redirect = <prefix>\|<target>,...` | Comma-separated pairs in the client plugin config (pipe separates prefix and target) |
+
+Environment override: `XRD_JOURNALCACHE_EXTERNAL_REDIRECT`.
+
+Example HTTP ext config:
+
+```ini
+external_redirect = /live/ https://stream.example.org/live/
+external_redirect = /store/raw/ root://data.cern.ch:1094//store/raw/
+```
+
+Example client plugin config:
+
+```ini
+external_redirect = /live/|https://stream.example.org/live/,/store/raw/|root://data.cern.ch:1094//store/raw/
+```
+
+Requests under `/live/` are redirected externally; the journal cache is not used for those paths.
+
+## 7.10 Runtime policy file and `xjc`
+
+Hot-reloadable policy knobs live in a runtime file (default: `$cache/.xjc/policy.conf`):
+
+```ini
+bypass = 0
+multi_origin = 1
+allow_origin = ^root://([a-z0-9.-]+\.)?cern\.ch(:1094)?/
+external_redirect = /live/ https://stream.example.org/live/
+```
+
+| Key | Meaning |
+|-----|---------|
+| `policy = /path/to/policy.conf` | Override runtime policy path (plugin + HTTP ext) |
+| `policy_poll = 2` | Mtime poll interval in seconds (`0` disables watch) |
+
+Environment: `XRD_JOURNALCACHE_POLICY`, `XRD_JOURNALCACHE_POLICY_POLL`.
+
+Both the file plugin and HTTP ext watch the policy file and reload when its mtime changes. Edit with **`xjc`**:
+
+```bash
+xjc --policy /var/tmp/journalcache/.xjc/policy.conf show
+xjc bypass off
+xjc allow-origin add '^https://.*\.example\.org/'
+xjc redirect add /live/ https://stream.example.org/live/
+```
+
 # 8 JournalCache in a Proxy server
 
 To run a proxy server with JournalCache you create a usual proxy configuration file:

@@ -26,7 +26,7 @@ JournalCacheSystem::JournalCacheSystem(const URL &url) {
 JournalCacheSystem::~JournalCacheSystem() { delete pSystem; }
 
 bool JournalCacheSystem::listingCacheEnabled() const {
-  return !JournalCacheFile::sEnableBypass && !JournalCacheFile::sCachePath.empty();
+  return !JournalCacheFile::policyBypass() && !JournalCacheFile::sCachePath.empty();
 }
 
 bool JournalCacheSystem::statCacheEnabled() const {

@@ -38,6 +38,9 @@ add_library(${XrdClJournalCachePlugin} MODULE
   XrdClJournalCachePlugin/file/CachePath.cc
   XrdClJournalCachePlugin/file/CacheHeaders.cc
   XrdClJournalCachePlugin/file/OriginAllowlist.cc
+  XrdClJournalCachePlugin/file/ExternalRedirect.cc
+  XrdClJournalCachePlugin/file/PolicyConfig.cc
+  XrdClJournalCachePlugin/file/PolicyRuntime.cc
   XrdClJournalCachePlugin/http/ForwardingUrl.cc
   XrdClJournalCachePlugin/system/XrdClJournalCacheSystem.cc
   XrdClJournalCachePlugin/system/ListCache.cc
@@ -59,7 +62,7 @@ target_include_directories(${XrdClJournalCachePlugin}
   PRIVATE "${CMAKE_SOURCE_DIR}/src/XrdApps/XrdClJournalCachePlugin/")
 
 target_link_libraries(${XrdClJournalCachePlugin}
-  PRIVATE XrdCl XrdUtils OpenSSL::SSL)
+  PRIVATE XrdCl XrdUtils OpenSSL::SSL ${CMAKE_THREAD_LIBS_INIT})
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
   AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.1
@@ -69,6 +72,23 @@ endif()
 
 add_executable(xrdclcacheclean
   XrdClJournalCachePlugin/app/XrdClCacheCleaner.cc)
+
+add_executable(xjc
+  XrdClJournalCachePlugin/app/xjc.cc
+  XrdClJournalCachePlugin/file/PolicyConfig.cc
+  XrdClJournalCachePlugin/file/OriginAllowlist.cc
+  XrdClJournalCachePlugin/file/ExternalRedirect.cc)
+
+target_include_directories(xjc
+  PRIVATE "${CMAKE_SOURCE_DIR}/src/XrdApps/XrdClJournalCachePlugin/")
+
+target_link_libraries(xjc PRIVATE XrdCl)
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+  AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.1
+  AND NOT APPLE)
+  target_link_libraries(xjc PRIVATE stdc++fs)
+endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
   AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.1
@@ -85,13 +105,16 @@ if(BUILD_HTTP AND NOT XRDCL_ONLY)
     XrdClJournalCachePlugin/file/CacheHeaders.cc
     XrdClJournalCachePlugin/file/Digest.cc
     XrdClJournalCachePlugin/file/OriginAllowlist.cc
+    XrdClJournalCachePlugin/file/ExternalRedirect.cc
+    XrdClJournalCachePlugin/file/PolicyConfig.cc
+    XrdClJournalCachePlugin/file/PolicyRuntime.cc
   )
 
   target_include_directories(${XrdClJournalCacheHttpExt}
     PRIVATE "${CMAKE_SOURCE_DIR}/src/XrdApps/XrdClJournalCachePlugin/")
 
   target_link_libraries(${XrdClJournalCacheHttpExt}
-    PRIVATE XrdCl XrdHttpUtils XrdUtils)
+    PRIVATE XrdCl XrdHttpUtils XrdUtils ${CMAKE_THREAD_LIBS_INIT})
 
   if(CURL_FOUND)
     target_compile_definitions(${XrdClJournalCacheHttpExt}
@@ -118,6 +141,7 @@ install(
   TARGETS
     xrdreplay
     xrdclcacheclean
+    xjc
     XrdAppUtils
     ${XrdClProxyPlugin}
     ${XrdClRecorder}

@@ -539,6 +539,18 @@ cache = /var/tmp/journalcache/</code></pre>
       <p>Environment overrides: <code>XRD_JOURNALCACHE_MULTI_ORIGIN</code>, <code>XRD_JOURNALCACHE_ALLOW_ORIGIN</code>. The HTTP ext handler accepts the same <code>allow_origin</code> lines and rejects disallowed upstreams with <strong>403</strong>.</p>
       <pre><code>multi_origin = 1
 allow_origin = ^root://([a-z0-9.-]+\.)?cern\.ch(:1094)?/,^https://([a-z0-9.-]+\.)?example\.org/</code></pre>
+      <p>On client-only deployments (no unwrap), omit <code>multi_origin</code> so chained URLs are passed through to the proxy unchanged.</p>
+
+      <h3>External redirect (bypass cache for subtrees)</h3>
+      <p>Path prefixes can be redirected to an external URL instead of being served through JournalCache. Works for HTTP (302) and native XRootD clients (<code>errRedirect</code> on open).</p>
+      <table>
+        <tr><th>Key</th><th>Meaning</th></tr>
+        <tr><td><code>external_redirect = &lt;prefix&gt; &lt;target&gt;</code></td><td>Repeatable in HTTP ext config</td></tr>
+        <tr><td><code>external_redirect = &lt;prefix&gt;|&lt;target&gt;,...</code></td><td>Comma-separated pairs in client plugin config</td></tr>
+      </table>
+      <p>Environment override: <code>XRD_JOURNALCACHE_EXTERNAL_REDIRECT</code>.</p>
+      <pre><code>external_redirect = /live/ https://stream.example.org/live/
+external_redirect = /store/raw/ root://data.cern.ch:1094//store/raw/</code></pre>
     </section>
 
     <section id="proxy">
