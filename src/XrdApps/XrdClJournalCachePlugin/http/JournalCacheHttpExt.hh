@@ -3,6 +3,7 @@
 #include "XrdHttp/XrdHttpExtHandler.hh"
 #include "XrdSys/XrdSysError.hh"
 #include "file/CacheHeaders.hh"
+#include "file/OriginAllowlist.hh"
 
 #include <map>
 #include <string>
@@ -44,6 +45,7 @@ private:
   std::string mHttpOriginStrip;
   bool mForwarding = false;
   bool mFlatHierarchy = false;
+  OriginAllowlist mOriginAllowlist;
   std::vector<std::pair<std::string, std::string>> mXAttrMappings;
 };
 

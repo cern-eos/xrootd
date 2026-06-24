@@ -104,6 +104,17 @@ public:
               ? (itmux->second == "true") || (itmux->second == "1")
               : false);
 
+      auto itmo = config->find("multi_origin");
+      JournalCacheFile::SetMultiOriginUnwrap(
+          itmo != config->end()
+              ? (itmo->second == "true") || (itmo->second == "1")
+              : false);
+
+      auto itao = config->find("allow_origin");
+      if (itao != config->end() && !itao->second.empty()) {
+        JournalCacheFile::SetAllowedOrigins(itao->second);
+      }
+
       // if we are supposed to load also the System plug-in
       auto itss = config->find("system");
       sEnableFileSystem = (itss != config->end() ? (itss->second == "true") ||
@@ -184,6 +195,16 @@ public:
                                                                     : false);
       }
 
+      if (const char *v = getenv("XRD_JOURNALCACHE_MULTI_ORIGIN")) {
+        JournalCacheFile::SetMultiOriginUnwrap(
+            ((std::string(v) == "true") || (std::string(v) == "1")) ? true
+                                                                    : false);
+      }
+
+      if (const char *v = getenv("XRD_JOURNALCACHE_ALLOW_ORIGIN")) {
+        JournalCacheFile::SetAllowedOrigins(v);
+      }
+
       if (const char *v = getenv("XRD_JOURNALCACHE_SYSTEM")) {
         sEnableFileSystem =
             ((std::string(v) == "true") || (std::string(v) == "1")) ? true
@@ -236,6 +257,11 @@ public:
                 JournalCacheFile::sEnableBypass ? "true" : "false");
       log->Info(1, "JournalCache : connection demultiplexing: %s",
                 JournalCacheFile::sThreadConnectionDemultiplexing ? "true" : "false");
+      log->Info(1, "JournalCache : multi-origin unwrap: %s",
+                JournalCacheFile::sMultiOriginUnwrap ? "true" : "false");
+      log->Info(1, "JournalCache : allowed origin regex: %s",
+                JournalCacheFile::sOriginAllowlist.empty() ? "none"
+                                                           : "configured");
       log->Info(1, "JournalCache : running app: %s", appName.c_str());
 
       log->Info(1, "JournalCache : basepath: '%s'", JournalCacheFile::sBasePath.c_str());

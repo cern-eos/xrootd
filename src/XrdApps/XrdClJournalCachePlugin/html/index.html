@@ -517,7 +517,7 @@ xrdfs setxattr /store/data/file.root http.etag '"abc123"'</code></pre>
       <h3>HTTP forwarding proxy (dynamic origins)</h3>
       <p>For browser clients that embed the upstream URL in the path (<code>/https://host/path</code>), enable PSS forwarding and set <code>forwarding = 1</code> in the HTTP ext config. Example files live under <code>http/</code>: <code>journalcache-forwarding.cf</code>, <code>journalcache-http-forwarding.ext.conf</code>, <code>journalcache-forwarding-client.conf</code>.</p>
       <pre><code># xrootd server
-pss.origin =http,https
+pss.origin =root,http,https
 pss.permit /* .example.org
 http.exthandler journalcache libXrdClJournalCacheHttpExt-5.so \
   /etc/xrootd/journalcache-http-forwarding.ext.conf
@@ -526,6 +526,19 @@ http.exthandler journalcache libXrdClJournalCacheHttpExt-5.so \
 forwarding = 1
 cache = /var/tmp/journalcache/</code></pre>
       <p>Load <strong>XrdClHttp</strong> alongside JournalCache in the xrootd process client plugins. PSS fetches via HTTP(S); the ext handler parses each embedded URL for journal lookup, 304, and response headers.</p>
+
+      <h3>Chained multi-origin URLs (<code>root://</code> and friends)</h3>
+      <p>Clients can name a dynamic upstream inside a proxy URL:</p>
+      <pre><code>root://proxy.example:1095//root://origin.cern.ch:1094//store/file.dat</code></pre>
+      <p>PSS forwarding (<code>pss.origin =root,http,https</code>) also accepts path-embedded upstreams such as <code>/root://origin.cern.ch:1094//store/file.dat</code>.</p>
+      <table>
+        <tr><th>Key</th><th>Meaning</th></tr>
+        <tr><td><code>multi_origin = 1</code></td><td>Unwrap chained URLs to the inner upstream for open + journal cache key</td></tr>
+        <tr><td><code>allow_origin = &lt;regex&gt;</code></td><td>Allowed upstream patterns (comma-separated or repeated)</td></tr>
+      </table>
+      <p>Environment overrides: <code>XRD_JOURNALCACHE_MULTI_ORIGIN</code>, <code>XRD_JOURNALCACHE_ALLOW_ORIGIN</code>. The HTTP ext handler accepts the same <code>allow_origin</code> lines and rejects disallowed upstreams with <strong>403</strong>.</p>
+      <pre><code>multi_origin = 1
+allow_origin = ^root://([a-z0-9.-]+\.)?cern\.ch(:1094)?/,^https://([a-z0-9.-]+\.)?example\.org/</code></pre>
     </section>
 
     <section id="proxy">

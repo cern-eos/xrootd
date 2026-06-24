@@ -6,6 +6,7 @@
 #include "file/CacheHeaders.hh"
 #include "http/ForwardingUrl.hh"
 #include "http/HttpHeaderMap.hh"
+#include "file/OriginAllowlist.hh"
 #include "file/Digest.hh"
 #include "system/ListCache.hh"
 
@@ -706,7 +707,34 @@ TEST(ForwardingUrlTest, ParseEmbeddedHttpUrl) {
 
   EXPECT_FALSE(
       JournalCache::parseEmbeddedFileUrl("/store/file.dat").valid);
-  EXPECT_FALSE(JournalCache::parseEmbeddedFileUrl("/root://host/file").valid);
+}
+
+TEST(ForwardingUrlTest, ParseEmbeddedRootUrl) {
+  const auto embedded = JournalCache::parseEmbeddedFileUrl(
+      "/root://origin.cern.ch:1094//store/file.dat");
+  ASSERT_TRUE(embedded.valid);
+  EXPECT_NE(embedded.fileUrl.find("origin.cern.ch"), std::string::npos);
+  EXPECT_NE(embedded.fileUrl.find("/store/file.dat"), std::string::npos);
+}
+
+TEST(ForwardingUrlTest, ParseChainedRootUrl) {
+  const auto chained = JournalCache::parseChainedFileUrl(
+      "root://proxy.cern.ch:1095//root://origin.cern.ch:1094//store/file.dat");
+  ASSERT_TRUE(chained.valid);
+  EXPECT_NE(chained.fileUrl.find("origin.cern.ch"), std::string::npos);
+  EXPECT_EQ(chained.fileUrl.find("proxy.cern.ch"), std::string::npos);
+}
+
+TEST(OriginAllowlistTest, AllowsMatchingHostOrUrl) {
+  JournalCache::OriginAllowlist allowlist;
+  allowlist.addPattern(R"(^root://([a-z0-9.-]+\.)?cern\.ch(:1094)?/)");
+  allowlist.addPattern(R"(^https://([a-z0-9.-]+\.)?example\.org/)");
+
+  EXPECT_TRUE(allowlist.isAllowed(
+      "root://origin.cern.ch:1094//store/file.dat"));
+  EXPECT_TRUE(
+      allowlist.isAllowed("https://cdn.example.org/store/file.dat"));
+  EXPECT_FALSE(allowlist.isAllowed("root://evil.example.net//store/file.dat"));
 }
 
 TEST(ForwardingUrlTest, ResolveJournalPathMatchesFilePluginLayout) {

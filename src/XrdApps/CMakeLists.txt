@@ -37,6 +37,8 @@ add_library(${XrdClJournalCachePlugin} MODULE
   XrdClJournalCachePlugin/file/Digest.cc
   XrdClJournalCachePlugin/file/CachePath.cc
   XrdClJournalCachePlugin/file/CacheHeaders.cc
+  XrdClJournalCachePlugin/file/OriginAllowlist.cc
+  XrdClJournalCachePlugin/http/ForwardingUrl.cc
   XrdClJournalCachePlugin/system/XrdClJournalCacheSystem.cc
   XrdClJournalCachePlugin/system/ListCache.cc
   XrdClJournalCachePlugin/handler/XrdClJournalCacheDirListHandler.cc
@@ -82,6 +84,7 @@ if(BUILD_HTTP AND NOT XRDCL_ONLY)
     XrdClJournalCachePlugin/http/ForwardingUrl.cc
     XrdClJournalCachePlugin/file/CacheHeaders.cc
     XrdClJournalCachePlugin/file/Digest.cc
+    XrdClJournalCachePlugin/file/OriginAllowlist.cc
   )
 
   target_include_directories(${XrdClJournalCacheHttpExt}

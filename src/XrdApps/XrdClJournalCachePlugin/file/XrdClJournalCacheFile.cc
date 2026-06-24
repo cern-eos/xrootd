@@ -27,6 +27,8 @@
 #include "file/Digest.hh"
 #include "file/Hierarchy.hh"
 #include "file/CachePath.hh"
+#include "file/OriginAllowlist.hh"
+#include "http/ForwardingUrl.hh"
 /*----------------------------------------------------------------------------*/
 #include "XrdCl/XrdClMessageUtils.hh"
 #include <ctime>
@@ -43,6 +45,8 @@ bool XrdCl::JournalCacheFile::sEnableBypass = false;
 bool XrdCl::JournalCacheFile::sOpenAsync = false;
 bool XrdCl::JournalCacheFile::sFlatHierarchy = false;
 bool XrdCl::JournalCacheFile::sThreadConnectionDemultiplexing = false;
+bool XrdCl::JournalCacheFile::sMultiOriginUnwrap = false;
+JournalCache::OriginAllowlist XrdCl::JournalCacheFile::sOriginAllowlist;
 
 JournalCache::CacheStats XrdCl::JournalCacheFile::sStats(true);
 JournalCache::Cleaner XrdCl::JournalCacheFile::sCleaner;
@@ -105,9 +109,32 @@ XRootDStatus JournalCacheFile::Open(const std::string &url, OpenFlags::Flags fla
 
   pFile = new XrdCl::File(false);
 
+  XrdCl::URL origUrl(url);
+  std::string fetchUrl = url;
+  const JournalCache::EmbeddedFileUrl chained =
+      JournalCache::parseChainedFileUrl(url);
+  if (chained.valid) {
+    if (!sOriginAllowlist.isAllowed(chained.fileUrl)) {
+      mLog->Error(1, "JournalCache : upstream origin not allowed: %s",
+                  chained.fileUrl.c_str());
+      return XRootDStatus(stError, errInvalidArgs);
+    }
+    if (sMultiOriginUnwrap) {
+      XrdCl::URL inner(chained.fileUrl);
+      XrdCl::URL::ParamsMap params = inner.GetParams();
+      for (const auto &entry : origUrl.GetParams()) {
+        params[entry.first] = entry.second;
+      }
+      inner.SetParams(params);
+      fetchUrl = inner.GetURL();
+      origUrl = inner;
+      mLog->Info(1, "JournalCache : multi-origin open to %s",
+                 fetchUrl.c_str());
+    }
+  }
+
   // sanitize named connections and CGI for the URL to cache
   XrdCl::URL cleanUrl;
-  XrdCl::URL origUrl(url);
   std::string cacheUrl;
 
   cleanUrl.SetProtocol(origUrl.GetProtocol());
@@ -180,7 +207,7 @@ XRootDStatus JournalCacheFile::Open(const std::string &url, OpenFlags::Flags fla
 
   if ((flags & OpenFlags::Flags::Read) == OpenFlags::Flags::Read) {
     pOpenHandler = new JournalCacheOpenHandler(this);
-    st = pFile->Open(url, flags, mode, pOpenHandler, timeout);
+    st = pFile->Open(fetchUrl, flags, mode, pOpenHandler, timeout);
 
     if (!mOpenAsync) {
       // we have to be sure the file is opened

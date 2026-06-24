@@ -11,7 +11,7 @@ all.sitename JournalCacheForwardProxy
 xrd.protocol http:/usr/lib64/libXrdHttp.so
 
 # PSS forwarding proxy: destination URL is embedded in the request path
-pss.origin =http,https
+pss.origin =root,http,https
 all.export /
 ofs.osslib libXrdPss.so
 
