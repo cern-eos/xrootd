@@ -932,3 +932,17 @@ TEST(XjcdRenderTest, RendersConfigsAndOpenPolicy) {
 
   fs::remove_all(dir);
 }
+
+TEST(XjcdSystemdTest, ValidatesUnitName) {
+  EXPECT_TRUE(JournalCache::isValidSystemdUnitName("xjcd.service"));
+  EXPECT_TRUE(JournalCache::isValidSystemdUnitName("journalcache-foo.service"));
+  EXPECT_TRUE(JournalCache::isValidSystemdUnitName("xjcd@.service"));
+  EXPECT_FALSE(JournalCache::isValidSystemdUnitName("xjcd"));
+  EXPECT_FALSE(JournalCache::isValidSystemdUnitName("/etc/xjcd.service"));
+  EXPECT_FALSE(JournalCache::isValidSystemdUnitName("bad name.service"));
+}
+
+TEST(XjcdSystemdTest, InstallPath) {
+  EXPECT_EQ(JournalCache::systemdUnitInstallPath("xjcd.service"),
+            "/etc/systemd/system/xjcd.service");
+}

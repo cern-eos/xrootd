@@ -2,6 +2,8 @@
 
 #include "file/PolicyConfig.hh"
 
+#include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -247,6 +249,74 @@ bool renderXjcdConfigs(const XjcdState &state, const std::string &hostname) {
                              "\n# Runtime policy (xjc):\n#   " +
                              state.policyPath() + "\n";
   return writeTextFile(state.etcDir() + "/README.systemd.txt", readme);
+}
+
+std::string defaultSystemdUnitName() { return "xjcd.service"; }
+
+std::string systemdUnitInstallPath(const std::string &unitName) {
+  return "/etc/systemd/system/" + unitName;
+}
+
+bool isValidSystemdUnitName(const std::string &unitName) {
+  if (unitName.size() < 9 || unitName.compare(unitName.size() - 8, 8, ".service") != 0) {
+    return false;
+  }
+  for (const char ch : unitName) {
+    const unsigned char uch = static_cast<unsigned char>(ch);
+    if (std::isalnum(uch) || ch == '-' || ch == '_' || ch == '.' || ch == '@') {
+      continue;
+    }
+    return false;
+  }
+  return unitName.find('/') == std::string::npos;
+}
+
+bool installXjcdSystemdUnit(const XjcdState &state, const std::string &unitName,
+                            bool enable, std::string &error) {
+  if (geteuid() != 0) {
+    error = "--install-systemd requires root; re-run with sudo";
+    return false;
+  }
+  if (!isValidSystemdUnitName(unitName)) {
+    error = "invalid systemd unit name: " + unitName;
+    return false;
+  }
+  if (!std::filesystem::exists(state.systemdUnitPath())) {
+    error = "generated unit not found: " + state.systemdUnitPath();
+    return false;
+  }
+
+  const std::string dest = systemdUnitInstallPath(unitName);
+  std::error_code ec;
+  std::filesystem::copy_file(state.systemdUnitPath(), dest,
+                             std::filesystem::copy_options::overwrite_existing,
+                             ec);
+  if (ec) {
+    error = "failed to install unit to " + dest + ": " + ec.message();
+    return false;
+  }
+  std::filesystem::permissions(
+      dest,
+      std::filesystem::perms::owner_read | std::filesystem::perms::group_read |
+          std::filesystem::perms::others_read,
+      ec);
+  if (ec) {
+    error = "failed to set permissions on " + dest + ": " + ec.message();
+    return false;
+  }
+
+  if (std::system("systemctl daemon-reload") != 0) {
+    error = "systemctl daemon-reload failed";
+    return false;
+  }
+  if (enable) {
+    const std::string cmd = "systemctl enable --now " + unitName;
+    if (std::system(cmd.c_str()) != 0) {
+      error = "systemctl enable --now " + unitName + " failed";
+      return false;
+    }
+  }
+  return true;
 }
 
 std::vector<XjcdValidationIssue> validateXjcdState(const XjcdState &state) {

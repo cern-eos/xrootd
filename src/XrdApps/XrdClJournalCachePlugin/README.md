@@ -583,6 +583,17 @@ Initial policy is **open** (no `allow_origin` lines) until you add rules with **
 ```bash
 xjcd init --journal /var/tmp/journalcache \
   --xroot-port 1094 --https-port 8443 \
+  --tls-cert /etc/xrootd/tls.crt --tls-key /etc/xrootd/tls.key \
+  --install-systemd
+```
+
+With `--install-systemd`, init installs `$journal/.xjc/etc/xjcd.service` into `/etc/systemd/system/`, runs `systemctl daemon-reload`, and `systemctl enable --now xjcd.service` (requires root). Use `--systemd-unit NAME` for a non-default unit name when running multiple journals on one host.
+
+Manual install (without the flag):
+
+```bash
+xjcd init --journal /var/tmp/journalcache \
+  --xroot-port 1094 --https-port 8443 \
   --tls-cert /etc/xrootd/tls.crt --tls-key /etc/xrootd/tls.key
 
 xjcd show --journal /var/tmp/journalcache
@@ -590,15 +601,13 @@ xjcd validate --journal /var/tmp/journalcache
 xjcd render --journal /var/tmp/journalcache   # after editing state.conf
 ```
 
-Install and start via systemd:
-
 ```bash
 sudo install -m 0644 /var/tmp/journalcache/.xjc/etc/xjcd.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now xjcd.service
 ```
 
-Re-run `xjcd render` after changing `state.conf`, then `systemctl restart xjcd.service`. For multiple journals on one host, install each generated unit under a distinct name (for example `journalcache-foo.service`).
+Re-run `xjcd render` after changing `state.conf`, then `systemctl restart xjcd.service`.
 
 # 8 JournalCache in a Proxy server
 
