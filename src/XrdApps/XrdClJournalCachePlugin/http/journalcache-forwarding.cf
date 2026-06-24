@@ -1,0 +1,35 @@
+# Example XRootD config: HTTP caching forward proxy with JournalCache
+#
+# Serves browser GET/HEAD for paths like:
+#   /https://origin.example.org/store/file.dat
+#
+# Requires libXrdClJournalCachePlugin, libXrdClHttp, and
+# libXrdClJournalCacheHttpExt in the client plugin path for the xrootd process.
+
+all.sitename JournalCacheForwardProxy
+
+xrd.protocol http:/usr/lib64/libXrdHttp.so
+
+# PSS forwarding proxy: destination URL is embedded in the request path
+pss.origin =http,https
+all.export /
+ofs.osslib libXrdPss.so
+
+# Restrict which upstream hosts are allowed (required — do not run open proxy)
+pss.permit /* .example.org
+pss.permit /* .example.com
+
+http.header2cgi If-None-Match xrd.journalcache.if-none-match
+http.header2cgi If-Modified-Since xrd.journalcache.if-modified-since
+
+http.exthandler journalcache libXrdClJournalCacheHttpExt-5.so \
+  /etc/xrootd/journalcache-http-forwarding.ext.conf
+
+xrootd.secrety /etc/xrootd/xrootd.secrty
+all.administrator admin@localhost
+xrootd.chksum max 2 md5 adler32 crc32 crc32c
+
+# Client plugins for the xrootd/PSS process (path varies by install prefix)
+# See also /etc/xrootd/client.plugins.d/journalcache-forwarding.conf
+
+xrd.port 8080

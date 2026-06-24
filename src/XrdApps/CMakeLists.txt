@@ -79,6 +79,7 @@ if(BUILD_HTTP AND NOT XRDCL_ONLY)
 
   add_library(${XrdClJournalCacheHttpExt} MODULE
     XrdClJournalCachePlugin/http/JournalCacheHttpExt.cc
+    XrdClJournalCachePlugin/http/ForwardingUrl.cc
     XrdClJournalCachePlugin/file/CacheHeaders.cc
     XrdClJournalCachePlugin/file/Digest.cc
   )

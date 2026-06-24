@@ -413,6 +413,66 @@ Per-file operational CGIs (append to the HTTP URL or XRootD open URL):
 /store/file.root?xrd.journalcache.clean=1
 ```
 
+## 7.7 HTTP forwarding proxy (dynamic origins)
+
+For a browser-facing **forwarding proxy** where each request names its own HTTP(S) upstream, use PSS forwarding mode together with `forwarding = 1` in the HTTP ext config.
+
+**Request form** (destination embedded in the path):
+
+```
+GET /https://cdn.example.org/store/file.dat HTTP/1.1
+Host: cache-proxy.example
+```
+
+**Server config** (see `http/journalcache-forwarding.cf`):
+
+```ini
+pss.origin =http,https
+all.export /
+ofs.osslib libXrdPss.so
+
+# Required: restrict allowed upstream hosts
+pss.permit /* .example.org
+
+http.exthandler journalcache libXrdClJournalCacheHttpExt-5.so \
+  /etc/xrootd/journalcache-http-forwarding.ext.conf
+```
+
+**HTTP ext config** (`http/journalcache-http-forwarding.ext.conf`):
+
+```ini
+forwarding = 1
+cache = /var/tmp/journalcache/
+flat = 0
+prefix = /
+```
+
+**Client plugins** for the xrootd process (`http/journalcache-forwarding-client.conf`):
+
+```ini
+url = *
+lib = libXrdClJournalCachePlugin-5.so
+enable = true
+cache = /var/tmp/journalcache/
+
+url = http*
+lib = libXrdClHttp.so
+enable = true
+
+url = https*
+lib = libXrdClHttp.so
+enable = true
+```
+
+In forwarding mode the ext handler:
+
+- Parses the embedded `http://` / `https://` URL from each path
+- Resolves journal files using the same cache-key rules as the file plugin
+- Issues HTTP **HEAD** to that upstream for cache metadata (when libcurl is available)
+- Skips local `root://` xattr lookups (`server` / `http_origin` are ignored)
+
+PSS turns `/https://host/path` into a client open of `https://host/path`; **XrdClHttp** performs the HTTP fetch; JournalCache journals the bytes.
+
 # 8 JournalCache in a Proxy server
 
 To run a proxy server with JournalCache you create a usual proxy configuration file:
