@@ -44,6 +44,7 @@
 #include <memory>
 #include <algorithm>
 #include <iterator>
+#include <mutex>
 
 namespace
 {
@@ -543,7 +544,7 @@ namespace
       XrdCl::ResponseHandler     *handler;
       XrdCl::DirListFlags::Flags  flags;
       XrdCl::FileSystem          *fs;
-      XrdSysMutex                 mtx;
+      std::recursive_mutex        mtx;
   };
 
   //----------------------------------------------------------------------------
@@ -578,7 +579,7 @@ namespace
 
         Log *log = DefaultEnv::GetLog();
         bool finalrsp = !( status->IsOK() && status->code == XrdCl::suContinue );
-        XrdSysMutexHelper scoped( pCtx->mtx );
+        pCtx->mtx.lock();
 
         // check if we have to continue with the same handler (the response
         // has been chunked), if not we can decrement the number of pending
@@ -667,7 +668,7 @@ namespace
           pCtx->finalst = 0; // status is no longer owned by pCtx
 
           // finalize the common context
-          scoped.UnLock();
+          pCtx->mtx.unlock();
           delete pCtx;
         }
         // if the user requested chunked response we give what we have to the user handler
@@ -685,6 +686,7 @@ namespace
         delete status;
         delete response;
         // if we won't be continuing with the same handler, it can be deleted
+        pCtx->mtx.unlock();
         if( finalrsp )
           delete this;
       }

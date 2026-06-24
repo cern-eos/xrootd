@@ -4,10 +4,29 @@ add_executable(xrdcl-unit-tests
   XrdClPoller.cc
   XrdClSocket.cc
   XrdClUtilsTest.cc
+  XrdClJournalCache.cc
+  JournalCacheLayoutStub.cc
+  ../../src/XrdApps/XrdClJournalCachePlugin/cache/Journal.cc
+  ../../src/XrdApps/XrdClJournalCachePlugin/file/CachePath.cc
+  ../../src/XrdApps/XrdClJournalCachePlugin/file/CacheHeaders.cc
+  ../../src/XrdApps/XrdClJournalCachePlugin/file/Digest.cc
+  ../../src/XrdApps/XrdClJournalCachePlugin/system/ListCache.cc
   )
 
 target_link_libraries(xrdcl-unit-tests
-  XrdTestUtils GTest::gtest GTest::gtest_main)
+  XrdTestUtils GTest::gtest GTest::gtest_main OpenSSL::Crypto)
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+  AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.1
+  AND NOT APPLE)
+  target_link_libraries(xrdcl-unit-tests stdc++fs)
+endif()
+
+target_include_directories(xrdcl-unit-tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/XrdApps/XrdClJournalCachePlugin
+)
 
 gtest_discover_tests(xrdcl-unit-tests TEST_PREFIX XrdCl:: 
   PROPERTIES DISCOVERY_TIMEOUT 10)

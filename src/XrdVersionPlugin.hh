@@ -182,6 +182,7 @@
          "libXrdBwm.so",             \
          "libXrdCksCalczcrc32.so",   \
          "libXrdClProxyPlugin.so",   \
+         "libXrdClJournalCachePlugin.so", \
          "libXrdCmsRedirectLocal.so", \
          "libXrdCryptossl.so",       \
          "libXrdHttp.so",            \

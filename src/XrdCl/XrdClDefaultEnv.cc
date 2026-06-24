@@ -311,6 +311,12 @@ namespace XrdCl
     REGISTER_VAR_STR( varsStr, "ClientMonitorParam",      DefaultClientMonitorParam      );
     REGISTER_VAR_STR( varsStr, "NetworkStack",            DefaultNetworkStack            );
     REGISTER_VAR_STR( varsStr, "PlugIn",                  DefaultPlugIn                  );
+    REGISTER_VAR_STR( varsStr, "PlugIn_1",                DefaultPlugIn                  );
+    REGISTER_VAR_STR( varsStr, "PlugIn_2",                DefaultPlugIn                  );
+    REGISTER_VAR_STR( varsStr, "PlugIn_3",                DefaultPlugIn                  );
+    REGISTER_VAR_STR( varsStr, "PlugIn_4",                DefaultPlugIn                  );
+    REGISTER_VAR_STR( varsStr, "PlugIn_5",                DefaultPlugIn                  );
+    REGISTER_VAR_STR( varsStr, "PlugIn_6",                DefaultPlugIn                  );
     REGISTER_VAR_STR( varsStr, "PlugInConfDir",           DefaultPlugInConfDir           );
     REGISTER_VAR_STR( varsStr, "ReadRecovery",            DefaultReadRecovery            );
     REGISTER_VAR_STR( varsStr, "WriteRecovery",           DefaultWriteRecovery           );

@@ -118,6 +118,9 @@ private:
   // The value of the user agent, if specified
   std::string m_user_agent;
 
+  //! Extra response headers set by HTTP ext handlers (GET/HEAD).
+  std::map<std::string, std::string> m_extraResponseHeaders;
+
   // Whether transfer encoding was requested.
   bool m_transfer_encoding_chunked{false};
   long long m_current_chunk_offset;
@@ -257,6 +260,18 @@ public:
   void appendOpaque(XrdOucString &s, XrdSecEntity *secent, char *hash, time_t tnow);
 
   void addCgi(const std::string & key, const std::string & value);
+
+  //! Append a quoted key/value pair directly to resourceplusopaque.
+  void appendOpaqueParam(const std::string &key, const std::string &value);
+
+  //! Store an extra HTTP response header for GET/HEAD (used by ext handlers).
+  void setExtraResponseHeader(const std::string &key, const std::string &value);
+
+  //! Append stored extra response headers into a CRLF-separated block.
+  void appendExtraResponseHeaders(std::string &headers) const;
+
+  //! Return true when an extra response header is already set.
+  bool hasExtraResponseHeader(const std::string &key) const;
 
   // Set the transfer status header, if requested by the client
   void setTransferStatusHeader(std::string &header);

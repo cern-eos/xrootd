@@ -441,6 +441,17 @@ namespace XrdCl
       StatInfo( const std::string &id, uint64_t size, uint32_t flags,
                 uint64_t modTime );
 
+      StatInfo( const std::string &id,
+                uint64_t size,
+                uint32_t flags,
+                uint64_t modTime,
+                uint64_t changeTime,
+                uint64_t accessTime,
+                const std::string &mode,
+                const std::string &owner,
+                const std::string &group,
+                const std::string &checksum );
+
       //------------------------------------------------------------------------
       //! Copy constructor
       //------------------------------------------------------------------------

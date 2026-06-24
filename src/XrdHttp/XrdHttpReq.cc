@@ -825,6 +825,53 @@ void XrdHttpReq::addCgi(const std::string &key, const std::string &value) {
   hdr2cgistr.append(value);
 }
 
+void XrdHttpReq::appendOpaqueParam(const std::string &key,
+                                   const std::string &value) {
+  if (key.empty()) {
+    return;
+  }
+
+  std::string param = key;
+  param.append("=");
+  param.append(value);
+
+  char *quoted = quote(param.c_str());
+  if (!quoted) {
+    return;
+  }
+
+  const char *p = strchr(resourceplusopaque.c_str(), '?');
+  resourceplusopaque.append(p ? "&" : "?");
+  resourceplusopaque.append(quoted);
+  free(quoted);
+}
+
+void XrdHttpReq::setExtraResponseHeader(const std::string &key,
+                                        const std::string &value) {
+  if (key.empty() || value.empty()) {
+    return;
+  }
+  m_extraResponseHeaders[key] = value;
+}
+
+void XrdHttpReq::appendExtraResponseHeaders(std::string &headers) const {
+  for (const auto &entry : m_extraResponseHeaders) {
+    if (entry.second.empty()) {
+      continue;
+    }
+    if (!headers.empty()) {
+      headers += "\r\n";
+    }
+    headers += entry.first;
+    headers += ": ";
+    headers += entry.second;
+  }
+}
+
+bool XrdHttpReq::hasExtraResponseHeader(const std::string &key) const {
+  return m_extraResponseHeaders.find(key) != m_extraResponseHeaders.end();
+}
+
 
 // Parse a resource line:
 // - sanitize
@@ -993,11 +1040,15 @@ int XrdHttpReq::ProcessHTTPReq() {
     if (exthandler) {
       XrdHttpExtReq xreq(this, prot);
       int r = exthandler->ProcessReq(xreq);
-      reset();
-      if (!r) return 1; // All went fine, response sent
-      if (r < 0) return -1; // There was a hard error... close the connection
+      if (r == XrdHttpExtContinueProcessing) {
+        // Handler modified opaque data; continue with default processing.
+      } else {
+        reset();
+        if (!r) return 1; // All went fine, response sent
+        if (r < 0) return -1; // There was a hard error... close the connection
 
-      return 1; // There was an error and a response was sent
+        return 1; // There was an error and a response was sent
+      }
     }
   }
 
@@ -2008,6 +2059,7 @@ XrdHttpReq::ReturnGetHeaders() {
       }
     addAgeHeader(responseHeader);
   }
+  appendExtraResponseHeaders(responseHeader);
 
   const XrdHttpReadRangeHandler::UserRangeList &uranges = readRangeHandler.ListResolvedRanges();
   if (uranges.empty() && readRangeHandler.getError()) {
@@ -2077,6 +2129,7 @@ XrdHttpReq::ReturnGetHeaders() {
     }
     addAgeHeader(header);
   }
+  appendExtraResponseHeaders(header);
 
   if (m_transfer_encoding_chunked && m_trailer_headers) {
     setTransferStatusHeader(header);
@@ -2156,6 +2209,7 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
             response_headers += "\r\n";
 
             response_headers += "Accept-Ranges: bytes";
+            appendExtraResponseHeaders(response_headers);
             prot->SendSimpleResp(200, NULL, response_headers.c_str(), NULL, filesize, keepalive);
             return keepalive ? 1 : -1;
           }
@@ -2178,6 +2232,7 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
             response_headers += "\r\n";
           }
           response_headers += "Accept-Ranges: bytes";
+          appendExtraResponseHeaders(response_headers);
           prot->SendSimpleResp(200, NULL, response_headers.c_str(), NULL, filesize, keepalive);
           return keepalive ? 1 : -1;
         } else {
@@ -2804,6 +2859,7 @@ void XrdHttpReq::reset() {
   m_req_cksum = nullptr;
 
   m_user_agent = "";
+  m_extraResponseHeaders.clear();
   m_origin = "";
 
   httpStatusCode = -1;

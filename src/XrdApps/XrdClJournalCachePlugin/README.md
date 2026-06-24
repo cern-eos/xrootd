@@ -1,0 +1,506 @@
+# 1 JournalCache Client Plugin
+<img width="25%" alt="journalcache" src="https://github.com/user-attachments/assets/738b1efc-038e-4249-97fb-cc660e6cabbc" />
+
+This XRootD Client Plugin provides a client side read cache, which is implemented as a journal.
+
+**HTML documentation:** [html/index.html](html/index.html) — overview, configuration reference, HTTP cache setup, and proxy deployment guide.
+
+**Markdown documentation:** [html/index.md](html/index.md) — same content for GitHub and offline reading.
+
+
+# Plug-in Configuration
+To enable the plugin create a configuration file e.g. in the default machine wide location */etc/xrootd/client.plugin.d/journalcache.conf* or enable in a one-liner using an environment variable:
+
+## Quicksetup via Environment
+```
+mkdir -p /var/tmp/journalcache/
+```
+```
+# as default plug-in
+env XRD_PLUGIN=libXrdClJournalCachePlugin-5.so XRD_JOURNALCACHE_CACHE=/var/tmp/journalcache/ xrdcp root://
+```
+or 
+```
+# as numbered plug-in
+env XRD_PLUGIN_1="lib=libXrdClJournalCachePlugin-5.so,enable=true,url=*,cache=/var/tmp/journalcache/" xrdcp root://... /localpath/... 
+```
+## Config File Format
+
+**journalcache.conf:**
+```bash
+url = *
+lib = /usr/lib64/libXrdClJournalCachePlugin-5.so
+enable = true
+cache = /var/tmp/journalcache/
+journal = true
+crc = false
+summary = true
+stats = 0
+size = 0
+async = 0
+bypass = 0
+flat = false
+basepath =
+system = true
+listttl = 0
+liststat = true
+noapp =
+json =
+
+```
+```cache``` points to a local or shared directory where accessed files are stored. This directory has to exist and the configuration path should be terminated with a '/'. 
+
+> [!TIP]
+> By default JournalCache prints a summary at application exit. If you don't want the summary set ```summary = false```. 
+
+> [!TIP]
+> By default JournalCache does not write a JSON summary.  If you want JSON summaries define a directory where to store summary files ```json = /tmp/```. If you don't want any json summary file use the default or set it to an empty string. The name of the json summary file is ```journalcache.env{"XRD_APPNAME"}:"none".{pid}.json```
+
+> [!TIP]
+> If you want to run the plug-in inside a proxy server, you can set ```stats = 60```. In this case it will print every 60s a summary with the current cache statistics. The default is not to print in intervals the cache statistics - only when the application exits. (```stats = 0```).
+
+> [!TIP]
+> If you want to have the possiblity of detached/asynchronous open operation, then set ```async = 1```. The cache then relies on the filesize and modification times stored in the journal cache. This should only be used for WORM data. The advantage is that there is no need to wait for remote Open operations to finish during the attachment to the cache - if there is already a journal entry for the requested file! So if all read requests are already in the cache, there is not a single possibly slow remote operation in the IO path.
+
+> [!TIP]
+> If you want to benefit from the benchmarking statistics you can switch the plug-to to bypass. In this case statistics is gathered but no file is written to the cache and not data is served from the cache.
+
+> [!TIP]
+> If you want certain apps to not use the cache you can list the names of applications which are automatically enabling bypass e.g. ```noapp = xrdcp``` or ```noapp = xrdcp,eoscp```.
+> This will set the cache automatically to bypass for the comma separeted list of  applications.
+
+> [!TIP]
+> If you store journals on shared or less reliable storage, enable ```crc = true``` (or ```XRD_JOURNALCACHE_CRC=1```). New journal files then store a CRC32c checksum after each cached fragment. Existing legacy journals remain readable; the on-disk format version is recorded in ```jheader.placeholder1```.
+
+> [!TIP]
+> By default JournalCache stores the cache journals using the same namespace hierarchy inside the cache directory as the remote path. If you set ```flat = 1``` it will store all journals in a flat structure under a directory named after the hex SHA256 value of the remote path. This approach creates one directory per cached file under a the JournalCache directory in a flat structure - use with caution!
+
+> [!TIP]
+> If you cache from federated storage with a common base path e.g. /store/ you can define this base path and the cache will remove host and prefixes and names start with basepath e.g. instead of foo.bar:1094/grid/site/store/file it will use /store/file instead. Since in a federation the source might change mtime is not anymore reliable and you should enable the `async` option as well and assume all the cached data is WORM e.g. never modified after publication in the federation.
+
+> [!TIP]
+> The filesystem plug-in caches directory listings and optionally standalone `Stat` results on disk. It is enabled by default (`system = true`). Set `system = false` or `XRD_JOURNALCACHE_SYSTEM=0` to disable it. Listing and stat caches honour `flat`, `basepath`, and `cache` the same way as file journals. Use `listttl = 3600` (seconds) to expire cached listings/stats; `0` keeps entries until invalidated. Cached listings are invalidated automatically on `Rm`, `MkDir`, `RmDir`, `Mv`, `Truncate`, and xattr changes. Recursive, chunked, and ZIP directory listings are never cached. With `bypass = true`, listing/stat caching is also disabled.
+
+> [!TIP]
+> HTTP cache semantics are supported via CGI parameters on file URLs and an optional XrdHttp ext handler. See **[Section 7 — HTTP cache integration](#7-http-cache-integration)** for the full reference (CGI keys, `Cache-Control` behaviour, ext handler setup, and proxy wiring). A browsable copy lives in [html/index.html](html/index.html).
+
+| CGI parameter | Role |
+|---------------|------|
+| `xrd.journalcache.cache-control` | Setter (`Cache-Control` value from origin) |
+| `xrd.journalcache.expires` | Setter (`Expires` value from origin) |
+| `xrd.journalcache.etag` | Getter/setter (`ETag` for validation; future HTTP responses) |
+| `xrd.journalcache.last-modified` | Getter/setter (`Last-Modified`; auto-filled from remote `Stat` when absent) |
+| `xrd.journalcache.if-none-match` | Request validator (`If-None-Match`; mismatch forces refresh) |
+| `xrd.journalcache.if-modified-since` | Request validator (`If-Modified-Since`; mismatch forces refresh) |
+| `xrd.journalcache.async` | Per-file async/detached open (`1` = WORM-style attach without remote open wait) |
+
+Example setter URL: `root://host//path/file?xrd.journalcache.cache-control=s-maxage%3D3600%2Cpublic`
+
+On disk, setter/getter values are stored as journal xattrs (`user.journalcache.*`) plus `user.journalcache.cached-at` (unix seconds when headers were recorded).
+
+> [!NOTE]  
+> The easiest way to verify the plug-in functionning is to run with ```XRD_LOGLEVEL=Info``` since the plug-in will provide
+> some startup information and also print where a file is cached locally once it is attached.
+
+### Overwriting Configuration using Environment Variables
+It is possible to overwrite defaults or settings in the configuration file using the following environment variables or use only these environment variables to configure the plug-in:
+```
+XRD_JOURNALCACHE_SUMMARY=true|false|1|0
+XRD_JOURNALCACHE_JOURNAL=true|false|1|0
+XRD_JOURNALCACHE_CRC=true|false|1|0
+XRD_JOURNALCACHE_CACHE=directory-path-to-cache
+XRD_JOURNALCACHE_JSON=directory-path-for-json|""
+XRD_JOURNALCACHE_SIZE=number-in-bytes
+XRD_JOURNALCACHE_ASYNC=true|false|1|0
+XRD_JOURNALCACHE_BYPASS=true|false|1|0
+XRD_JOURNALCACHE_NOAPP=xrdcp,...
+XRD_JOURNALCACHE_FLAT=true|false|1|0
+XRD_JOURNALCACHE_BASEPATH=/store/
+XRD_JOURNALCACHE_SYSTEM=true|false|1|0
+XRD_JOURNALCACHE_LISTTTL=seconds
+XRD_JOURNALCACHE_LISTSTAT=true|false|1|0
+XRD_APPNAME=application-name-used-in-json-file
+```
+> [!TIP]
+> These are in particular useful, if you want to configure the plug-in using the default mechanism or want to overwrite some default settings in your environment without changing shared configuration files.
+> ```mkdir -p /var/tmp/journalcache/; env XRD_PLUGIN=libXrdClJournalCachePlugin-5.so XRD_JOURNALCACHE_CACHE=/var/tmp/journalcache/ xrdcp ```
+
+# 2 Read Journal Cache
+
+Each URL accessed for reading creates a journal file under one of the following paths:
+By default:
+```
+<config:cache>/<remote-tree-until-filename>/journal
+```
+E.g. */var/tmp/journalcache/data/higgs.root/journal*
+
+If the flat option was selected:
+```
+<config:cache>/<hex::sha256(URL)>/journal
+```
+E.g */var/tmp/journalcache/c04250faea5ae18d9a0024148da4c798852ee6b198848b2abd2ba8293b64af8e/journal*
+
+The format of the journal file starts with the following header structure (in little endian format):
+```
+  struct jheader_t {
+    uint64_t magic;        // 0xcafecafecafecafe
+    uint64_t mtime;        // unix timestamp
+    uint64_t mtime_nsec;   // 0: XRootD does not support finegrained modification times
+    uint64_t filesize;     // bytes
+    uint64_t placeholder1; // journal format version (1=legacy, 2=crc32c trailers)
+    uint64_t placeholder2; // unused
+    uint64_t placeholder3; // unused
+    uint64_t placeholder4; // unused
+  };
+```
+
+Each application read request is then written in an append log style using a chunk header struct:
+```
+  struct header_t {
+    uint64_t offset;
+    uint64_t size;
+  };
+```
+followed by a data blob of ```<size>``` bytes.
+
+When CRC mode is enabled (format version 2), each fragment is followed by a little-endian ```uint32_t``` CRC32c checksum computed over the data blob. Checksums are verified on cache hits; a mismatch is treated as a cache miss.
+
+The advantage of the journal approach is that unlike in a page cache like XCACHE, only requested data is cached! There is no such thing as pagesize or page alignment of requests.
+
+## Listing and Stat Cache
+
+When the filesystem plug-in is enabled, directory listings are stored as:
+
+```
+<config:cache>/<same-path-layout-as-journals>/<dir>/.journalcache_list[.<flags>]
+```
+
+Standalone `Stat` responses are stored beside the cached object as `.journalcache_stat`. New listing files use a versioned header (`# journalcache-list-v2 flags=... created=...`) followed by URL-encoded tab-separated entries. Legacy listing files without a header remain readable for plain `Stat` listings.
+
+When a file is opened for reading and a journal exists, the journal is scanned on startup and stored in a red-black tree structure. If in subsequent readings new pages are requested, the journal is appended accordingly and supports even re-writing and merging of chunks (which is not required for read-only caching).
+
+> [!IMPORTANT]  
+> Requests are served by journal contents only, if they can be fully satisfied. As an example if a read requires more data than available in the journal, the read triggers a full remote read operation.
+
+All **Read**, **PgRead** and **ReadV** requests are stored into the journal in the order they appeared from the first application run. As a result a repeated run of the same application creates perfect sequential IO when reading the journal.
+
+> [!IMPORTANT]
+> When several clients attach to a local journal cache or to a journal stored on a shared filesystem, the first client creates an exclusive lock on the journal. As a result client attaching later to the same journal in use will not get data served from the journal cache. This behaviour can be optimized in the future.
+
+# 3 Cache Hit Rate
+
+When running in INFO logging mode, the plug-in provides some informative messages:
+
+```
+[2024-06-07 15:51:09.121100 +0200][Info   ][App               ] JournalCache : cache directory: /var/tmp/journalcache/
+[2024-06-07 15:51:09.121219 +0200][Info   ][App               ] JournalCache : caching reads in journal cache: true
+[2024-06-07 15:51:09.121220 +0200][Info   ][App               ] JournalCache : journal crc32c checksums: false
+[2024-06-07 15:51:09.163481 +0200][Info   ][App               ] JournalCache : attached to cache directory: /var/tmp/journalcache//c04250faea5ae18d9a0024148da4c798852ee6b198848b2abd2ba8293b64af8e/journal
+[2024-06-07 15:51:09.534252 +0200][Info   ][App               ] JournalCache : read:readv-ops:readv-read-ops: 194:0:0s hit-rate: total [read/readv]=100.00% [100.00%/100.00%] remote-bytes-read/readv: 0 / 0 cached-bytes-read/readv: 1626911438 / 0
+```
+
+```read:readv-ops:readv-read-ops```
+- number of read operations, number of vector read operations, number of read operations contained in vector read operations
+
+```hit-rate total [read/readv]```
+- percentual hit-rate of all read requests, of simple read requests, of vector read requests served from the cache
+
+```remote-bytes-read/readv```
+- bytes read remote for simple read or vector read requests
+
+```cached-bytes-read/readv```
+- bytes read from the cache for simple read or vector read requests
+
+# 4 Application Exit Summary
+
+When an application exits, the globally collected JournalCache statistics for this application is printed. It is summing all individual file IO statistics passing through the plug-in.
+
+```
+# ----------------------------------------------------------- #
+# JournalCache : cache combined hit rate  : 100.00 %
+# JournalCache : cache read     hit rate  : 100.00 %
+# JournalCache : cache readv    hit rate  : 100.00 %
+# ----------------------------------------------------------- #
+# JournalCache : total bytes    read      : 687778082
+# JournalCache : total bytes    readv     : 67595537046
+# ----------------------------------------------------------- #
+# JournalCache : total iops     read      : 5540
+# JournalCache : total iops     readv     : 21588
+# JournalCache : total iops     readvread : 212418
+# ----------------------------------------------------------- #
+# JournalCache : open files     read      : 923
+# JournalCache : open unique f. read      : 796
+# JournalCache : time to open files (s)   : 27.179
+# ----------------------------------------------------------- #
+# JournalCache : total unique files bytes : 1053908070952
+# JournalCache : total unique files size  : 1.05 TB
+# JournalCache : percentage dataset read  : 6.48 %
+# ----------------------------------------------------------- #
+# JournalCache : app user time            : 1930.11 s
+# JournalCache : app real time            : 86.56 s
+# JournalCache : app sys  time            : 54.17 s
+# JournalCache : app acceleration         : 22.30x
+# JournalCache : app readrate             : 788.90 MB/s [ peak 1.91 GB/s ]
+# ----------------------------------------------------------- #
+ 1928.52 MB/s |        *                                
+ 1714.24      |                                         
+ 1499.96      |         *                               
+ 1285.68      |          ***                            
+ 1071.40      |             *  **  **  * *  *  *        
+  857.12      |       *       *  *    *         * *     
+  642.84      |                   *  *  * ** *   *      
+  428.56      |                               *    * * *
+  214.28      |              *                      *   
+    0.00      | ******                                * 
+               ----------------------------------------
+               0   10  20  30  40  50  60  70  80  90  [ 100 % = 86.56s ]
+```
+
+Most of these fields are self explanatory. The field *readvread* are the number of individual read requests which are contained inside all *readv* IO operations. The statistics shows the total number of files opened for read (only!) and the unique files. To distinguish unique files the CGI information and named connections are removed. The percentage of a dataset read is computed by adding all read bytes from *read/pgread* + *readv* normalized to the total filesize of all unique files opened for reading. The application acceleration is simply the ratio of cputime over realtime. The application IO rate is computed from total read bytes over realtime in MB/s.
+
+The ASCII plot shows the IO request rate over time. The total runtime (REAL time) is divided into 40 equal bins and in each bin the data requested is plotted. 
+
+If the plug-in is running in bypass mode, the hitrate section is replaced mentioning the bypass mode.
+
+# 5 JSON Summary File
+
+As mentioned in the configuration section JournalCache writes by default a summary file under the current working directory. The prefix can be changed in the plug-in configuration. If the prefix is empty, the JSON summary is disabled.
+
+# 6 Cache-Cleaning
+
+If you have a long-running application or a proxy server you can define the size of your cache directory by configuration file:
+```
+size = 10000000000
+```
+or via the environment variable XRD_JOURNALCACHE_SIZE=1000000000
+
+The minimum cleaner size is 1GB, otherwise it is ignored. The cleaner thread by default runs every minutes and when the given size is exceeded (high water mark), it cleans the cache directory to 90% starting with the oldest files by access time. Setting the size to 0 disables the cleaning (default behaviour). 
+
+In more complex environments the cleaner can be run as a daemon using a standalone application:
+
+```
+xrdclcacheclean 
+Usage: xrdclcacheclean <directory> <highwatermark> <lowwatermark> <interval> 
+```
+
+# 7 HTTP cache integration
+
+JournalCache can behave as an HTTP-aware read cache when used behind **XrdHttp** or when applications pass cache metadata as CGI parameters on `root://` file URLs.
+
+## 7.1 Components
+
+| Component | Library | Role |
+|-----------|---------|------|
+| File plugin | `libXrdClJournalCachePlugin-5.so` | Parses CGI, stores headers as journal xattrs, applies freshness on attach/read |
+| HTTP ext handler | `libXrdClJournalCacheHttpExt-5.so` | Runs inside XrdHttp before GET/HEAD; injects JournalCache CGI into the backend open URL |
+| XrdHttp core hook | (server build) | `XrdHttpExtContinueProcessing` lets the ext handler modify opaque data and continue normal processing |
+
+Build the HTTP ext handler with `BUILD_HTTP=ON` (and `XRDCL_ONLY=OFF`). Optional libcurl enables origin `HEAD` lookups in the ext handler.
+
+## 7.2 CGI parameters and on-disk xattrs
+
+| CGI key | Journal xattr | HTTP header / role |
+|---------|---------------|-------------------|
+| `xrd.journalcache.cache-control` | `user.journalcache.cache-control` | Setter — `Cache-Control` from origin |
+| `xrd.journalcache.expires` | `user.journalcache.expires` | Setter — `Expires` |
+| `xrd.journalcache.etag` | `user.journalcache.etag` | Getter/setter — `ETag` |
+| `xrd.journalcache.last-modified` | `user.journalcache.last-modified` | Getter/setter — `Last-Modified` |
+| `xrd.journalcache.if-none-match` | *(not stored)* | Validator — client `If-None-Match` |
+| `xrd.journalcache.if-modified-since` | *(not stored)* | Validator — client `If-Modified-Since` |
+| `xrd.journalcache.bypass` | *(not stored)* | Per-file bypass (`1`/`true`/`yes` skips journal for this open) |
+| `xrd.journalcache.clean` | *(not stored)* | Force-delete local journal before attach (`1`/`true`/`yes`) |
+| `xrd.journalcache.async` | *(not stored)* | Per-file async open (`1` = detached/WORM attach) |
+
+All stored headers also record `user.journalcache.cached-at` (unix time when the setter headers were written).
+
+When `ETag` / `Last-Modified` are not supplied via CGI, the file plugin derives them from the remote `Stat` response (checksum and modification time) when available.
+
+## 7.3 Cache-Control and validation behaviour
+
+| Input | Effect on attach / read |
+|-------|-------------------------|
+| `no-store` | Caching disabled for this file (`Open` skips journal attach) |
+| `no-cache` | Cached bytes require a successful remote `Stat` each session before use |
+| `max-age=N` | Journal treated as stale `N` seconds after `cached-at` |
+| `s-maxage=N` | Same as `max-age`, but preferred when both are present (shared-cache semantics) |
+| `Expires: <HTTP-date>` | Journal stale when current time ≥ parsed expiry |
+| `If-None-Match` ≠ stored ETag | Journal purged; data refetched from origin |
+| `If-Modified-Since` ≠ stored Last-Modified | Journal purged; data refetched from origin |
+
+Parsed `Cache-Control` directives: `no-store`, `no-cache`, `private`, `max-age`, `s-maxage`.
+
+## 7.4 XrdHttp server configuration
+
+Map client validation headers into opaque CGI (required for conditional GET through the cache):
+
+```
+xrd.protocol http:/usr/lib64/libXrdHttp.so
+
+http.header2cgi If-None-Match xrd.journalcache.if-none-match
+http.header2cgi If-Modified-Since xrd.journalcache.if-modified-since
+
+http.exthandler journalcache libXrdClJournalCacheHttpExt-5.so \
+  /etc/xrootd/journalcache-http.ext.conf
+```
+
+The ext handler matches **GET** and **HEAD** only. When `cache` is set in the ext config (matching the client plugin `cache=` path), it loads stored getter headers from the on-disk journal, returns **304 Not Modified** when client validators match and the entry is fresh, and emits `ETag`, `Last-Modified`, `Cache-Control`, and `Expires` on **200**/**HEAD** responses. It always returns `XrdHttpExtContinueProcessing` after appending CGI (unless a 304 was sent), so XrdHttp continues with normal file serving.
+
+## 7.5 HTTP ext handler configuration
+
+Example `/etc/xrootd/journalcache-http.ext.conf` (see also `http/journalcache-http.ext.conf` in the plugin tree):
+
+```
+# XRootD URL for reading file xattrs (this server or PSS-visible origin)
+server = root://localhost:1094
+
+# Local journal cache root (must match client plugin cache=); enables 304 and
+# getter header emission from on-disk journal xattrs
+cache = /var/tmp/journalcache/
+
+# Match client plugin layout
+flat = 0
+basepath = /store
+
+# Only inject cache CGI for paths under this prefix
+prefix = /
+
+# Skip static resources served by XrdHttp itself
+exclude = /static/
+
+# Optional HTTP origin for fetching setter headers via HEAD (needs libcurl)
+http_origin = https://origin.example.org
+http_origin_strip = /store
+
+# Optional custom xattr -> CGI mapping (defaults shown)
+# xattr http.cache-control xrd.journalcache.cache-control
+# xattr http.expires xrd.journalcache.expires
+# xattr http.etag xrd.journalcache.etag
+# xattr http.last-modified xrd.journalcache.last-modified
+```
+
+Metadata is collected in this order:
+
+1. Client validation headers present on the HTTP request (`If-None-Match`, `If-Modified-Since`)
+2. File xattrs on the XRootD path (default names: `http.cache-control`, `http.expires`, `http.etag`, `http.last-modified`)
+3. Optional HTTP `HEAD` to `http_origin` + path (libcurl) to capture origin response setter headers
+
+Origin files can publish cache policy with xattrs, for example:
+
+```
+xrdfs setxattr /store/data/file.root http.cache-control 'public, s-maxage=3600'
+xrdfs setxattr /store/data/file.root http.etag '"abc123"'
+xrdfs setxattr /store/data/file.root http.last-modified 'Wed, 21 Oct 2015 07:28:00 GMT'
+```
+
+## 7.6 End-to-end HTTP GET flow
+
+```
+HTTP client → XrdHttp → JournalCache HTTP ext → PSS/XRootD client
+              → JournalCache file plugin → origin (on miss)
+```
+
+1. Client sends `GET /store/file.root` with optional `If-None-Match`.
+2. Ext handler appends JournalCache CGI to the backend open URL.
+3. PSS opens the origin file through the JournalCache client plugin.
+4. On first read, the journal is populated; setter headers are stored as xattrs.
+5. Subsequent GETs within freshness limits are served from the local journal without origin I/O.
+6. When validators match, the HTTP ext handler responds with **304**; otherwise stored getter headers are included on **200**/**HEAD** responses.
+
+Per-file operational CGIs (append to the HTTP URL or XRootD open URL):
+
+```
+/store/file.root?xrd.journalcache.bypass=1
+/store/file.root?xrd.journalcache.clean=1
+```
+
+# 8 JournalCache in a Proxy server
+
+To run a proxy server with JournalCache you create a usual proxy configuration file:
+```
+pss.origin xrootd.cern.ch
+all.export /xrootd/
+ofs.osslib libXrdPss.so
+```
+Before startup you should configure the JournalCache plugin:
+```
+/etc/xrootd/client.plugins.d/journalcache.conf:
+url = root://*
+lib = libXrdClJournalCachePlugin-5.so
+enable = true
+cache = /var/tmp/journalcache/
+stats = 60
+```
+
+When the proxy also terminates HTTP, add validation header forwarding and the HTTP ext handler (see [Section 7](#7-http-cache-integration)):
+
+```
+xrd.protocol http:/usr/lib64/libXrdHttp.so
+http.header2cgi If-None-Match xrd.journalcache.if-none-match
+http.header2cgi If-Modified-Since xrd.journalcache.if-modified-since
+http.exthandler journalcache libXrdClJournalCacheHttpExt-5.so /etc/xrootd/journalcache-http.ext.conf
+```
+
+You have to make sure that the cache directory exists and is owned by the user running your XRootD process.
+
+For interactive testing a quick startup of a server without client plugin configuration would look like this:
+```
+mkdir -p /var/tmp/journalcache/
+chown daemon:daemon /var/tmp/journalcache/
+env XRD_PLUGIN=/usr/lib64/libXrdClJournalCachePlugin-5.so XRD_JOURNALCACHE_CACHE=/var/tmp/journalcache/ xrootd -c journalcache.cf -Rdaemon -p 8443
+```
+
+# 9 To-Do List
+
+## Completed
+
+- ~~Pre-shard cache directory structure not to have all cached files in a flat directory listing~~ (won't do — `flat` option covers alternative layout)
+- ~~Add async response handler to allow fully asynchronous open through the cache~~ (not required; open path is already async-capable)
+- ~~Add cache-cleaning as option to client plug-in~~ :white_check_mark:
+- ~~Add possiblity of detached operation (async) mode~~ :white_check_mark:
+- ~~Report summed time spent in Open operations~~ :white_check_mark:
+- ~~Periodic cache statistics dump for long-running proxy servers (`stats = N`)~~ :white_check_mark:
+- ~~Preserve remote path structure in local cache (default layout)~~ :white_check_mark:
+- ~~Bypass mode for selected application names (`noapp`)~~ :white_check_mark:
+- ~~Filesystem listing and stat cache (`system`, `listttl`, `liststat`)~~ :white_check_mark:
+- ~~Journal CRC32c integrity checks (`crc = true`, format v2)~~ :white_check_mark:
+- ~~HTTP cache header support via CGI + journal xattrs (`Cache-Control`, `Expires`, ETag, validators)~~ :white_check_mark:
+- ~~HTTP ext handler (`libXrdClJournalCacheHttpExt`) with xattr and origin HEAD ingestion~~ :white_check_mark:
+- ~~XrdHttp continue-processing hook for ext handlers (`XrdHttpExtContinueProcessing`)~~ :white_check_mark:
+- ~~HTML documentation (`html/index.html`)~~ :white_check_mark:
+- ~~Rebase / port to XRootD 6.1.0 (`xrootd/master`)~~ :white_check_mark:
+
+## Open
+
+- Add optional dynamic read-ahead with window scaling
+- Make `xrdclcacheclean` a daemon with systemd support
+- Add automatic connection de-multiplexing if contention to storage servers is detected
+- ~~Add a CGI option to force cleaning of journal cache for a given file~~ :white_check_mark:
+- ~~Add a CGI option to bypass journal cache for a given file~~ :white_check_mark:
+- Attaching large files which are not in the buffercache is slow — write a compacted journal index on detach and read it on attach in a single read
+- ~~Emit stored getter headers (`ETag`, `Last-Modified`, `Cache-Control`, `Expires`) in XrdHttp GET/HEAD responses to HTTP clients~~ :white_check_mark:
+- Optimize shared-journal attach when multiple clients use the same journal (exclusive lock today blocks later attachers)
+- Upstream integration: open PR against [xrootd/xrootd](https://github.com/xrootd/xrootd) and package `libXrdClJournalCacheHttpExt` in release builds
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

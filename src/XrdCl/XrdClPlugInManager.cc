@@ -40,6 +40,8 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <array>
+#include <sstream>
 
 XrdVERSIONINFOREF( XrdCl );
 
@@ -243,6 +245,36 @@ namespace XrdCl
       if( !customPlugIns.empty() )
         ProcessConfigDir( customPlugIns );
     }
+
+    //--------------------------------------------------------------------------
+    // Load additional plug-ins from XRD_PLUGIN_1 .. XRD_PLUGIN_5
+    //--------------------------------------------------------------------------
+    const std::array<std::string, 5> pluginEnvs = {"_1", "_2", "_3", "_4", "_5"};
+    for( const auto &penv : pluginEnvs )
+    {
+      std::string pluginenv = "XRD_PLUGIN" + penv;
+      std::string envString;
+      if( !env->GetString( "PlugIn" + penv, envString ) || envString.empty() )
+        continue;
+
+      std::map<std::string, std::string> envMap;
+      std::stringstream ss( envString );
+      std::string item;
+      while( std::getline( ss, item, ',' ) )
+      {
+        std::stringstream itemStream( item );
+        std::string key, value;
+        if( std::getline( itemStream, key, '=' ) &&
+            std::getline( itemStream, value ) )
+        {
+          envMap[key] = value;
+          log->Debug( PlugInMgrMsg,
+                      "Processing plug-in definitions from environment %s->%s...",
+                      key.c_str(), value.c_str() );
+        }
+      }
+      ProcessConfig( envMap, std::string( "env{" ) + pluginenv + "}" );
+    }
   }
 
   //----------------------------------------------------------------------------
@@ -298,13 +330,28 @@ namespace XrdCl
       return;
     }
 
+    ProcessConfig( config, confFile );
+  }
+
+  //----------------------------------------------------------------------------
+  // Process a plug-in config map and load the plug-in if possible
+  //----------------------------------------------------------------------------
+  void PlugInManager::ProcessConfig( std::map<std::string, std::string> &config,
+                                     const std::string &confOrigin )
+  {
+    Log *log = DefaultEnv::GetLog();
+
+    for( const auto &entry : config )
+      log->Dump( PlugInMgrMsg, "'%s'=>'%s'", entry.first.c_str(),
+                 entry.second.c_str() );
+
     const char *keys[] = { "url", "lib", "enable", 0 };
     for( int i = 0; keys[i]; ++i )
     {
       if( config.find( keys[i] ) == config.end() )
       {
         log->Debug( PlugInMgrMsg, "Unable to find '%s' key in the config file "
-                    "%s, ignoring this config", keys[i], confFile.c_str() );
+                    "%s, ignoring this config", keys[i], confOrigin.c_str() );
         return;
       }
     }
@@ -317,7 +364,7 @@ namespace XrdCl
     std::string enable = config["enable"];
 
     log->Dump( PlugInMgrMsg, "Settings from '%s': url='%s', lib='%s', "
-               "enable='%s'", confFile.c_str(), url.c_str(), lib.c_str(),
+               "enable='%s'", confOrigin.c_str(), url.c_str(), lib.c_str(),
                enable.c_str() );
 
     std::pair<XrdOucPinLoader*, PlugInFactory *> pg;
