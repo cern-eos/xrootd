@@ -3,7 +3,10 @@
 #include "XrdHttp/XrdHttpExtHandler.hh"
 #include "XrdSys/XrdSysError.hh"
 #include "file/CacheHeaders.hh"
+#include "file/ExternalRedirect.hh"
 #include "file/OriginAllowlist.hh"
+#include "file/PolicyConfig.hh"
+#include "file/PolicyRuntime.hh"
 
 #include <map>
 #include <string>
@@ -45,7 +48,9 @@ private:
   std::string mHttpOriginStrip;
   bool mForwarding = false;
   bool mFlatHierarchy = false;
-  OriginAllowlist mOriginAllowlist;
+  std::string mPolicyPath;
+  unsigned mPolicyPoll = 2;
+  PolicySettings mBootstrapPolicy;
   std::vector<std::pair<std::string, std::string>> mXAttrMappings;
 };
 

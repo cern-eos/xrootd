@@ -28,9 +28,12 @@
 #include "file/Hierarchy.hh"
 #include "file/CachePath.hh"
 #include "file/OriginAllowlist.hh"
+#include "file/ExternalRedirect.hh"
+#include "file/PolicyRuntime.hh"
 #include "http/ForwardingUrl.hh"
 /*----------------------------------------------------------------------------*/
 #include "XrdCl/XrdClMessageUtils.hh"
+#include "XrdCl/XrdClStatus.hh"
 #include <ctime>
 #include <filesystem>
 /*----------------------------------------------------------------------------*/
@@ -47,6 +50,7 @@ bool XrdCl::JournalCacheFile::sFlatHierarchy = false;
 bool XrdCl::JournalCacheFile::sThreadConnectionDemultiplexing = false;
 bool XrdCl::JournalCacheFile::sMultiOriginUnwrap = false;
 JournalCache::OriginAllowlist XrdCl::JournalCacheFile::sOriginAllowlist;
+JournalCache::ExternalRedirect XrdCl::JournalCacheFile::sExternalRedirect;
 
 JournalCache::CacheStats XrdCl::JournalCacheFile::sStats(true);
 JournalCache::Cleaner XrdCl::JournalCacheFile::sCleaner;
@@ -92,6 +96,43 @@ JournalCacheFile::~JournalCacheFile() {
   }
 }
 
+std::string JournalCacheFile::ResolveExternalRedirect(const XrdCl::URL &url) {
+  const std::string redirectBase =
+      activePolicySettings().externalRedirect.resolve(url.GetPath());
+  if (redirectBase.empty()) {
+    return {};
+  }
+
+  XrdCl::URL target;
+  if (!target.FromString(redirectBase)) {
+    return redirectBase;
+  }
+
+  XrdCl::URL::ParamsMap params = target.GetParams();
+  for (const auto &entry : url.GetParams()) {
+    params[entry.first] = entry.second;
+  }
+  target.SetParams(params);
+  return target.GetURL();
+}
+
+JournalCache::PolicySettings JournalCacheFile::activePolicySettings() {
+  const auto &runtime = JournalCache::PolicyRuntime::instance();
+  if (!runtime.policyPath().empty()) {
+    return runtime.snapshot();
+  }
+  JournalCache::PolicySettings settings;
+  settings.bypass = sEnableBypass;
+  settings.multiOriginUnwrap = sMultiOriginUnwrap;
+  settings.originAllowlist = sOriginAllowlist;
+  settings.externalRedirect = sExternalRedirect;
+  return settings;
+}
+
+bool JournalCacheFile::policyBypass() {
+  return activePolicySettings().bypass;
+}
+
 //------------------------------------------------------------------------------
 // Open
 //------------------------------------------------------------------------------
@@ -110,16 +151,24 @@ XRootDStatus JournalCacheFile::Open(const std::string &url, OpenFlags::Flags fla
   pFile = new XrdCl::File(false);
 
   XrdCl::URL origUrl(url);
+  const std::string externalRedirect = ResolveExternalRedirect(origUrl);
+  if (!externalRedirect.empty()) {
+    mLog->Info(1, "JournalCache : external redirect for %s to %s",
+               origUrl.GetPath().c_str(), externalRedirect.c_str());
+    return XRootDStatus(stError, errRedirect, 0, externalRedirect);
+  }
+
   std::string fetchUrl = url;
+  const JournalCache::PolicySettings policy = activePolicySettings();
   const JournalCache::EmbeddedFileUrl chained =
       JournalCache::parseChainedFileUrl(url);
   if (chained.valid) {
-    if (!sOriginAllowlist.isAllowed(chained.fileUrl)) {
+    if (!policy.originAllowlist.isAllowed(chained.fileUrl)) {
       mLog->Error(1, "JournalCache : upstream origin not allowed: %s",
                   chained.fileUrl.c_str());
       return XRootDStatus(stError, errInvalidArgs);
     }
-    if (sMultiOriginUnwrap) {
+    if (policy.multiOriginUnwrap) {
       XrdCl::URL inner(chained.fileUrl);
       XrdCl::URL::ParamsMap params = inner.GetParams();
       for (const auto &entry : origUrl.GetParams()) {

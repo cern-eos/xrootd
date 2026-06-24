@@ -14,6 +14,7 @@ public:
   void addPatternsFromCsv(const std::string &csv);
 
   bool empty() const { return mPatterns.empty(); }
+  const std::vector<std::string> &patterns() const { return mPatterns; }
   bool isAllowed(const std::string &fileUrl) const;
 
 private:

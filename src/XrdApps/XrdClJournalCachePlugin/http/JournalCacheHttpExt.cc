@@ -1,5 +1,7 @@
 #include "http/JournalCacheHttpExt.hh"
 #include "file/CacheHeaders.hh"
+#include "file/PolicyConfig.hh"
+#include "file/PolicyRuntime.hh"
 #include "http/ForwardingUrl.hh"
 #include "http/HttpHeaderMap.hh"
 
@@ -11,6 +13,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -182,7 +185,17 @@ bool JournalCacheHttpExtHandler::loadConfig(const char *cfgfile) {
     } else if (key == "forwarding") {
       mForwarding = parseBool(value);
     } else if (key == "allow_origin") {
-      mOriginAllowlist.addPattern(value);
+      mBootstrapPolicy.originAllowlist.addPattern(value);
+    } else if (key == "external_redirect") {
+      mBootstrapPolicy.externalRedirect.addRuleFromSpec(value);
+    } else if (key == "policy") {
+      mPolicyPath = value;
+    } else if (key == "policy_poll") {
+      mPolicyPoll = static_cast<unsigned>(std::stoul(value));
+    } else if (key == "bypass") {
+      mBootstrapPolicy.bypass = parseBool(value);
+    } else if (key == "multi_origin") {
+      mBootstrapPolicy.multiOriginUnwrap = parseBool(value);
     } else if (key == "http_origin") {
       mHttpOrigin = value;
       if (!mHttpOrigin.empty() && mHttpOrigin.back() == '/') {
@@ -225,6 +238,24 @@ int JournalCacheHttpExtHandler::Init(const char *cfgfile) {
   }
   if (!mForwarding && !mHttpOrigin.empty()) {
     mLog->Say("Config http_origin=", mHttpOrigin.c_str());
+  }
+
+  if (mPolicyPath.empty()) {
+    mPolicyPath = defaultPolicyPath(mCacheRoot);
+  }
+  if (const char *v = getenv("XRD_JOURNALCACHE_POLICY")) {
+    mPolicyPath = v;
+  }
+  if (const char *v = getenv("XRD_JOURNALCACHE_POLICY_POLL")) {
+    mPolicyPoll = static_cast<unsigned>(std::stoul(v));
+  }
+
+  PolicyRuntime::instance().configure(mPolicyPath, mBootstrapPolicy);
+  PolicyRuntime::instance().startWatcher(mPolicyPoll);
+
+  if (!mPolicyPath.empty()) {
+    mLog->Say("Config runtime policy=", mPolicyPath.c_str(),
+              " poll=", std::to_string(mPolicyPoll).c_str());
   }
   return 0;
 }
@@ -406,9 +437,22 @@ JournalCacheHttpExtHandler::collectCgiParams(
 }
 
 int JournalCacheHttpExtHandler::ProcessReq(XrdHttpExtReq &req) {
-  const std::string path = stripQuery(req.resource);
+  const auto policy = PolicyRuntime::instance().snapshot();
+  const std::string &resource = req.resource;
+  const std::string path = stripQuery(resource);
+  const std::string querySuffix =
+      resource.size() > path.size() ? resource.substr(path.size()) : "";
+
+  const std::string externalRedirect =
+      policy.externalRedirect.resolve(path, querySuffix);
+  if (!externalRedirect.empty()) {
+    const std::string location = "Location: " + externalRedirect;
+    mLog->Say("JournalCache HTTP external redirect to ", externalRedirect.c_str());
+    return req.SendSimpleResp(302, nullptr, location.c_str(), nullptr, 0);
+  }
+
   const EmbeddedFileUrl target = parseChainedFileUrl(path);
-  if (target.valid && !mOriginAllowlist.isAllowed(target.fileUrl)) {
+  if (target.valid && !policy.originAllowlist.isAllowed(target.fileUrl)) {
     mLog->Emsg("JournalCacheHttpExt", "upstream origin not allowed:",
                target.fileUrl.c_str());
     return req.SendSimpleResp(403, nullptr, nullptr,
