@@ -52,7 +52,7 @@
 /*----------------------------------------------------------------------------*/
 
 namespace JournalCache {
-class CacheStats;
+struct CacheStats;
 }
 
 namespace XrdCl {
