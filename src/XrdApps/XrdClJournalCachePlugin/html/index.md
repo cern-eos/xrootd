@@ -4,7 +4,7 @@ Client-side read cache for XRootD. Files are cached as append-only journals on l
 
 See also the [plugin README](../README.md) for journal format details, statistics, and the full to-do list.
 
-**Table of contents:** [Overview](#overview) · [Components](#components) · [Configuration](#configuration) · [Journal layout](#journal-on-disk-layout) · [Filesystem cache](#filesystem-cache) · [HTTP cache](#http-cache-integration) · [Proxy setup](#proxy-and-http-front-end-setup) · [Cleaning](#cache-cleaning) · [Statistics](#statistics-and-monitoring) · [Serving docs](#serving-this-documentation)
+**Table of contents:** [Overview](#overview) · [Components](#components) · [Configuration](#configuration) · [Journal layout](#journal-on-disk-layout) · [Filesystem cache](#filesystem-cache) · [HTTP cache](#http-cache-integration) · [Runtime policy (`xjc`)](#runtime-policy-and-xjc) · [`xjcd` bootstrap](#xjcd--forwarding-proxy-bootstrap) · [Proxy setup](#proxy-and-http-front-end-setup) · [Cleaning](#cache-cleaning) · [Statistics](#statistics-and-monitoring) · [Serving docs](#serving-this-documentation)
 
 ---
 
@@ -356,6 +356,84 @@ Environment override: `XRD_JOURNALCACHE_EXTERNAL_REDIRECT`.
 external_redirect = /live/ https://stream.example.org/live/
 external_redirect = /store/raw/ root://data.cern.ch:1094//store/raw/
 ```
+
+---
+
+## Runtime policy and `xjc`
+
+Hot-reloadable policy knobs live in a runtime file (default: `$cache/.xjc/policy.conf`):
+
+```ini
+bypass = 0
+multi_origin = 1
+allow_origin = ^root://([a-z0-9.-]+\.)?cern\.ch(:1094)?/
+external_redirect = /live/ https://stream.example.org/live/
+```
+
+| Key | Meaning |
+|-----|---------|
+| `policy = /path/to/policy.conf` | Override runtime policy path (plugin + HTTP ext) |
+| `policy_poll = 2` | Mtime poll interval in seconds (`0` disables watch) |
+
+Environment: `XRD_JOURNALCACHE_POLICY`, `XRD_JOURNALCACHE_POLICY_POLL`.
+
+Both the file plugin and HTTP ext watch the policy file and reload when its mtime changes. Edit with **`xjc`**:
+
+```bash
+xjc --policy /var/tmp/journalcache/.xjc/policy.conf show
+xjc bypass off
+xjc allow-origin add '^https://.*\.example\.org/'
+xjc redirect add /live/ https://stream.example.org/live/
+```
+
+See **xjc(1)** for the full command reference.
+
+---
+
+## `xjcd` — forwarding proxy bootstrap
+
+**`xjcd`** writes the static XRootD + JournalCache layout under `$journal/.xjc/` and leaves process startup to **systemd** (no `xjcd run`).
+
+| Path | Purpose |
+|------|---------|
+| `$journal/.xjc/state.conf` | Bootstrap parameters (ports, TLS paths, lib dir) |
+| `$journal/.xjc/policy.conf` | Runtime policy — edit with **`xjc`** |
+| `$journal/.xjc/etc/xrootd.cf` | Generated XRootD config |
+| `$journal/.xjc/etc/journalcache-http.ext.conf` | HTTP ext (forwarding mode) |
+| `$journal/.xjc/etc/client.plugins.d/journalcache.conf` | Client plugins for the xrootd/PSS process |
+| `$journal/.xjc/etc/xjcd.env` | `EnvironmentFile` snippet for systemd |
+| `$journal/.xjc/etc/xjcd.service` | Generated systemd unit |
+
+Initial policy is **open** (no `allow_origin` lines) until you add rules with **`xjc`**. TLS certificate and key paths are **required** at init time.
+
+```bash
+sudo xjcd init --journal /var/tmp/journalcache \
+  --xroot-port 1094 --https-port 8443 \
+  --tls-cert /etc/xrootd/tls.crt --tls-key /etc/xrootd/tls.key \
+  --install-systemd
+```
+
+With **`--install-systemd`**, init copies `$journal/.xjc/etc/xjcd.service` into `/etc/systemd/system/`, runs `systemctl daemon-reload`, and `systemctl enable --now xjcd.service` (requires root). Use **`--systemd-unit NAME`** for a non-default unit name when running multiple journals on one host.
+
+Manual install (without the flag):
+
+```bash
+xjcd init --journal /var/tmp/journalcache \
+  --xroot-port 1094 --https-port 8443 \
+  --tls-cert /etc/xrootd/tls.crt --tls-key /etc/xrootd/tls.key
+
+xjcd show --journal /var/tmp/journalcache
+xjcd validate --journal /var/tmp/journalcache
+xjcd render --journal /var/tmp/journalcache   # after editing state.conf
+
+sudo install -m 0644 /var/tmp/journalcache/.xjc/etc/xjcd.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now xjcd.service
+```
+
+Re-run **`xjcd render`** after changing `state.conf`, then `systemctl restart xjcd.service`.
+
+See **xjcd(1)** for the full command reference.
 
 ---
 

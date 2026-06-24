@@ -1,0 +1,159 @@
+.TH xjcd 1 "@XRootD_VERSION_STRING@"
+.SH NAME
+xjcd \- bootstrap JournalCache forwarding proxy configuration for systemd
+.SH SYNOPSIS
+.nf
+\fBxjcd\fR [\fB--journal\fR \fIPATH\fR] \fIcommand\fR [\fIargs\fR...]
+
+\fBxjcd\fR \fBinit\fR [\fB--journal\fR \fIPATH\fR]
+    \fB--xroot-port\fR \fIN\fR \fB--https-port\fR \fIN\fR
+    \fB--tls-cert\fR \fIPATH\fR \fB--tls-key\fR \fIPATH\fR
+    [\fB--install-systemd\fR] [\fB--systemd-unit\fR \fINAME\fR]
+    [\fB--lib-dir\fR \fIPATH\fR] [\fB--plugin-suffix\fR \fIN\fR]
+
+\fBxjcd\fR \fBrender\fR
+
+\fBxjcd\fR \fBshow\fR
+
+\fBxjcd\fR \fBvalidate\fR
+.fi
+.SH DESCRIPTION
+The \fBxjcd\fR utility prepares a JournalCache HTTP forwarding proxy deployment.
+It writes bootstrap state, XRootD configuration, client plugin snippets, a
+systemd \fBEnvironmentFile\fR, and a systemd unit under \fI$journal/.xjc/\fR.
+Process startup is left to \fBsystemd\fR; there is no \fBxjcd run\fR command.
+
+Runtime policy (allowlist, redirects, bypass) is stored in
+\fI$journal/.xjc/policy.conf\fR and should be edited with \fBxjc\fR(1). That
+file is hot-reloaded by running xrootd processes when its mtime changes.
+
+Initial policy is \fIopen\fR: no \fBallow_origin\fR lines are written until
+rules are added with \fBxjc\fR.
+.SH OPTIONS
+.TP
+.B \-\-journal PATH
+Journal cache root directory. May also be set via
+.BR XRD_JOURNALCACHE_CACHE .
+.TP
+.B \-\-help
+Print usage and exit.
+.SH COMMANDS
+.TP
+.B init
+Create \fI$journal/.xjc/state.conf\fR, render configuration files, and seed
+\fI$journal/.xjc/policy.conf\fR if missing. TLS certificate and key paths are
+required.
+.RS 7
+Init options:
+.TP
+.B \-\-xroot-port N
+TCP port for the native XRootD protocol.
+.TP
+.B \-\-https-port N
+TLS port for HTTP/HTTPS (XrdHttp).
+.TP
+.B \-\-tls-cert PATH
+Path to the TLS certificate (written into \fBhttp.cert\fR in \fBxrootd.cf\fR).
+.TP
+.B \-\-tls-key PATH
+Path to the TLS private key (written into \fBhttp.key\fR in \fBxrootd.cf\fR).
+.TP
+.B \-\-install-systemd
+After rendering, install \fI$journal/.xjc/etc/xjcd.service\fR into
+\fI/etc/systemd/system/\fR, run \fBsystemctl daemon-reload\fR, and
+\fBsystemctl enable \-\-now\fR the unit. Requires root (typically \fBsudo\fR).
+.TP
+.B \-\-systemd-unit NAME
+Systemd unit file name to install (default: \fBxjcd.service\fR). Use a distinct
+name when multiple journals run on one host (for example
+\fBjournalcache-foo.service\fR).
+.TP
+.B \-\-lib-dir PATH
+Directory containing XRootD plugin shared objects (default: \fI/usr/lib64\fR or
+\fI/usr/local/lib\fR on macOS).
+.TP
+.B \-\-plugin-suffix N
+Plugin version suffix in library names (default: \fB5\fR).
+.RE
+.TP
+.B render
+Regenerate all files under \fI$journal/.xjc/etc/\fR from
+\fI$journal/.xjc/state.conf\fR. Run after editing bootstrap parameters, then
+restart the systemd service.
+.TP
+.B show
+Print bootstrap paths, generated config locations, and systemd install hints.
+.TP
+.B validate
+Check journal writability, TLS file presence, and plugin library paths.
+.SH GENERATED LAYOUT
+.TP
+.B $journal/.xjc/state.conf
+Persistent bootstrap parameters written by \fBinit\fR.
+.TP
+.B $journal/.xjc/policy.conf
+Hot-reloadable runtime policy; edit with \fBxjc\fR(1).
+.TP
+.B $journal/.xjc/etc/xrootd.cf
+XRootD server configuration for the forwarding proxy.
+.TP
+.B $journal/.xjc/etc/journalcache-http.ext.conf
+JournalCache HTTP ext handler configuration (\fBforwarding = 1\fR).
+.TP
+.B $journal/.xjc/etc/client.plugins.d/journalcache.conf
+Client plugins loaded by the xrootd/PSS process.
+.TP
+.B $journal/.xjc/etc/xjcd.env
+Environment variables for \fBEnvironmentFile=\fR in systemd.
+.TP
+.B $journal/.xjc/etc/xjcd.service
+Generated systemd unit referencing the paths above.
+.SH EXAMPLES
+Initialize a journal and install the systemd unit:
+.nf
+sudo xjcd init \-\-journal /var/tmp/journalcache \\
+  \-\-xroot-port 1094 \-\-https-port 8443 \\
+  \-\-tls-cert /etc/xrootd/tls.crt \-\-tls-key /etc/xrootd/tls.key \\
+  \-\-install-systemd
+.fi
+Initialize without installing the unit:
+.nf
+xjcd init \-\-journal /var/tmp/journalcache \\
+  \-\-xroot-port 1094 \-\-https-port 8443 \\
+  \-\-tls-cert /etc/xrootd/tls.crt \-\-tls-key /etc/xrootd/tls.key
+.fi
+Manual systemd install:
+.nf
+sudo install \-m 0644 /var/tmp/journalcache/.xjc/etc/xjcd.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable \-\-now xjcd.service
+.fi
+Re-render after editing \fIstate.conf\fR:
+.nf
+xjcd render \-\-journal /var/tmp/journalcache
+sudo systemctl restart xjcd.service
+.fi
+.SH ENVIRONMENT
+.TP
+.B XRD_JOURNALCACHE_CACHE
+Default journal root when \fB\-\-journal\fR is omitted.
+.SH FILES
+.TP
+.I $journal/.xjc/state.conf
+Bootstrap state.
+.TP
+.I $journal/.xjc/policy.conf
+Runtime policy file.
+.TP
+.I $journal/.xjc/etc/
+Generated configuration directory.
+.TP
+.I /etc/systemd/system/xjcd.service
+Default install target for \fB\-\-install-systemd\fR.
+.SH SEE ALSO
+.BR xjc (1),
+.BR xrootd (8),
+.BR xrdfs (1)
+
+Documentation: JournalCache plugin README and \fIhtml/index.html\fR under
+\fIXrdClJournalCachePlugin\fR.

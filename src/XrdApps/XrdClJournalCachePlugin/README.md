@@ -609,6 +609,8 @@ sudo systemctl enable --now xjcd.service
 
 Re-run `xjcd render` after changing `state.conf`, then `systemctl restart xjcd.service`.
 
+See **xjcd(1)** for the full command reference.
+
 # 8 JournalCache in a Proxy server
 
 To run a proxy server with JournalCache you create a usual proxy configuration file:
