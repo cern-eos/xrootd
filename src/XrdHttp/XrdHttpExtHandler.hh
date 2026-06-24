@@ -44,9 +44,14 @@ class XrdSecEntity;
 class XrdHttpReq;
 class XrdHttpProtocol;
 
+//! Return value for XrdHttpExtHandler::ProcessReq when the handler modified
+//! the request opaque data and default HTTP processing should continue.
+static constexpr int XrdHttpExtContinueProcessing = 2;
+
 // This class summarizes the content of a request, for consumption by an external plugin
 class XrdHttpExtReq {
 private:
+  XrdHttpReq *req;
   XrdHttpProtocol *prot;
   
 public:
@@ -93,6 +98,12 @@ public:
   /// Send a (potentially partial) body in a chunked response; invoking with NULL body
   //  indicates that this is the last chunk in the response.
   int ChunkResp(const char *body, long long bodylen);
+
+  /// Append a key/value pair to the request opaque data used for backend opens.
+  void AppendOpaque(const std::string &key, const std::string &value);
+
+  /// Store a response header to emit on GET/HEAD completion.
+  void SetResponseHeader(const std::string &key, const std::string &value);
 };
 
 
@@ -107,8 +118,10 @@ public:
   virtual bool MatchesPath(const char *verb, const char *path) = 0;
   
   /// Process an HTTP request and send the response using the calling
-  ///  XrdHttpProtocol instance directly
-  /// Returns 0 if ok, non0 if errors
+  ///  XrdHttpProtocol instance directly.
+  /// Returns 0 if the response was sent, XrdHttpExtContinueProcessing if the
+  /// request was modified and default processing should continue, 1 if an
+  /// error response was sent, or a negative value on hard failure.
   virtual int ProcessReq(XrdHttpExtReq &) = 0;
   
   /// Initializes the external request handler

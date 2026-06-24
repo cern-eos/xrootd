@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JournalCache — XRootD client read cache</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --surface: #ffffff;
+      --text: #1b2430;
+      --muted: #5b6775;
+      --accent: #0b5fff;
+      --accent-soft: #e8f0ff;
+      --border: #d8dee6;
+      --code-bg: #0f1720;
+      --code-text: #e6edf3;
+      --tip-bg: #eefbf3;
+      --tip-border: #8fd4a8;
+      --warn-bg: #fff8e6;
+      --warn-border: #e6c200;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      line-height: 1.6;
+      color: var(--text);
+      background: var(--bg);
+    }
+
+    a { color: var(--accent); }
+
+    header {
+      background: linear-gradient(135deg, #0b2a5b 0%, #0b5fff 100%);
+      color: #fff;
+      padding: 2.5rem 1.5rem 2rem;
+    }
+
+    header h1 {
+      margin: 0 0 0.5rem;
+      font-size: 2rem;
+      font-weight: 700;
+    }
+
+    header p {
+      margin: 0;
+      max-width: 52rem;
+      opacity: 0.92;
+      font-size: 1.05rem;
+    }
+
+    .wrap {
+      max-width: 56rem;
+      margin: 0 auto;
+      padding: 0 1.25rem 4rem;
+    }
+
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: rgba(246, 248, 251, 0.95);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--border);
+      margin: 0 -1.25rem 2rem;
+      padding: 0.75rem 1.25rem;
+    }
+
+    nav ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem 1rem;
+      font-size: 0.92rem;
+    }
+
+    nav a {
+      text-decoration: none;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    nav a:hover { color: var(--accent); }
+
+    section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem 1.75rem;
+      margin-bottom: 1.25rem;
+    }
+
+    h2 {
+      margin-top: 0;
+      font-size: 1.45rem;
+      border-bottom: 2px solid var(--accent-soft);
+      padding-bottom: 0.35rem;
+    }
+
+    h3 {
+      font-size: 1.1rem;
+      margin-top: 1.5rem;
+    }
+
+    p, li { color: var(--text); }
+
+    .muted { color: var(--muted); }
+
+    .lead { font-size: 1.05rem; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.1rem;
+      background: #fbfcfe;
+    }
+
+    .card strong { display: block; margin-bottom: 0.35rem; }
+
+    pre, code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.88rem;
+    }
+
+    pre {
+      background: var(--code-bg);
+      color: var(--code-text);
+      padding: 1rem 1.1rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      line-height: 1.45;
+    }
+
+    code {
+      background: #eef2f7;
+      padding: 0.1rem 0.35rem;
+      border-radius: 4px;
+    }
+
+    pre code {
+      background: transparent;
+      padding: 0;
+      color: inherit;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1rem 0;
+      font-size: 0.92rem;
+    }
+
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.55rem 0.65rem;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--accent-soft);
+      font-weight: 600;
+    }
+
+    .tip, .warn {
+      border-radius: 8px;
+      padding: 0.85rem 1rem;
+      margin: 1rem 0;
+    }
+
+    .tip {
+      background: var(--tip-bg);
+      border-left: 4px solid var(--tip-border);
+    }
+
+    .warn {
+      background: var(--warn-bg);
+      border-left: 4px solid var(--warn-border);
+    }
+
+    .flow {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+      margin: 1rem 0;
+      font-size: 0.92rem;
+    }
+
+    .flow span {
+      background: var(--accent-soft);
+      border: 1px solid #c5d9ff;
+      border-radius: 999px;
+      padding: 0.35rem 0.75rem;
+      white-space: nowrap;
+    }
+
+    .flow .arrow { background: none; border: none; color: var(--muted); padding: 0; }
+
+    footer {
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.85rem;
+      padding: 2rem 0 1rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <h1>JournalCache</h1>
+      <p>Client-side read cache for XRootD. Files are cached as append-only journals on local disk, with optional directory/stat caching and HTTP freshness semantics for proxy deployments.</p>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <nav aria-label="Table of contents">
+      <ul>
+        <li><a href="#overview">Overview</a></li>
+        <li><a href="#components">Components</a></li>
+        <li><a href="#configuration">Configuration</a></li>
+        <li><a href="#journal">Journal layout</a></li>
+        <li><a href="#filesystem">Filesystem cache</a></li>
+        <li><a href="#http">HTTP cache</a></li>
+        <li><a href="#proxy">Proxy setup</a></li>
+        <li><a href="#cleaning">Cleaning</a></li>
+        <li><a href="#stats">Statistics</a></li>
+        <li><a href="#serving">Serving this page</a></li>
+      </ul>
+    </nav>
+
+    <section id="overview">
+      <h2>Overview</h2>
+      <p class="lead">JournalCache is an XRootD <strong>client plugin</strong> that intercepts read I/O and stores only the byte ranges your application actually requests. Unlike a fixed page cache, there is no page size and no read amplification beyond what the workload asks for.</p>
+
+      <div class="grid">
+        <div class="card">
+          <strong>Read, PgRead, VectorRead</strong>
+          Cached on miss; served from the local journal on hit when the full request is covered.
+        </div>
+        <div class="card">
+          <strong>Per-file journals</strong>
+          Each remote file gets a <code>journal</code> file under the configured cache directory.
+        </div>
+        <div class="card">
+          <strong>DirList &amp; Stat</strong>
+          Optional filesystem plugin caches listings and standalone stat responses.
+        </div>
+        <div class="card">
+          <strong>HTTP semantics</strong>
+          Cache-Control, Expires, ETag, and validators steer invalidation when used behind XrdHttp.
+        </div>
+      </div>
+
+      <div class="tip">
+        Run with <code>XRD_LOGLEVEL=Info</code> to see cache directory setup, journal attach paths, and per-file hit rates in the log.
+      </div>
+    </section>
+
+    <section id="components">
+      <h2>Components</h2>
+
+      <h3>1. File plugin (<code>libXrdClJournalCachePlugin</code>)</h3>
+      <p>Loaded by the XRootD client (xrdcp, root, applications using XrdCl, and the PSS client inside a proxy). Handles open/read for individual files and maintains journals.</p>
+
+      <h3>2. Filesystem plugin (same library, <code>system = true</code>)</h3>
+      <p>Caches <code>DirList</code> and optional <code>Stat</code> results on disk. Invalidates on namespace mutations (rm, mkdir, mv, truncate, xattr changes).</p>
+
+      <h3>3. HTTP ext handler (<code>libXrdClJournalCacheHttpExt</code>)</h3>
+      <p>Optional. Runs inside XrdHttp before GET/HEAD processing. Injects JournalCache CGI parameters into the backend open URL from client validators, file xattrs, and/or an HTTP origin HEAD request.</p>
+
+      <h3>Data flow as an HTTP cache</h3>
+      <div class="flow">
+        <span>HTTP client</span>
+        <span class="arrow">→</span>
+        <span>XrdHttp</span>
+        <span class="arrow">→</span>
+        <span>JournalCache HTTP ext</span>
+        <span class="arrow">→</span>
+        <span>PSS / XRootD client</span>
+        <span class="arrow">→</span>
+        <span>JournalCache file plugin</span>
+        <span class="arrow">→</span>
+        <span>Origin</span>
+      </div>
+      <p class="muted">On a cache hit, reads are satisfied from the local journal without contacting the origin. Freshness rules (max-age, no-cache, ETag mismatch, etc.) decide whether the journal is reused or purged first.</p>
+    </section>
+
+    <section id="configuration">
+      <h2>Configuration</h2>
+
+      <h3>Client plugin file</h3>
+      <p>Typical location: <code>/etc/xrootd/client.plugin.d/journalcache.conf</code></p>
+      <pre><code>url = *
+lib = /usr/lib64/libXrdClJournalCachePlugin-5.so
+enable = true
+cache = /var/tmp/journalcache/
+journal = true
+crc = false
+summary = true
+stats = 0
+size = 0
+async = 0
+bypass = 0
+flat = false
+basepath =
+system = true
+listttl = 0
+liststat = true
+noapp =
+json =</code></pre>
+
+      <table>
+        <thead>
+          <tr><th>Key</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>cache</code></td><td>Local cache root directory (must exist; trailing <code>/</code> recommended).</td></tr>
+          <tr><td><code>journal</code></td><td>Enable file journal caching (default on).</td></tr>
+          <tr><td><code>crc</code></td><td>CRC32c checksum per journal fragment (format v2).</td></tr>
+          <tr><td><code>async</code></td><td>Detached open using journal mtime/size only — for WORM data.</td></tr>
+          <tr><td><code>bypass</code></td><td>Collect statistics but do not read from or write to cache.</td></tr>
+          <tr><td><code>flat</code></td><td>SHA-256 URL hash layout instead of mirroring remote paths.</td></tr>
+          <tr><td><code>basepath</code></td><td>Strip federation prefix (e.g. <code>/store/</code>) from cache keys.</td></tr>
+          <tr><td><code>system</code></td><td>Enable filesystem listing/stat cache plugin.</td></tr>
+          <tr><td><code>listttl</code></td><td>Listing/stat TTL in seconds (<code>0</code> = no time expiry).</td></tr>
+          <tr><td><code>liststat</code></td><td>Cache standalone stat responses.</td></tr>
+          <tr><td><code>size</code></td><td>Cache high-water mark for built-in cleaner (bytes, min 1 GB).</td></tr>
+          <tr><td><code>stats</code></td><td>Periodic stats interval in seconds (<code>0</code> = exit summary only).</td></tr>
+          <tr><td><code>noapp</code></td><td>Comma-separated app names forced into bypass mode.</td></tr>
+          <tr><td><code>json</code></td><td>Directory for JSON summary files (empty disables).</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Quick start with environment variables</h3>
+      <pre><code>mkdir -p /var/tmp/journalcache/
+
+# Default plugin for one command
+env XRD_PLUGIN=libXrdClJournalCachePlugin-5.so \
+    XRD_JOURNALCACHE_CACHE=/var/tmp/journalcache/ \
+    xrdcp root://host//path/file.root /tmp/
+
+# Numbered plugin entry
+env XRD_PLUGIN_1="lib=libXrdClJournalCachePlugin-5.so,enable=true,url=*,cache=/var/tmp/journalcache/" \
+    xrdcp root://host//path/file.root /tmp/</code></pre>
+
+      <h3>Environment overrides</h3>
+      <pre><code>XRD_JOURNALCACHE_CACHE=/var/tmp/journalcache/
+XRD_JOURNALCACHE_JOURNAL=1
+XRD_JOURNALCACHE_CRC=0
+XRD_JOURNALCACHE_ASYNC=0
+XRD_JOURNALCACHE_BYPASS=0
+XRD_JOURNALCACHE_FLAT=0
+XRD_JOURNALCACHE_BASEPATH=/store/
+XRD_JOURNALCACHE_SYSTEM=1
+XRD_JOURNALCACHE_LISTTTL=3600
+XRD_JOURNALCACHE_LISTSTAT=1
+XRD_JOURNALCACHE_SIZE=10000000000
+XRD_JOURNALCACHE_SUMMARY=1
+XRD_JOURNALCACHE_JSON=/tmp/
+XRD_JOURNALCACHE_NOAPP=xrdcp,eoscp
+XRD_APPNAME=my-app</code></pre>
+    </section>
+
+    <section id="journal">
+      <h2>Journal on-disk layout</h2>
+
+      <h3>Default path layout</h3>
+      <pre><code>&lt;cache&gt;/&lt;remote-path-tree&gt;/journal</code></pre>
+      <p>Example: <code>/var/tmp/journalcache/data/higgs.root/journal</code></p>
+
+      <h3>Flat layout (<code>flat = true</code>)</h3>
+      <pre><code>&lt;cache&gt;/&lt;sha256(URL)&gt;/journal</code></pre>
+
+      <h3>Journal file format</h3>
+      <pre><code>struct jheader_t {
+  uint64_t magic;        // 0xcafecafecafecafe
+  uint64_t mtime;
+  uint64_t mtime_nsec;
+  uint64_t filesize;
+  uint64_t placeholder1; // format: 1=legacy, 2=crc32c
+  uint64_t placeholder2;
+  uint64_t placeholder3;
+  uint64_t placeholder4;
+};
+
+struct header_t {
+  uint64_t offset;
+  uint64_t size;
+};
+// followed by &lt;size&gt; bytes of data
+// optional uint32_t crc32c when crc mode is enabled</code></pre>
+
+      <div class="warn">
+        <strong>Partial coverage:</strong> a read is served from cache only if the journal contains the <em>entire</em> requested range. Otherwise the plugin falls back to a remote read.
+      </div>
+
+      <div class="warn">
+        <strong>Shared journals:</strong> the first client holds an exclusive lock on a journal file. Concurrent attach to the same journal on shared storage may not serve from cache until the lock is released.
+      </div>
+    </section>
+
+    <section id="filesystem">
+      <h2>Filesystem cache</h2>
+      <p>When <code>system = true</code>, directory listings and stat results are stored beside the journal layout:</p>
+      <pre><code>&lt;cache&gt;/&lt;dir&gt;/.journalcache_list[.&lt;flags&gt;]
+&lt;cache&gt;/&lt;path&gt;/.journalcache_stat</code></pre>
+
+      <ul>
+        <li>Plain <code>Stat</code> listings are cached; recursive, chunked, and ZIP listings are not.</li>
+        <li><code>listttl</code> expires entries after N seconds.</li>
+        <li>Mutations (rm, mkdir, rmdir, mv, truncate, xattr) invalidate affected listing/stat caches.</li>
+        <li><code>bypass = true</code> disables filesystem caching as well.</li>
+      </ul>
+    </section>
+
+    <section id="http">
+      <h2>HTTP cache integration</h2>
+      <p>JournalCache understands HTTP cache semantics via CGI parameters on file URLs. The file plugin stores them as xattrs on the local journal and applies them when attaching to a cached file.</p>
+
+      <h3>CGI parameters</h3>
+      <table>
+        <thead>
+          <tr><th>CGI key</th><th>HTTP header / role</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>xrd.journalcache.cache-control</code></td><td>Setter — <code>Cache-Control</code> from origin</td></tr>
+          <tr><td><code>xrd.journalcache.expires</code></td><td>Setter — <code>Expires</code></td></tr>
+          <tr><td><code>xrd.journalcache.etag</code></td><td>Getter/setter — <code>ETag</code></td></tr>
+          <tr><td><code>xrd.journalcache.last-modified</code></td><td>Getter/setter — <code>Last-Modified</code> (auto from Stat if omitted)</td></tr>
+          <tr><td><code>xrd.journalcache.if-none-match</code></td><td>Validator — client <code>If-None-Match</code></td></tr>
+          <tr><td><code>xrd.journalcache.if-modified-since</code></td><td>Validator — client <code>If-Modified-Since</code></td></tr>
+          <tr><td><code>xrd.journalcache.bypass</code></td><td>Per-file bypass (<code>1</code>/<code>true</code>/<code>yes</code>)</td></tr>
+          <tr><td><code>xrd.journalcache.clean</code></td><td>Force-delete local journal before attach</td></tr>
+          <tr><td><code>xrd.journalcache.async</code></td><td>Per-file async/detached open (<code>1</code> = WORM attach)</td></tr>
+        </tbody>
+      </table>
+
+      <p>On disk (journal xattrs): <code>user.journalcache.*</code> plus <code>user.journalcache.cached-at</code> (unix time when headers were recorded).</p>
+
+      <h3>Cache-Control behaviour</h3>
+      <table>
+        <thead>
+          <tr><th>Directive</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>no-store</code></td><td>Do not cache this file.</td></tr>
+          <tr><td><code>no-cache</code></td><td>Require a remote <code>Stat</code> before serving cached bytes this session.</td></tr>
+          <tr><td><code>max-age</code> / <code>s-maxage</code></td><td>Purge stale journal data after freshness interval (<code>s-maxage</code> preferred).</td></tr>
+          <tr><td><code>Expires</code></td><td>Purge when current time ≥ parsed expiry date.</td></tr>
+          <tr><td>ETag / Last-Modified mismatch</td><td>Purge when client validators do not match stored values.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Example URL with setter header</h3>
+      <pre><code>root://host//data/file.root?xrd.journalcache.cache-control=s-maxage%3D3600%2Cpublic</code></pre>
+
+      <h3>Per-file CGI toggles</h3>
+      <pre><code># Async/detached open for this file only (WORM)
+?xrd.journalcache.async=1
+
+# Skip journal read/write for this file only
+?xrd.journalcache.bypass=1
+
+# Delete local journal before attach
+?xrd.journalcache.clean=1</code></pre>
+
+      <h3>XrdHttp server configuration</h3>
+      <pre><code>xrd.protocol http:/usr/lib64/libXrdHttp.so
+
+http.header2cgi If-None-Match xrd.journalcache.if-none-match
+http.header2cgi If-Modified-Since xrd.journalcache.if-modified-since
+
+http.exthandler journalcache libXrdClJournalCacheHttpExt-5.so \
+  /etc/xrootd/journalcache-http.ext.conf</code></pre>
+
+      <p>The ext handler matches GET and HEAD only. When <code>cache</code> is set (matching the client plugin <code>cache=</code> path), it loads getter headers from the on-disk journal, returns <strong>304 Not Modified</strong> when validators match and the entry is fresh, and emits <code>ETag</code>, <code>Last-Modified</code>, <code>Cache-Control</code>, and <code>Expires</code> on <strong>200</strong>/<strong>HEAD</strong> responses. Otherwise it returns <code>XrdHttpExtContinueProcessing</code> after appending CGI.</p>
+
+      <h3>HTTP ext handler config</h3>
+      <p>File: <code>journalcache-http.ext.conf</code> (see plugin <code>http/</code> directory)</p>
+      <pre><code>server = root://localhost:1094
+cache = /var/tmp/journalcache/
+flat = 0
+basepath = /store
+prefix = /
+exclude = /static/
+http_origin = https://origin.example.org
+http_origin_strip = /store
+# xattr http.cache-control xrd.journalcache.cache-control
+# xattr http.expires xrd.journalcache.expires
+# xattr http.etag xrd.journalcache.etag
+# xattr http.last-modified xrd.journalcache.last-modified</code></pre>
+
+      <p>The ext handler collects metadata from:</p>
+      <ol>
+        <li>Client validation headers on the HTTP request</li>
+        <li>File xattrs on the XRootD path (<code>http.cache-control</code>, <code>http.etag</code>, …)</li>
+        <li>Optional HTTP <code>HEAD</code> to <code>http_origin</code> (requires libcurl at build time)</li>
+      </ol>
+
+      <p>Origin files can publish cache policy by setting xattrs, for example:</p>
+      <pre><code>xrdfs setxattr /store/data/file.root http.cache-control 'public, s-maxage=3600'
+xrdfs setxattr /store/data/file.root http.etag '"abc123"'</code></pre>
+    </section>
+
+    <section id="proxy">
+      <h2>Proxy and HTTP front-end setup</h2>
+
+      <h3>1. PSS proxy configuration</h3>
+      <pre><code>pss.origin xrootd.example.org
+all.export /store/
+ofs.osslib libXrdPss.so</code></pre>
+
+      <h3>2. Client plugin for the proxy process</h3>
+      <pre><code># /etc/xrootd/client.plugin.d/journalcache.conf
+url = root://*
+lib = libXrdClJournalCachePlugin-5.so
+enable = true
+cache = /var/tmp/journalcache/
+stats = 60</code></pre>
+
+      <h3>3. XrdHttp with cache header forwarding</h3>
+      <pre><code>xrd.protocol http:/usr/lib64/libXrdHttp.so
+
+http.header2cgi If-None-Match xrd.journalcache.if-none-match
+http.header2cgi If-Modified-Since xrd.journalcache.if-modified-since
+
+http.exthandler journalcache libXrdClJournalCacheHttpExt-5.so \
+  /etc/xrootd/journalcache-http.ext.conf</code></pre>
+
+      <h3>4. Prepare cache directory</h3>
+      <pre><code>mkdir -p /var/tmp/journalcache/
+chown xroot:xroot /var/tmp/journalcache/</code></pre>
+
+      <h3>End-to-end HTTP GET (cache miss, then hit)</h3>
+      <ol>
+        <li>Client sends <code>GET /store/file.root</code> with optional <code>If-None-Match</code>.</li>
+        <li>XrdHttp ext handler appends JournalCache CGI to the backend open URL.</li>
+        <li>PSS opens the origin file through the JournalCache client plugin.</li>
+        <li>First read populates the journal; setter headers are stored as xattrs.</li>
+        <li>Subsequent GETs within freshness limits are served from the local journal.</li>
+        <li>When validators match, the HTTP ext handler responds with <strong>304</strong>; otherwise stored getter headers are included on <strong>200</strong>/<strong>HEAD</strong> responses.</li>
+      </ol>
+
+      <div class="tip">
+        Set <code>stats = 60</code> in long-running proxies to print rolling hit-rate summaries every minute.
+      </div>
+    </section>
+
+    <section id="cleaning">
+      <h2>Cache cleaning</h2>
+      <p>Built-in cleaner (when <code>size</code> ≥ 1 GB): evicts oldest files by access time down to 90% of the limit, checked every minute.</p>
+      <pre><code># In journalcache.conf
+size = 10000000000
+
+# Or via environment
+export XRD_JOURNALCACHE_SIZE=10000000000</code></pre>
+
+      <p>Standalone cleaner for complex deployments:</p>
+      <pre><code>xrdclcacheclean &lt;directory&gt; &lt;highwatermark&gt; &lt;lowwatermark&gt; &lt;interval_seconds&gt;</code></pre>
+    </section>
+
+    <section id="stats">
+      <h2>Statistics and monitoring</h2>
+
+      <h3>Per-file log line (Info level)</h3>
+      <pre><code>JournalCache : read:readv-ops:readv-read-ops: 194:0:0s hit-rate: total [read/readv]=100.00%
+  remote-bytes-read/readv: 0 / 0 cached-bytes-read/readv: 1626911438 / 0</code></pre>
+
+      <h3>Application exit summary</h3>
+      <p>Printed when the process exits (unless disabled): combined hit rate, bytes read from cache vs remote, open counts, dataset coverage, and an ASCII IO rate histogram.</p>
+
+      <h3>JSON summary</h3>
+      <p>When <code>json = /path/to/dir/</code> is set, a JSON file named <code>journalcache.&lt;XRD_APPNAME&gt;.&lt;pid&gt;.json</code> is written on exit.</p>
+    </section>
+
+    <section id="serving">
+      <h2>Serving this documentation page</h2>
+      <p>Host the <code>html/</code> directory with any web server, or expose it through XrdHttp static preload:</p>
+      <pre><code>http.staticpreload /static/journalcache \
+  /usr/share/xrootd/journalcache/html</code></pre>
+      <p class="muted">Then open <code>/static/journalcache/index.html</code> on your HTTP endpoint.</p>
+    </section>
+
+    <footer>
+      JournalCache — XRootD client plugin documentation
+    </footer>
+  </div>
+</body>
+</html>

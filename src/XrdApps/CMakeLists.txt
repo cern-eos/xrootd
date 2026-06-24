@@ -29,6 +29,79 @@ add_library(${XrdClRecorder} MODULE
 
 target_link_libraries(${XrdClRecorder} PRIVATE XrdCl)
 
+set(XrdClJournalCachePlugin XrdClJournalCachePlugin-${PLUGIN_VERSION})
+
+add_library(${XrdClJournalCachePlugin} MODULE
+  XrdClJournalCachePlugin/plugin/XrdClJournalCachePlugin.cc
+  XrdClJournalCachePlugin/file/XrdClJournalCacheFile.cc
+  XrdClJournalCachePlugin/file/Digest.cc
+  XrdClJournalCachePlugin/file/CachePath.cc
+  XrdClJournalCachePlugin/file/CacheHeaders.cc
+  XrdClJournalCachePlugin/system/XrdClJournalCacheSystem.cc
+  XrdClJournalCachePlugin/system/ListCache.cc
+  XrdClJournalCachePlugin/handler/XrdClJournalCacheDirListHandler.cc
+  XrdClJournalCachePlugin/handler/XrdClJournalCacheStatHandler.cc
+  XrdClJournalCachePlugin/handler/XrdClJournalCacheOpenHandler.cc
+  XrdClJournalCachePlugin/handler/XrdClJournalCacheOpenHandler.hh
+  XrdClJournalCachePlugin/handler/XrdClJournalCacheReadHandler.hh
+  XrdClJournalCachePlugin/handler/XrdClJournalCacheReadVHandler.hh
+  XrdClJournalCachePlugin/cache/Journal.cc
+  XrdClJournalCachePlugin/cache/Journal.hh
+  XrdClJournalCachePlugin/cache/IntervalTree.hh
+  XrdClJournalCachePlugin/cache/RbTree.hh
+  XrdClJournalCachePlugin/cleaner/Cleaner.cc
+  XrdClJournalCachePlugin/cleaner/Cleaner.hh
+)
+
+target_include_directories(${XrdClJournalCachePlugin}
+  PRIVATE "${CMAKE_SOURCE_DIR}/src/XrdApps/XrdClJournalCachePlugin/")
+
+target_link_libraries(${XrdClJournalCachePlugin}
+  PRIVATE XrdCl XrdUtils OpenSSL::SSL)
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+  AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.1
+  AND NOT APPLE)
+  target_link_libraries(${XrdClJournalCachePlugin} PRIVATE stdc++fs)
+endif()
+
+add_executable(xrdclcacheclean
+  XrdClJournalCachePlugin/app/XrdClCacheCleaner.cc)
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+  AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.1
+  AND NOT APPLE)
+  target_link_libraries(xrdclcacheclean PRIVATE stdc++fs)
+endif()
+
+if(BUILD_HTTP AND NOT XRDCL_ONLY)
+  set(XrdClJournalCacheHttpExt XrdClJournalCacheHttpExt-${PLUGIN_VERSION})
+
+  add_library(${XrdClJournalCacheHttpExt} MODULE
+    XrdClJournalCachePlugin/http/JournalCacheHttpExt.cc
+    XrdClJournalCachePlugin/file/CacheHeaders.cc
+    XrdClJournalCachePlugin/file/Digest.cc
+  )
+
+  target_include_directories(${XrdClJournalCacheHttpExt}
+    PRIVATE "${CMAKE_SOURCE_DIR}/src/XrdApps/XrdClJournalCachePlugin/")
+
+  target_link_libraries(${XrdClJournalCacheHttpExt}
+    PRIVATE XrdCl XrdHttpUtils XrdUtils)
+
+  if(CURL_FOUND)
+    target_compile_definitions(${XrdClJournalCacheHttpExt}
+      PRIVATE JOURNALCACHE_HTTP_EXT_HAVE_CURL)
+    target_link_libraries(${XrdClJournalCacheHttpExt}
+      PRIVATE ${CURL_LIBRARIES})
+    target_include_directories(${XrdClJournalCacheHttpExt}
+      PRIVATE ${CURL_INCLUDE_DIRS})
+  endif()
+
+  install(TARGETS ${XrdClJournalCacheHttpExt}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+endif()
+
 add_executable(xrdreplay XrdClRecordPlugin/XrdClReplay.cc)
 
 target_link_libraries(xrdreplay
@@ -40,9 +113,11 @@ target_link_libraries(xrdreplay
 install(
   TARGETS
     xrdreplay
+    xrdclcacheclean
     XrdAppUtils
     ${XrdClProxyPlugin}
     ${XrdClRecorder}
+    ${XrdClJournalCachePlugin}
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
