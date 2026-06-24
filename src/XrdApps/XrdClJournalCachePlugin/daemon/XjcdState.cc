@@ -87,6 +87,10 @@ std::string XjcdState::systemdEnvPath() const {
   return joinPath(etcDir(), "xjcd.env");
 }
 
+std::string XjcdState::systemdUnitPath() const {
+  return joinPath(etcDir(), "xjcd.service");
+}
+
 bool XjcdState::isComplete() const {
   return !journal.empty() && xrootPort > 0 && httpsPort > 0 && !tlsCert.empty() &&
          !tlsKey.empty();

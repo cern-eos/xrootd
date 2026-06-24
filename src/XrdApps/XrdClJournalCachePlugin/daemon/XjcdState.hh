@@ -22,6 +22,7 @@ struct XjcdState {
   std::string httpExtConfigPath() const;
   std::string clientPluginConfigPath() const;
   std::string systemdEnvPath() const;
+  std::string systemdUnitPath() const;
 
   bool load(const std::string &journalRoot);
   bool save() const;

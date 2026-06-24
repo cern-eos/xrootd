@@ -193,10 +193,12 @@ int main(int argc, char **argv) {
     std::cout << "client plugin = " << state.clientPluginConfigPath() << "\n";
     std::cout << "policy        = " << state.policyPath() << "\n";
     std::cout << "systemd env   = " << state.systemdEnvPath() << "\n";
-    std::cout << "\n# systemd example:\n";
-    std::cout << "EnvironmentFile=" << state.systemdEnvPath() << "\n";
-    std::cout << "ExecStart=/usr/bin/xrootd -c " << state.xrootdConfigPath()
-              << " -R daemon\n";
+    std::cout << "systemd unit  = " << state.systemdUnitPath() << "\n";
+    std::cout << "\n# install and start:\n";
+    std::cout << "sudo install -m 0644 " << state.systemdUnitPath()
+              << " /etc/systemd/system/\n";
+    std::cout << "sudo systemctl daemon-reload\n";
+    std::cout << "sudo systemctl enable --now xjcd.service\n";
     return 0;
   }
 
