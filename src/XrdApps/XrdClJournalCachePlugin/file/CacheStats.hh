@@ -447,5 +447,5 @@ struct CacheStats {
       run();
     }
   }
-}; // class CacheStats
+}; // struct CacheStats
 } // namespace JournalCache
