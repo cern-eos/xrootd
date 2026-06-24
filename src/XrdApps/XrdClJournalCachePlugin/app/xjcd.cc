@@ -14,14 +14,16 @@ void usage() {
       << "\n"
       << "Commands:\n"
       << "  init [--journal PATH] --xroot-port N --https-port N "
-         "--tls-cert PATH --tls-key PATH\n"
+         "--tls-cert PATH --tls-key PATH [--install-systemd] "
+         "[--systemd-unit NAME]\n"
       << "  render\n"
       << "  show\n"
       << "  validate\n"
       << "\n"
       << "Generates XRootD + JournalCache configs under $journal/.xjc/etc/.\n"
       << "Runtime policy is written to $journal/.xjc/policy.conf (edit with xjc).\n"
-      << "Start xrootd via systemd using the generated xrootd.cf and xjcd.env.\n";
+      << "Start xrootd via systemd using the generated xrootd.cf and xjcd.env.\n"
+      << "Use --install-systemd on init to install and enable the unit (requires root).\n";
 }
 
 std::string getHostname() {
@@ -107,11 +109,22 @@ int main(int argc, char **argv) {
     state.journal = journalArg;
     state.libDir = JournalCache::defaultLibDir();
 
+    bool installSystemd = false;
+    std::string systemdUnit = JournalCache::defaultSystemdUnitName();
     std::string value;
     while (argi < argc) {
       const std::string flag = argv[argi++];
       if (flag == "--journal" && requireArg(argc, argv, argi, "journal path", value)) {
         state.journal = JournalCache::normalizeJournalRoot(value);
+      } else if (flag == "--install-systemd") {
+        installSystemd = true;
+      } else if (flag == "--systemd-unit" &&
+                 requireArg(argc, argv, argi, "systemd unit name", value)) {
+        if (!JournalCache::isValidSystemdUnitName(value)) {
+          std::cerr << "xjcd: invalid systemd unit name: " << value << "\n";
+          return 1;
+        }
+        systemdUnit = value;
       } else if (flag == "--xroot-port" && requireArg(argc, argv, argi, "xroot port", value)) {
         if (!parsePort(value, state.xrootPort)) {
           std::cerr << "xjcd: invalid xroot port\n";
@@ -163,6 +176,16 @@ int main(int argc, char **argv) {
     std::cout << "xjcd: initialized " << state.journal << "\n";
     std::cout << "xjcd: xrootd config " << state.xrootdConfigPath() << "\n";
     std::cout << "xjcd: policy file " << state.policyPath() << "\n";
+    if (installSystemd) {
+      std::string error;
+      if (!JournalCache::installXjcdSystemdUnit(state, systemdUnit, true, error)) {
+        std::cerr << "xjcd: " << error << "\n";
+        return 1;
+      }
+      std::cout << "xjcd: installed "
+                << JournalCache::systemdUnitInstallPath(systemdUnit) << "\n";
+      std::cout << "xjcd: enabled and started " << systemdUnit << "\n";
+    }
     return 0;
   }
 

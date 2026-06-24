@@ -21,4 +21,10 @@ bool ensureInitialPolicy(const std::string &policyPath);
 bool renderXjcdConfigs(const XjcdState &state, const std::string &hostname);
 std::vector<XjcdValidationIssue> validateXjcdState(const XjcdState &state);
 
+std::string defaultSystemdUnitName();
+std::string systemdUnitInstallPath(const std::string &unitName);
+bool isValidSystemdUnitName(const std::string &unitName);
+bool installXjcdSystemdUnit(const XjcdState &state, const std::string &unitName,
+                            bool enable, std::string &error);
+
 } // namespace JournalCache
