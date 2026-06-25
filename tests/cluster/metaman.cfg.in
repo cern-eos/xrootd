@@ -1,0 +1,13 @@
+set name = metaman
+
+all.role meta manager
+all.manager meta localhost:%CMSD_PORT_METAMAN%
+
+xrd.port %XRD_PORT_METAMAN% if exec xrootd
+xrd.port %CMSD_PORT_METAMAN% if exec cmsd
+
+if exec xrootd
+xrd.protocol XrdHttp:%XRD_PORT_METAMAN% libXrdHttp.so
+fi
+
+continue @CMAKE_CURRENT_BINARY_DIR@/common.cfg

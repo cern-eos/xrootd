@@ -6,8 +6,12 @@ list(APPEND XRDENV "ADLER32=$<TARGET_FILE:xrdadler32>")
 list(APPEND XRDENV "XROOTD=$<TARGET_FILE:xrootd>")
 list(APPEND XRDENV "CMSD=$<TARGET_FILE:cmsd>")
 
-foreach(config common metaman man1 man2 srv1 srv2 srv3 srv4)
+foreach(config common)
   configure_file(${config}.cfg ${config}.cfg @ONLY)
+endforeach()
+
+foreach(config metaman man1 man2 srv1 srv2 srv3 srv4)
+  configure_file(${config}.cfg.in ${config}.cfg.template @ONLY)
 endforeach()
 
 file(COPY mvdata DESTINATION ${CMAKE_CURRENT_BINARY_DIR})

@@ -1,0 +1,14 @@
+set name = man1
+
+all.role manager
+all.manager meta localhost:%CMSD_PORT_METAMAN%
+all.manager localhost:%CMSD_PORT_MAN1%
+
+xrd.port %XRD_PORT_MAN1% if exec xrootd
+xrd.port %CMSD_PORT_MAN1% if exec cmsd
+
+if exec xrootd
+xrd.protocol XrdHttp:%XRD_PORT_MAN1% libXrdHttp.so
+fi
+
+continue @CMAKE_CURRENT_BINARY_DIR@/common.cfg

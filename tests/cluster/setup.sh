@@ -19,6 +19,108 @@ datanodes=("srv1" "srv2" "srv3" "srv4")
 DATAFOLDER="./data"
 TMPDATAFOLDER="./rout"
 PREDEF="./mvdata"
+PORTS_ENV="./ports.env"
+
+find_free_port() {
+       python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()'
+}
+
+allocate_ports() {
+       local used=()
+       local p
+
+       find_unique_port() {
+              while true; do
+                     p=$(find_free_port)
+                     for u in "${used[@]}"; do
+                            [[ "$u" == "$p" ]] && continue 2
+                     done
+                     used+=("$p")
+                     echo "$p"
+                     return
+              done
+       }
+
+       XRD_PORT_METAMAN=$(find_unique_port)
+       CMSD_PORT_METAMAN=$(find_unique_port)
+       XRD_PORT_MAN1=$(find_unique_port)
+       CMSD_PORT_MAN1=$(find_unique_port)
+       XRD_PORT_MAN2=$(find_unique_port)
+       CMSD_PORT_MAN2=$(find_unique_port)
+       XRD_PORT_SRV1=$(find_unique_port)
+       XRD_PORT_SRV2=$(find_unique_port)
+       XRD_PORT_SRV3=$(find_unique_port)
+       XRD_PORT_SRV4=$(find_unique_port)
+
+       export XRD_PORT_METAMAN CMSD_PORT_METAMAN
+       export XRD_PORT_MAN1 CMSD_PORT_MAN1
+       export XRD_PORT_MAN2 CMSD_PORT_MAN2
+       export XRD_PORT_SRV1 XRD_PORT_SRV2 XRD_PORT_SRV3 XRD_PORT_SRV4
+}
+
+write_ports_env() {
+       cat > "${PORTS_ENV}" <<EOF
+XRD_PORT_METAMAN=${XRD_PORT_METAMAN}
+CMSD_PORT_METAMAN=${CMSD_PORT_METAMAN}
+XRD_PORT_MAN1=${XRD_PORT_MAN1}
+CMSD_PORT_MAN1=${CMSD_PORT_MAN1}
+XRD_PORT_MAN2=${XRD_PORT_MAN2}
+CMSD_PORT_MAN2=${CMSD_PORT_MAN2}
+XRD_PORT_SRV1=${XRD_PORT_SRV1}
+XRD_PORT_SRV2=${XRD_PORT_SRV2}
+XRD_PORT_SRV3=${XRD_PORT_SRV3}
+XRD_PORT_SRV4=${XRD_PORT_SRV4}
+HOST_METAMAN=root://localhost:${XRD_PORT_METAMAN}
+HOST_MAN1=root://localhost:${XRD_PORT_MAN1}
+HOST_MAN2=root://localhost:${XRD_PORT_MAN2}
+HOST_SRV1=root://localhost:${XRD_PORT_SRV1}
+HOST_SRV2=root://localhost:${XRD_PORT_SRV2}
+HOST_SRV3=root://localhost:${XRD_PORT_SRV3}
+HOST_SRV4=root://localhost:${XRD_PORT_SRV4}
+EOF
+}
+
+apply_port_substitutions() {
+       sed \
+              -e "s/%XRD_PORT_METAMAN%/${XRD_PORT_METAMAN}/g" \
+              -e "s/%CMSD_PORT_METAMAN%/${CMSD_PORT_METAMAN}/g" \
+              -e "s/%XRD_PORT_MAN1%/${XRD_PORT_MAN1}/g" \
+              -e "s/%CMSD_PORT_MAN1%/${CMSD_PORT_MAN1}/g" \
+              -e "s/%XRD_PORT_MAN2%/${XRD_PORT_MAN2}/g" \
+              -e "s/%CMSD_PORT_MAN2%/${CMSD_PORT_MAN2}/g" \
+              -e "s/%XRD_PORT_SRV1%/${XRD_PORT_SRV1}/g" \
+              -e "s/%XRD_PORT_SRV2%/${XRD_PORT_SRV2}/g" \
+              -e "s/%XRD_PORT_SRV3%/${XRD_PORT_SRV3}/g" \
+              -e "s/%XRD_PORT_SRV4%/${XRD_PORT_SRV4}/g"
+}
+
+write_configs() {
+       local cfg
+
+       for cfg in metaman man1 man2 srv1 srv2 srv3 srv4; do
+              apply_port_substitutions < "${cfg}.cfg.template" > "${cfg}.cfg"
+       done
+}
+
+patch_metalink_ports() {
+       local file
+       local sed_inplace
+
+       case $(uname) in
+       Darwin) sed_inplace=(-i '') ;;
+       *)      sed_inplace=(-i) ;;
+       esac
+
+       for file in "$@"; do
+              [[ -f "${file}" ]] || continue
+              sed "${sed_inplace[@]}" \
+                     -e "s/localhost:10943/localhost:${XRD_PORT_SRV1}/g" \
+                     -e "s/localhost:10944/localhost:${XRD_PORT_SRV2}/g" \
+                     -e "s/localhost:10945/localhost:${XRD_PORT_SRV3}/g" \
+                     -e "s/localhost:10946/localhost:${XRD_PORT_SRV4}/g" \
+                     "${file}"
+       done
+}
 
 filenames=("1db882c8-8cd6-4df1-941f-ce669bad3458.dat"
        "3c9a9dd8-bc75-422c-b12c-f00604486cc1.dat"
@@ -111,6 +213,7 @@ generate(){
                      mkdir -p ${DATAFOLDER}/${i}/data/metalink
                      cp ${PREDEF}/input*.meta* ${DATAFOLDER}/${i}/data/metalink/
                      cp ${PREDEF}/ml*.meta*    ${DATAFOLDER}/${i}/data/metalink/
+                     patch_metalink_ports ${DATAFOLDER}/${i}/data/metalink/*
               fi
 
               # download the test files for 'srv2' and add another instance on 1099
@@ -147,6 +250,9 @@ generate(){
 }
 
 start(){
+       allocate_ports
+       write_configs
+       write_ports_env
        generate
        set -x
        # start for each component
@@ -170,6 +276,7 @@ stop() {
 			rm -rf "${i}"
 		fi
 	done
+	rm -f "${PORTS_ENV}"
 }
 
 insertFileInfo() {

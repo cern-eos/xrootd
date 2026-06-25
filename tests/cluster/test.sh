@@ -1,12 +1,5 @@
 #!/usr/bin/env bash
 
-# macOS, as of now, cannot run this test because of the 'declare -A'
-# command that we use later, so we just skip this test (sorry apple users)
-if [[ $(uname) == "Darwin" ]]; then
-       exit 0
-fi
-
-# we probably need all of these still
 : ${ADLER32:=$(command -v xrdadler32)}
 : ${CRC32C:=$(command -v xrdcrc32c)}
 : ${XRDCP:=$(command -v xrdcp)}
@@ -14,6 +7,12 @@ fi
 : ${XRDMAPC:=$(command -v xrdmapc)}
 : ${OPENSSL:=$(command -v openssl)}
 : ${CURL:=$(command -v curl)}
+
+if [[ -f ports.env ]]; then
+       # shellcheck disable=SC1091
+       source ports.env
+fi
+
 : ${HOST_METAMAN:=root://localhost:10940}
 : ${HOST_MAN1:=root://localhost:10941}
 : ${HOST_MAN2:=root://localhost:10942}
@@ -30,6 +29,26 @@ fi
 : ${HOST_HTTP_SRV3:=${HOST_SRV3/root/http}}
 : ${HOST_HTTP_SRV4:=${HOST_SRV4/root/http}}
 
+# Parallel arrays for compatibility with Bash < 4
+host_names=(metaman man1 man2 srv1 srv2 srv3 srv4)
+host_roots=("${HOST_METAMAN}" "${HOST_MAN1}" "${HOST_MAN2}" \
+            "${HOST_SRV1}" "${HOST_SRV2}" "${HOST_SRV3}" "${HOST_SRV4}")
+host_https=("${HOST_HTTP_METAMAN}" "${HOST_HTTP_MAN1}" "${HOST_HTTP_MAN2}" \
+            "${HOST_HTTP_SRV1}" "${HOST_HTTP_SRV2}" "${HOST_HTTP_SRV3}" "${HOST_HTTP_SRV4}")
+
+get_index_for_host() {
+       local host="$1"
+       local i
+
+       for ((i = 0; i < ${#host_names[@]}; i++)); do
+              if [[ "${host_names[i]}" == "$host" ]]; then
+                     echo "$i"
+                     return
+              fi
+       done
+       echo "-1"
+}
+
 # checking for command presence
 for PROG in ${ADLER32} ${CRC32C} ${XRDCP} ${XRDFS} ${XRDMAPC} ${OPENSSL} ${CURL}; do
        if [[ ! -x "${PROG}" ]]; then
@@ -45,8 +64,8 @@ set -e
 
 ${XRDCP} --version
 
-for host in "${!hosts[@]}"; do
-       ${XRDFS} ${hosts[$host]} query config version
+for ((i = 0; i < ${#host_names[@]}; i++)); do
+       ${XRDFS} "${host_roots[i]}" query config version
 done
 
 # query some common server configurations
@@ -54,8 +73,8 @@ done
 CONFIG_PARAMS=( version role sitename )
 
 for PARAM in ${CONFIG_PARAMS[@]}; do
-       for host in "${!hosts[@]}"; do
-              ${XRDFS} ${hosts[$host]} query config ${PARAM}
+       for ((i = 0; i < ${#host_names[@]}; i++)); do
+              ${XRDFS} "${host_roots[i]}" query config ${PARAM}
        done
 done
 
@@ -69,28 +88,9 @@ LCLDATADIR="${PWD}/localdata"  # client folder
 
 mkdir -p ${LCLDATADIR}
 
-# hostname-address pair, so that we can keep track of files more easily
-declare -A hosts
-hosts["metaman"]="${HOST_METAMAN}"
-hosts["man1"]="${HOST_MAN1}"
-hosts["man2"]="${HOST_MAN2}"
-hosts["srv1"]="${HOST_SRV1}"
-hosts["srv2"]="${HOST_SRV2}"
-hosts["srv3"]="${HOST_SRV3}"
-hosts["srv4"]="${HOST_SRV4}"
-
-declare -A hosts_http
-hosts_http["metaman"]="${HOST_HTTP_METAMAN}"
-hosts_http["man1"]="${HOST_HTTP_MAN1}"
-hosts_http["man2"]="${HOST_HTTP_MAN2}"
-hosts_http["srv1"]="${HOST_HTTP_SRV1}"
-hosts_http["srv2"]="${HOST_HTTP_SRV2}"
-hosts_http["srv3"]="${HOST_HTTP_SRV3}"
-hosts_http["srv4"]="${HOST_HTTP_SRV4}"
-
 assert_xrdmapc_json() {
-       expected_json='{"name":"localhost:10940","type":"manager","managers":[{"name":"localhost:10941","type":"manager","servers":[{"name":"localhost:10943"},{"name":"localhost:10944"}]},{"name":"localhost:10942","type":"manager","servers":[{"name":"localhost:10945"},{"name":"localhost:10946"}]}]}'
-       actual_json="$(${XRDMAPC} --format json localhost:10940)"
+       expected_json="{\"name\":\"localhost:${XRD_PORT_METAMAN}\",\"type\":\"manager\",\"managers\":[{\"name\":\"localhost:${XRD_PORT_MAN1}\",\"type\":\"manager\",\"servers\":[{\"name\":\"localhost:${XRD_PORT_SRV1}\"},{\"name\":\"localhost:${XRD_PORT_SRV2}\"}]},{\"name\":\"localhost:${XRD_PORT_MAN2}\",\"type\":\"manager\",\"servers\":[{\"name\":\"localhost:${XRD_PORT_SRV3}\"},{\"name\":\"localhost:${XRD_PORT_SRV4}\"}]}]}"
+       actual_json="$(${XRDMAPC} --format json "localhost:${XRD_PORT_METAMAN}")"
 
        if [[ "${actual_json}" != "${expected_json}" ]]; then
                echo 1>&2 "$(basename $0): error: xrdmapc JSON output does not match expected topology"
@@ -100,15 +100,16 @@ assert_xrdmapc_json() {
        fi
 
        # Print cluster topology in string format
-       ${XRDMAPC} localhost:10940
+       ${XRDMAPC} "localhost:${XRD_PORT_METAMAN}"
 
 }
 
 cleanup() {
        echo "Error occurred. Cleaning up..."
-       for host in "${!hosts[@]}"; do
-              rm -rf ${LCLDATADIR}/${host}.dat
-              rm -rf ${LCLDATADIR}/${host}.ref
+       local i
+       for ((i = 0; i < ${#host_names[@]}; i++)); do
+              rm -rf ${LCLDATADIR}/${host_names[i]}.dat
+              rm -rf ${LCLDATADIR}/${host_names[i]}.ref
        done
 }
 trap "cleanup; exit 1" ABRT
@@ -117,46 +118,49 @@ assert_xrdmapc_json
 
 # create local files with random contents using OpenSSL
 
-for host in "${!hosts[@]}"; do
-       ${OPENSSL} rand -out "${LCLDATADIR}/${host}.ref" $((1024 * ($RANDOM + 1)))
+for ((i = 0; i < ${#host_names[@]}; i++)); do
+       ${OPENSSL} rand -out "${LCLDATADIR}/${host_names[i]}.ref" $((1024 * ($RANDOM + 1)))
 done
 
 # upload local files to the servers in parallel
 HTTP_SUFFIX=(".ref_http" ".ref_%23_http")
-declare -A MAP_HTTP_XRD_SUFFIX=( [".ref_http"]=".ref_http" [".ref_%23_http"]=".ref_#_http" )
+HTTP_XRD_SUFFIX=(".ref_http" ".ref_#_http")
 
-for host in "${!hosts[@]}"; do
-       ${XRDCP} ${LCLDATADIR}/${host}.ref ${hosts[$host]}/${RMTDATADIR}/${host}.ref
+for ((i = 0; i < ${#host_names[@]}; i++)); do
+       host="${host_names[i]}"
+       ${XRDCP} ${LCLDATADIR}/${host}.ref ${host_roots[i]}/${RMTDATADIR}/${host}.ref
 
        for suffix in "${HTTP_SUFFIX[@]}"; do
-              ${CURL} -v -L ${hosts_http[$host]}/${RMTDATADIR}/${host}${suffix} -T ${LCLDATADIR}/${host}.ref
+              ${CURL} -v -L ${host_https[i]}/${RMTDATADIR}/${host}${suffix} -T ${LCLDATADIR}/${host}.ref
        done
 
 done
 
 # list uploaded files, then download them to check for corruption
 
-for host in "${!hosts[@]}"; do
-       ${XRDFS} ${hosts[$host]} ls -l ${RMTDATADIR}
+for ((i = 0; i < ${#host_names[@]}; i++)); do
+       ${XRDFS} "${host_roots[i]}" ls -l ${RMTDATADIR}
 done
 
-for host in "${!hosts[@]}"; do
-       ${XRDCP} ${hosts[$host]}/${RMTDATADIR}/${host}.ref ${LCLDATADIR}/${host}.dat
+for ((i = 0; i < ${#host_names[@]}; i++)); do
+       host="${host_names[i]}"
+       ${XRDCP} ${host_roots[i]}/${RMTDATADIR}/${host}.ref ${LCLDATADIR}/${host}.dat
        count=0
 
        for suffix in "${HTTP_SUFFIX[@]}"; do
-               ${CURL} -v -L ${hosts_http[$host]}/${RMTDATADIR}/${host}${suffix} -o ${LCLDATADIR}/${host}.dat_http${count}
+               ${CURL} -v -L ${host_https[i]}/${RMTDATADIR}/${host}${suffix} -o ${LCLDATADIR}/${host}.dat_http${count}
                count=$((count + 1))
        done
 done
 
 # check that all checksums for downloaded files match
 
-for host in "${!hosts[@]}"; do
+for ((i = 0; i < ${#host_names[@]}; i++)); do
+       host="${host_names[i]}"
        # check the CRC32 checksums
        REF32C=$(${CRC32C} < ${LCLDATADIR}/${host}.ref | cut -d' '  -f1)
        NEW32C=$(${CRC32C} < ${LCLDATADIR}/${host}.dat | cut -d' '  -f1)
-       SRV32C=$(${XRDFS} ${hosts[$host]} query checksum ${RMTDATADIR}/${host}.ref?cks.type=crc32c | cut -d' ' -f2)
+       SRV32C=$(${XRDFS} ${host_roots[i]} query checksum ${RMTDATADIR}/${host}.ref?cks.type=crc32c | cut -d' ' -f2)
 
        if [[ "${NEW32C}" != "${REF32C}" || "${SRV32C}" != "${REF32C}" ]]; then
                echo "${host}:  crc32c: reference: ${REF32C}, server: ${SRV32C}, downloaded: ${REF32C}"
@@ -168,7 +172,7 @@ for host in "${!hosts[@]}"; do
        count=0
 
        for suffix in "${HTTP_SUFFIX[@]}"; do
-               HTTP_SRV32C=$(${XRDFS} ${hosts[$host]} query checksum ${RMTDATADIR}/${host}${MAP_HTTP_XRD_SUFFIX[${suffix}]}?cks.type=crc32c | cut -d' ' -f2)
+               HTTP_SRV32C=$(${XRDFS} ${host_roots[i]} query checksum ${RMTDATADIR}/${host}${HTTP_XRD_SUFFIX[count]}?cks.type=crc32c | cut -d' ' -f2)
                HTTP_NEW32C=$(${CRC32C} < ${LCLDATADIR}/${host}.dat_http${count} | cut -d' '  -f1)
 
                if [[ "${HTTP_NEW32C}" != "${REF32C}" || "${HTTP_SRV32C}" != "${REF32C}" ]]; then
@@ -183,7 +187,7 @@ for host in "${!hosts[@]}"; do
        # check the ADLER32 checksums
        REFA32=$(${ADLER32} < ${LCLDATADIR}/${host}.ref | cut -d' '  -f1)
        NEWA32=$(${ADLER32} < ${LCLDATADIR}/${host}.dat | cut -d' '  -f1)
-       SRVA32=$(${XRDFS} ${hosts[$host]} query checksum ${RMTDATADIR}/${host}.ref?cks.type=adler32 | cut -d' ' -f2)
+       SRVA32=$(${XRDFS} ${host_roots[i]} query checksum ${RMTDATADIR}/${host}.ref?cks.type=adler32 | cut -d' ' -f2)
 
        if [[ "${NEWA32}" != "${REFA32}" || "${SRVA32}" != "${REFA32}" ]]; then
                echo "${host}: adler32: reference: ${NEWA32}, server: ${SRVA32}, downloaded: ${NEWA32}"
@@ -195,7 +199,7 @@ for host in "${!hosts[@]}"; do
        count=0
 
        for suffix in "${HTTP_SUFFIX[@]}"; do
-               HTTP_SRVA32=$(${XRDFS} ${hosts[$host]} query checksum ${RMTDATADIR}/${host}${MAP_HTTP_XRD_SUFFIX[${suffix}]}?cks.type=adler32 | cut -d' ' -f2)
+               HTTP_SRVA32=$(${XRDFS} ${host_roots[i]} query checksum ${RMTDATADIR}/${host}${HTTP_XRD_SUFFIX[count]}?cks.type=adler32 | cut -d' ' -f2)
                HTTP_NEWA32=$(${ADLER32} < ${LCLDATADIR}/${host}.dat_http${count} | cut -d' '  -f1)
 
                if [[ "${HTTP_NEWA32}" != "${REFA32}" || "${HTTP_SRVA32}" != "${REFA32}" ]]; then
@@ -213,24 +217,25 @@ done
 # Not sure why this is the expected behaviour
 # https://github.com/xrootd/xrootd/blob/8ac19b1d2b74521acff9ed0200052a2e373092cc/src/XrdHttp/XrdHttpReq.cc#L1746-L1752
 
-declare -A srcs=(
-    [metaman]=501
-    [man1]=201
-    [srv1]=201
-)
+move_src_names=(metaman man1 srv1)
+move_src_codes=(501 201 201)
 
 # Upload files
-for src in "${!srcs[@]}"; do
+for ((i = 0; i < ${#move_src_names[@]}; i++)); do
+    src="${move_src_names[i]}"
+    src_idx=$(get_index_for_host "$src")
     curl -s -S -L -v -T "${LCLDATADIR}/srv1.ref" \
-        "${hosts_http[$src]}/${RMTDATADIR}/old_file_$src"
+        "${host_https[$src_idx]}/${RMTDATADIR}/old_file_$src"
 done
 
 # Perform MOVE and check response
-for src in "${!srcs[@]}"; do
-    expected_code="${srcs[$src]}"
+for ((i = 0; i < ${#move_src_names[@]}; i++)); do
+    src="${move_src_names[i]}"
+    src_idx=$(get_index_for_host "$src")
+    expected_code="${move_src_codes[i]}"
     response_code=$(curl -s -v -S -L -o /dev/null -w "%{http_code}" -X MOVE \
-        -H "Destination: ${hosts_http[$src]}/${RMTDATADIR}/new_file_$src" \
-        "${hosts_http[$src]}/${RMTDATADIR}/old_file_$src")
+        -H "Destination: ${host_https[$src_idx]}/${RMTDATADIR}/new_file_$src" \
+        "${host_https[$src_idx]}/${RMTDATADIR}/old_file_$src")
 
     if [[ "$response_code" != "$expected_code" ]]; then
         echo "Assertion failed for '$src': expected $expected_code, got $response_code"
@@ -240,13 +245,14 @@ for src in "${!srcs[@]}"; do
     fi
 done
 
-for host in "${!hosts[@]}"; do
+for ((i = 0; i < ${#host_names[@]}; i++)); do
+       host="${host_names[i]}"
        ${XRDFS} ${HOST_METAMAN} rm ${RMTDATADIR}/${host}.ref &
        rm ${LCLDATADIR}/${host}.dat &
        count=0
 
        for suffix in "${HTTP_SUFFIX[@]}"; do
-               ${XRDFS} ${HOST_METAMAN} rm "${RMTDATADIR}/${host}${MAP_HTTP_XRD_SUFFIX[$suffix]}" &
+               ${XRDFS} ${HOST_METAMAN} rm "${RMTDATADIR}/${host}${HTTP_XRD_SUFFIX[$count]}" &
                rm ${LCLDATADIR}/${host}.dat_http${count} &
                count=$((count + 1))
        done
@@ -254,7 +260,8 @@ done
 wait
 
 # Additional cleanup for move operation files
-for src in "${!srcs[@]}"; do
+for ((i = 0; i < ${#move_src_names[@]}; i++)); do
+    src="${move_src_names[i]}"
     if [[ "$src" == "man1" || "$src" == "srv1" ]]; then
         ${XRDFS} "${HOST_METAMAN}" rm "${RMTDATADIR}/new_file_${src}" &
     else
