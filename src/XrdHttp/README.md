@@ -205,7 +205,7 @@ ctest -R 'XRootD::(http|httpparser|httph2)' --output-on-failure
 |------------|--------|------|----------|
 | `XRootD::http` | `tests/XRootD/http.sh` | 7094 | Full HTTP/1.1 integration |
 | `XRootD::httpparser` | `tests/XRootD/httpparser.sh` | 7095 | llhttp header parsing |
-| `XRootD::httpparserlegacy` | `tests/XRootD/httpparserlegacy.sh` | 7096 | Legacy line parser regression |
+| `XRootD::httpparserlegacy` | `tests/XRootD/httpparserlegacy.sh` | 7098 | Legacy line parser regression |
 | `XRootD::httph2` | `tests/XRootD/httph2.sh` | 7097 | HTTPS + ALPN h2 (GET/PUT/HEAD/DELETE, same-connection reuse) |
 
 ## Source layout

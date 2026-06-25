@@ -36,6 +36,6 @@ cmake .. -DENABLE_HTTP=ON
 ## Tests
 
 - `tests/XRootD/httpparser` — llhttp smoke tests (port 7095)
-- `tests/XRootD/httpparserlegacy` — legacy parser regression (port 7096)
+- `tests/XRootD/httpparserlegacy` — legacy parser regression (port 7098)
 - `tests/XRootD/http` — full HTTP/1.1 integration suite (port 7094)
 - `tests/XRootD/httph2` — HTTPS + ALPN h2 smoke tests (port 7097, TLS fixture)

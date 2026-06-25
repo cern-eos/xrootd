@@ -2,11 +2,11 @@
 
 function setup_httpparserlegacy() {
 	require_commands openssl curl
-	openssl rand -base64 -out macaroons-secret 64
+	openssl rand -base64 -out "${NAME}/macaroons-secret" 64
 }
 
 function teardown_httpparserlegacy() {
-	rm -f macaroons-secret
+	rm -f "${NAME}/macaroons-secret"
 }
 
 function test_httpparserlegacy() {
