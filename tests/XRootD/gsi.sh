@@ -24,7 +24,7 @@ function setup_gsi() {
 }
 
 function teardown_gsi() {
-	pwd && ls && rm authdb gridmap proxy.{crt,crtp}
+	rm -f authdb gridmap proxy.crt proxy.crtp iproxy.crt rproxy.crt
 }
 
 function test_gsi() {

@@ -10,7 +10,8 @@ function setup() {
 	echo 1000 > ca/serial-crl
 	# Create private key and root certificate for the CA
 	openssl genrsa -out ca.key 4096
-	openssl req -x509 -new -key ca.key -subj '/O=XRootD/CN=XRootD Root CA' -days 30 -out ca.pem
+	openssl req -new -key ca.key -out ca.csr -subj '/O=XRootD/CN=XRootD Root CA'
+	openssl ca -batch -selfsign -config tls.conf -in ca.csr -extensions xrootd_ca_ext -out ca.pem
 	openssl verify -CAfile ca.pem ca.pem
 
 	# Create private key and certificate for the XRootD server
@@ -40,10 +41,55 @@ function setup() {
 	openssl crl -in root.crl -noout -text
 
 	# Create symlinks based on certificate hashes (needed by XRootD TLS initialization)
-	openssl rehash .
+	rehash_certs() {
+		rm -f ./*.0 ./*.1 2>/dev/null || true
+		# LibreSSL reports success for "openssl rehash" but does nothing.
+		if ! openssl version 2>/dev/null | grep -q LibreSSL; then
+			if openssl rehash . 2>/dev/null && compgen -G '*.0' >/dev/null; then
+				return 0
+			fi
+		fi
+		if openssl certhash . 2>/dev/null; then
+			:
+		fi
+		if [[ -f ca.pem ]]; then
+			local hash hash_old
+			hash=$(openssl x509 -hash -noout -in ca.pem)
+			ln -sf ca.pem "${hash}.0"
+			hash_old=$(openssl x509 -subject_hash_old -noout -in ca.pem 2>/dev/null || true)
+			if [[ -n "${hash_old}" && ! -e "${hash_old}.0" ]]; then
+				ln -sf ca.pem "${hash_old}.0"
+			fi
+		fi
+		if [[ -f root.crl ]]; then
+			local hash hash_old
+			hash=$(openssl x509 -hash -noout -in ca.pem)
+			ln -sf root.crl "${hash}.r0"
+			hash_old=$(openssl x509 -subject_hash_old -noout -in ca.pem 2>/dev/null || true)
+			if [[ -n "${hash_old}" && ! -e "${hash_old}.r0" ]]; then
+				ln -sf root.crl "${hash_old}.r0"
+			fi
+		fi
+		if compgen -G '*.0' >/dev/null; then
+			return 0
+		fi
+		if command -v c_rehash >/dev/null 2>&1; then
+			c_rehash .
+			return 0
+		fi
+		# Last resort: create the CA hash link manually.
+		local cert hash
+		for cert in ca.pem; do
+			hash=$(openssl x509 -hash -noout -in "${cert}")
+			ln -sf "${cert}" "${hash}.0"
+		done
+	}
+	rehash_certs
 
 	# Ensure that revoked certificate fails certificate verification
-	openssl verify -CApath . -crl_check -x509_strict revoked.crt && exit 1
+	if openssl verify -CApath . -crl_check -x509_strict revoked.crt; then
+		exit 1
+	fi
 
   # XRootD client/server expect restricted permissions on CA directory
   chmod 750 .
@@ -52,7 +98,7 @@ function setup() {
 }
 
 function teardown() {
-	rm -rf ca ./*.{0,1,r0,r1,crl,crt,crtp,csr,key,pem}
+	rm -rf ca ca.csr ./*.{0,1,r0,r1,crl,crt,crtp,csr,key,pem}
 }
 
 [[ $(type -t "$1") == "function" ]] || die "unknown command: $1"

@@ -77,6 +77,15 @@ HOST_SRV1=root://localhost:${XRD_PORT_SRV1}
 HOST_SRV2=root://localhost:${XRD_PORT_SRV2}
 HOST_SRV3=root://localhost:${XRD_PORT_SRV3}
 HOST_SRV4=root://localhost:${XRD_PORT_SRV4}
+XRDTEST_MAINSERVERURL=localhost:${XRD_PORT_METAMAN}
+XRDTEST_MANAGER1URL=localhost:${XRD_PORT_MAN1}
+XRDTEST_MANAGER2URL=localhost:${XRD_PORT_MAN2}
+XRDTEST_SERVER1URL=localhost:${XRD_PORT_SRV1}
+XRDTEST_SERVER2URL=localhost:${XRD_PORT_SRV2}
+XRDTEST_SERVER3URL=localhost:${XRD_PORT_SRV3}
+XRDTEST_SERVER4URL=localhost:${XRD_PORT_SRV4}
+XRDTEST_DISKSERVERURL=localhost:${XRD_PORT_METAMAN}
+XRDTEST_LOCALDATAPATH=$(cd "${DATAFOLDER}" && pwd)
 EOF
 }
 
@@ -118,7 +127,20 @@ patch_metalink_ports() {
                      -e "s/localhost:10944/localhost:${XRD_PORT_SRV2}/g" \
                      -e "s/localhost:10945/localhost:${XRD_PORT_SRV3}/g" \
                      -e "s/localhost:10946/localhost:${XRD_PORT_SRV4}/g" \
+                     -e "s/localhost:${PREV_XRD_PORT_SRV1}/localhost:${XRD_PORT_SRV1}/g" \
+                     -e "s/localhost:${PREV_XRD_PORT_SRV2}/localhost:${XRD_PORT_SRV2}/g" \
+                     -e "s/localhost:${PREV_XRD_PORT_SRV3}/localhost:${XRD_PORT_SRV3}/g" \
+                     -e "s/localhost:${PREV_XRD_PORT_SRV4}/localhost:${XRD_PORT_SRV4}/g" \
                      "${file}"
+       done
+}
+
+patch_all_metalink_ports() {
+       local dir
+
+       for dir in "${DATAFOLDER}"/*/data/metalink; do
+              [[ -d "${dir}" ]] || continue
+              patch_metalink_ports "${dir}"/*
        done
 }
 
@@ -213,7 +235,6 @@ generate(){
                      mkdir -p ${DATAFOLDER}/${i}/data/metalink
                      cp ${PREDEF}/input*.meta* ${DATAFOLDER}/${i}/data/metalink/
                      cp ${PREDEF}/ml*.meta*    ${DATAFOLDER}/${i}/data/metalink/
-                     patch_metalink_ports ${DATAFOLDER}/${i}/data/metalink/*
               fi
 
               # download the test files for 'srv2' and add another instance on 1099
@@ -249,12 +270,73 @@ generate(){
        rm -rf ${TMPDATAFOLDER}
 }
 
+kill_pidfile() {
+       local pidfile=$1
+       local pid wait_count
+
+       [[ -s "${pidfile}" ]] || return 0
+       pid=$(ps -o pid= "$(cat "${pidfile}")" 2>/dev/null | tr -d ' ')
+       [[ -n "${pid}" ]] || return 0
+       kill -s TERM "${pid}" 2>/dev/null || true
+       for ((wait_count = 0; wait_count < 50; wait_count++)); do
+              ps -p "${pid}" >/dev/null 2>&1 || return 0
+              sleep 0.1
+       done
+       kill -s KILL "${pid}" 2>/dev/null || true
+}
+
+stop() {
+       local i
+
+       set +e
+       for i in "${servernames[@]}"; do
+              [[ -d "${i}" ]] || continue
+              kill_pidfile "${i}/cmsd.pid"
+              kill_pidfile "${i}/xrootd.pid"
+              rm -rf "${i}"
+       done
+       rm -f "${PORTS_ENV}"
+       set -e
+}
+
 start(){
+       PREV_XRD_PORT_SRV1=10943
+       PREV_XRD_PORT_SRV2=10944
+       PREV_XRD_PORT_SRV3=10945
+       PREV_XRD_PORT_SRV4=10946
+       if [[ -f "${PORTS_ENV}" ]]; then
+              # shellcheck disable=SC1091
+              source "${PORTS_ENV}"
+              PREV_XRD_PORT_SRV1=${XRD_PORT_SRV1}
+              PREV_XRD_PORT_SRV2=${XRD_PORT_SRV2}
+              PREV_XRD_PORT_SRV3=${XRD_PORT_SRV3}
+              PREV_XRD_PORT_SRV4=${XRD_PORT_SRV4}
+       fi
+
+       stop
+
        allocate_ports
        write_configs
        write_ports_env
        generate
+       patch_all_metalink_ports
+
+       local need_cleanup=0
+       start_interrupt_cleanup() {
+              need_cleanup=1
+       }
+       start_exit_cleanup() {
+              if [[ ${need_cleanup} -eq 1 ]]; then
+                     stop
+              fi
+       }
+
+       trap start_interrupt_cleanup INT TERM HUP
+       trap start_exit_cleanup EXIT
+
        set -x
+       need_cleanup=1
+
        # start for each component
        for i in "${servernames[@]}"; do
               ${XROOTD} -b -k fifo -n ${i} -l xrootd.log -s xrootd.pid -c ${i}.cfg
@@ -266,17 +348,8 @@ start(){
        done
 
        sleep 1
-}
-
-stop() {
-	for i in "${servernames[@]}"; do
-		if [[ -d "${i}" ]]; then
-			kill -s TERM $(cat ${i}/cmsd.pid)
-			kill -s TERM $(cat ${i}/xrootd.pid)
-			rm -rf "${i}"
-		fi
-	done
-	rm -f "${PORTS_ENV}"
+       need_cleanup=0
+       trap - EXIT INT TERM HUP
 }
 
 insertFileInfo() {

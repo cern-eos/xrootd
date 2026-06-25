@@ -18,7 +18,8 @@ file(COPY mvdata DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
 
 add_test(NAME XRootD::cluster::start
   COMMAND sh -c "cp -r ${CMAKE_CURRENT_SOURCE_DIR}/mvdata ${CMAKE_CURRENT_BINARY_DIR} \
-    && ${CMAKE_CURRENT_SOURCE_DIR}/setup.sh start")
+    && ${CMAKE_CURRENT_SOURCE_DIR}/setup.sh start \
+    || (${CMAKE_CURRENT_SOURCE_DIR}/setup.sh stop; exit 1)")
 set_tests_properties(XRootD::cluster::start
   PROPERTIES ENVIRONMENT "${XRDENV}" FIXTURES_SETUP XRootD_Cluster)
 

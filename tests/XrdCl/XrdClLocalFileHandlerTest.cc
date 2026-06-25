@@ -21,6 +21,7 @@
 #include "XrdSys/XrdSysPlatform.hh"
 
 #include <climits>
+#include <algorithm>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -533,6 +534,14 @@ TEST_F(LocalFileHandlerTest, XAttrTest)
   //----------------------------------------------------------------------------
   resp.clear();
   EXPECT_XRDST_OK( f.ListXAttr( resp ) );
+#ifdef __APPLE__
+  // macOS may attach system xattrs such as com.apple.provenance.
+  resp.erase( std::remove_if( resp.begin(), resp.end(),
+                              []( const XAttr &a ) {
+                                return a.name.compare( 0, 10, "com.apple." ) == 0;
+                              } ),
+              resp.end() );
+#endif
   EXPECT_EQ( resp.size(), 2u );
   vid = resp[0].name == "version" ? 0 : 1;
   int cid = vid == 0 ? 1 : 0;

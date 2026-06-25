@@ -16,6 +16,8 @@ if(NOT ENABLE_SERVER_TESTS)
   return()
 endif()
 
+set(XRDCL_CLUSTER_TEST_ENV "XRDTEST_PORTS_ENV=${CMAKE_BINARY_DIR}/tests/cluster/ports.env")
+
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tmp")
 
 add_executable(xrdcl-cluster-tests
@@ -34,7 +36,8 @@ target_link_libraries(xrdcl-cluster-tests
   XrdTestUtils GTest::gtest GTest::gtest_main)
 
 gtest_discover_tests(xrdcl-cluster-tests TEST_PREFIX XrdCl::
-  PROPERTIES DEPENDS XRootD_Cluster FIXTURES_REQUIRED XRootD_Cluster DISCOVERY_TIMEOUT 10)
+  PROPERTIES DEPENDS XRootD_Cluster FIXTURES_REQUIRED XRootD_Cluster
+             ENVIRONMENT "${XRDCL_CLUSTER_TEST_ENV}" DISCOVERY_TIMEOUT 10)
 
 # tests to be run in serial, otherwise they are problematic
 set(SERIAL_TESTS_FILES
@@ -54,5 +57,6 @@ foreach(i ${SERIAL_TESTS_FILES})
     XrdTestUtils GTest::gtest GTest::gtest_main)
 
   gtest_discover_tests(${i}-tests TEST_PREFIX XrdCl::
-    PROPERTIES DEPENDS XRootD_Cluster FIXTURES_REQUIRED XRootD_Cluster RUN_SERIAL 1 DISCOVERY_TIMEOUT 10)
+    PROPERTIES DEPENDS XRootD_Cluster FIXTURES_REQUIRED XRootD_Cluster RUN_SERIAL 1
+               ENVIRONMENT "${XRDCL_CLUSTER_TEST_ENV}" DISCOVERY_TIMEOUT 10)
 endforeach()

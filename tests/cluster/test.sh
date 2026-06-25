@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+SETUP_SH="$(cd "$(dirname "$0")" && pwd)/setup.sh"
+
 : ${ADLER32:=$(command -v xrdadler32)}
 : ${CRC32C:=$(command -v xrdcrc32c)}
 : ${XRDCP:=$(command -v xrdcp)}
@@ -60,7 +62,36 @@ done
 # This script assumes that ${host} exports an empty / as read/write.
 # It also assumes that any authentication required is already setup.
 
+RMTDATADIR="/srvdata"
+LCLDATADIR="${PWD}/localdata"  # client folder
+
+cleanup_local_files() {
+       local i
+       for ((i = 0; i < ${#host_names[@]}; i++)); do
+              rm -rf ${LCLDATADIR}/${host_names[i]}.dat
+              rm -rf ${LCLDATADIR}/${host_names[i]}.ref
+       done
+}
+
+stop_cluster() {
+       [[ -x "${SETUP_SH}" ]] && "${SETUP_SH}" stop || true
+}
+
+fixture_cleanup() {
+       local rc=$?
+
+       cleanup_local_files
+       if [[ ${rc} -ne 0 ]]; then
+              echo 1>&2 "Stopping cluster after test failure or interruption."
+              stop_cluster
+       fi
+       return ${rc}
+}
+
 set -e
+
+trap fixture_cleanup EXIT
+trap 'stop_cluster; exit 130' INT TERM HUP
 
 ${XRDCP} --version
 
@@ -83,9 +114,6 @@ ${XRDFS} ${HOST_METAMAN} stat /
 ${XRDFS} ${HOST_METAMAN} statvfs /
 ${XRDFS} ${HOST_METAMAN} spaceinfo /
 
-RMTDATADIR="/srvdata"
-LCLDATADIR="${PWD}/localdata"  # client folder
-
 mkdir -p ${LCLDATADIR}
 
 assert_xrdmapc_json() {
@@ -103,16 +131,6 @@ assert_xrdmapc_json() {
        ${XRDMAPC} "localhost:${XRD_PORT_METAMAN}"
 
 }
-
-cleanup() {
-       echo "Error occurred. Cleaning up..."
-       local i
-       for ((i = 0; i < ${#host_names[@]}; i++)); do
-              rm -rf ${LCLDATADIR}/${host_names[i]}.dat
-              rm -rf ${LCLDATADIR}/${host_names[i]}.ref
-       done
-}
-trap "cleanup; exit 1" ABRT
 
 assert_xrdmapc_json
 

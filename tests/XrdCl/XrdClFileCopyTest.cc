@@ -355,6 +355,11 @@ void FileCopyTest::CopyTestFunc( bool thirdParty )
   PropertyList properties, results;
   FileSystem fs( manager2 );
 
+  // Remove any leftover targets from a previous interrupted run.
+  fs.Rm( targetPath );
+  remove( localFile.c_str() );
+  sync();
+
   //----------------------------------------------------------------------------
   // Copy from a ZIP archive
   //----------------------------------------------------------------------------
@@ -530,6 +535,7 @@ void FileCopyTest::CopyTestFunc( bool thirdParty )
   //----------------------------------------------------------------------------
   // Copy to local fs
   //----------------------------------------------------------------------------
+  remove( localFile.c_str() );
   results.Clear();
   properties.Set( "source", sourceURL );
   properties.Set( "target", "file://localhost" + localFile );

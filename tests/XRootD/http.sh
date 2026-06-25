@@ -472,11 +472,38 @@ function test_http() {
     local payload="$1"
     local status=""
     local rc=0
-    exec 3<>"/dev/tcp/${smugglingHost}/${smugglingPort}"
-    printf '%s' "$payload" >&3
-    IFS= read -r -t 10 status <&3 || rc=$?
-    exec 3<&-
-    status="${status//$'\r'/}"
+
+    # macOS ships bash 3.2 without /dev/tcp; use python3 when available.
+    if command -v python3 >/dev/null 2>&1; then
+      status=$(printf '%s' "$payload" | _SMUGGLING_HOST="$smugglingHost" _SMUGGLING_PORT="$smugglingPort" python3 -c '
+import os, socket, sys
+host = os.environ["_SMUGGLING_HOST"]
+port = int(os.environ["_SMUGGLING_PORT"])
+payload = sys.stdin.buffer.read()
+s = socket.create_connection((host, port), timeout=10)
+s.sendall(payload)
+try:
+    s.shutdown(socket.SHUT_WR)
+except OSError:
+    pass
+buf = b""
+while b"\n" not in buf and len(buf) < 8192:
+    chunk = s.recv(4096)
+    if not chunk:
+        break
+    buf += chunk
+s.close()
+if buf:
+    sys.stdout.write(buf.split(b"\n", 1)[0].decode("latin-1", "replace").rstrip("\r"))
+' ) || rc=$?
+    else
+      exec 3<>"/dev/tcp/${smugglingHost}/${smugglingPort}"
+      printf '%s' "$payload" >&3
+      IFS= read -r -t 10 status <&3 || rc=$?
+      exec 3<&-
+      status="${status//$'\r'/}"
+    fi
+
     if [[ -n "${status}" ]]; then
       printf '%s' "${status}"
     elif (( rc > 128 )); then

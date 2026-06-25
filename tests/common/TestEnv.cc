@@ -19,6 +19,81 @@
 #include "TestEnv.hh"
 #include "XrdCl/XrdClOptimizers.hh"
 
+#include <cstdlib>
+#include <fstream>
+#include <string>
+
+namespace {
+
+bool ImportPortsEnvFile( XrdCl::Env *env, const char *path )
+{
+  std::ifstream in( path );
+  if( !in.is_open() )
+    return false;
+
+  static const struct
+  {
+    const char *fileKey;
+    const char *envKey;
+  } mapping[] =
+  {
+    { "XRDTEST_MAINSERVERURL",    "MainServerURL" },
+    { "XRDTEST_DISKSERVERURL",    "DiskServerURL" },
+    { "XRDTEST_MANAGER1URL",      "Manager1URL" },
+    { "XRDTEST_MANAGER2URL",      "Manager2URL" },
+    { "XRDTEST_SERVER1URL",       "Server1URL" },
+    { "XRDTEST_SERVER2URL",       "Server2URL" },
+    { "XRDTEST_SERVER3URL",       "Server3URL" },
+    { "XRDTEST_SERVER4URL",       "Server4URL" },
+    { "XRDTEST_DATAPATH",         "DataPath" },
+    { "XRDTEST_LOCALFILE",        "LocalFile" },
+    { "XRDTEST_REMOTEFILE",       "RemoteFile" },
+    { "XRDTEST_MULTIIPSERVERURL", "MultiIPServerURL" },
+    { "XRDTEST_LOCALDATAPATH",    "LocalDataPath" },
+  };
+
+  std::string line;
+  while( std::getline( in, line ) )
+  {
+    if( line.empty() || line[0] == '#' )
+      continue;
+
+    const auto eq = line.find( '=' );
+    if( eq == std::string::npos )
+      continue;
+
+    const std::string key = line.substr( 0, eq );
+    const std::string val = line.substr( eq + 1 );
+
+    for( const auto &entry : mapping )
+    {
+      if( key == entry.fileKey )
+      {
+        env->PutString( entry.envKey, val );
+        break;
+      }
+    }
+  }
+
+  return true;
+}
+
+void LoadPortsEnvFile( XrdCl::Env *env )
+{
+  if( const char *path = getenv( "XRDTEST_PORTS_ENV" ) )
+    if( *path && ImportPortsEnvFile( env, path ) )
+      return;
+
+#ifdef XRDTEST_DEFAULT_PORTS_ENV
+  if( ImportPortsEnvFile( env, XRDTEST_DEFAULT_PORTS_ENV ) )
+    return;
+#endif
+
+  ImportPortsEnvFile( env, "../cluster/ports.env" );
+}
+
+} // anonymous namespace
+
 namespace XrdClTests {
 
 XrdSysMutex     TestEnv::sEnvMutex;
@@ -42,7 +117,12 @@ TestEnv::TestEnv()
   PutString( "RemoteFile",       "/data/cb4aacf1-6f28-42f2-b68a-90a73460f424.dat" );
   PutString( "LocalFile",        "/data/testFile.dat" );
   PutString( "MultiIPServerURL", "multiip:1099" );
+#ifdef XRDTEST_DEFAULT_LOCAL_DATA_PATH
+  PutString( "LocalDataPath",    XRDTEST_DEFAULT_LOCAL_DATA_PATH );
+#else
   PutString( "LocalDataPath",    "../cluster/data" );
+#endif
+  LoadPortsEnvFile( this );
   ImportString( "MainServerURL",    "XRDTEST_MAINSERVERURL" );
   ImportString( "DiskServerURL",    "XRDTEST_DISKSERVERURL" );
   ImportString( "Manager1URL",      "XRDTEST_MANAGER1URL" );
