@@ -28,8 +28,11 @@
 /* specific prior written permission of the institution or contributor.       */
 /******************************************************************************/
 
+#include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <grp.h>
+#include <iostream>
 #include <cstdio>
 #include <list>
 #include <vector>
@@ -1291,6 +1294,31 @@ void XrdOucUtils::toLower(char *str)
 // Change each character to lower case
 //
    while(*ustr) {*ustr = tolower(*ustr); ustr++;}
+}
+
+/******************************************************************************/
+/*                               E n a b l e d                                */
+/******************************************************************************/
+
+bool XrdOucUtils::Enabled(const char *env)
+{
+   const char *val = env ? std::getenv(env) : nullptr;
+   if (!val || !*val) return false;
+
+   XrdOucString v(val);
+   v.lower(0);
+
+   return v == "1" || v == "on" || v == "yes" || v == "true" || v == "enabled";
+}
+
+/******************************************************************************/
+/*                         D e b u g E n a b l e d                          */
+/******************************************************************************/
+
+void XrdOucUtils::DebugEnabled(const char *env, const char *tag, const std::string &msg)
+{
+   if (!Enabled(env)) return;
+   std::cerr << tag << ": " << msg << '\n';
 }
 
 /******************************************************************************/

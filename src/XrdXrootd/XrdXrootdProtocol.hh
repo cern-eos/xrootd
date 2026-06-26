@@ -314,7 +314,8 @@ static int   CheckSum(XrdOucStream *, char **, int);
        void  Cleanup();
 static int   Config(const char *fn);
 static bool  ConfigMon(XrdProtocol_Config *pi, XrdOucEnv &xrootdEnv);
-static int   ConfigSecurity(XrdOucEnv &xEnv, const char *cfn);
+static int   ConfigSecurity(XrdOucEnv &xEnv, const char *cfn,
+                            XrdOucEnv *sharedEnv=0);
        int   fsError(int rc, char opc, XrdOucErrInfo &myError,
                      const char *Path, char *Cgi);
        int   fsOvrld(char opc, const char *Path, char *Cgi);

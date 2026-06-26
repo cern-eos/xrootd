@@ -49,6 +49,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <string_view>
 #include <openssl/ssl.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -170,6 +171,10 @@ private:
   /// @return 0 if successful, otherwise error
   int HandleAuthentication(XrdLink* lp);
 
+  /// Validate a Bearer OAuth2 token and populate SecEntity.
+  /// @return 0 if successful or not applicable, otherwise error
+  int HandleOAuth2Authentication();
+
   /// After the SSL handshake, retrieve the VOMS info and the various stuff
   /// that is needed for autorization
   int GetVOMSData(XrdLink *lp);
@@ -229,7 +234,16 @@ private:
   static int xtlsreuse(XrdOucStream &Config);
   static int xauth(XrdOucStream &Config);
   static int xtlsclientauth(XrdOucStream &Config);
+  static int xoauth2(XrdOucStream &Config);
   static int xmaxdelay(XrdOucStream &Config);
+
+  /// HTTPS bearer OAuth2 policy for http.oauth2.
+  enum class OAuth2HttpMode { Off = 0, Optional = 1, Require = 2 };
+
+  static OAuth2HttpMode oauth2HttpMode;
+
+  /// Config file path used to load the security framework for http.oauth2.
+  static std::string_view oauth2ConfigFN;
 
   static bool isRequiredXtractor; // If true treat secxtractor errors as fatal
   static XrdHttpSecXtractor *secxtractor;
@@ -363,6 +377,9 @@ protected:
   static XrdSysError eDest; // Error message handler
   static XrdSecService *CIA; // Authentication Server
 
+  /// Shared process environment passed to Config(); used to reuse security.
+  static XrdOucEnv *configEnv;
+
   /// The link we are bound to
   XrdLink *Link;
   
@@ -376,7 +393,15 @@ protected:
   /// The Bridge that we use to exercise the xrootd internals
   XrdXrootd::Bridge *Bridge;
 
-  
+  /// SHA-256 fingerprint of the validated OAuth2 bearer token on this connection.
+  std::string oauth2BearerTokKey;
+
+  /// Expiry (unix seconds) of the validated OAuth2 bearer token above. While the
+  /// same token is presented and this time has not passed, validation is skipped
+  /// (a pure clock comparison); once it passes the token is re-validated so an
+  /// expired credential cannot be reused for the lifetime of the connection.
+  uint64_t oauth2BearerTokExp = 0;
+
   /// Area for coordinating request and responses to/from the bridge
   /// This also can process HTTP/DAV stuff
   XrdHttpReq CurrentReq;

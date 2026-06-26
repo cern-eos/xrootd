@@ -114,6 +114,14 @@ XrdSecAttr      *Get(const void *sigkey);
 std::vector<std::string> Keys();
 
 //------------------------------------------------------------------------------
+//! Remove all attributes (key-value pairs and attribute objects) from this
+//! entity. Use when an entity is being re-purposed for a new identity so that
+//! attributes from a previous authentication cannot leak into the new one.
+//------------------------------------------------------------------------------
+
+         void    Reset();
+
+//------------------------------------------------------------------------------
 //! List key-value pairs via iterative callback on passed ovject.
 //!
 //! @param  attrCB  - Reference to the callback object to receive list entries.

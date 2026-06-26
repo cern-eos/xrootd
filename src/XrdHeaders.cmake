@@ -67,6 +67,7 @@ set( XROOTD_PUBLIC_HEADERS
   XrdOuc/XrdOuca2x.hh
   XrdOuc/XrdOucEnum.hh
   XrdOuc/XrdOucCompiler.hh
+  XrdOAuth2/XrdOAuth2.hh
   XrdPosix/XrdPosix.hh
   XrdPosix/XrdPosixCache.hh
   XrdPosix/XrdPosixCallBack.hh

@@ -19,9 +19,26 @@
 // along with XRootD.  If not, see <http://www.gnu.org/licenses/>.
 //------------------------------------------------------------------------------
 
+#include <algorithm>
+#include <chrono>
+#include <cctype>
+#include <cstdio>
+#include <cstring>
+#include <map>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include <openssl/evp.h>
+
 #include "XrdHttpProtocol.hh"
 #include "XrdHttpTrace.hh"
 #include "XrdHttpSecXtractor.hh"
+#include "XrdOuc/XrdOucEnv.hh"
+#include "XrdSec/XrdSecLoadSecurity.hh"
+#include "XrdSec/XrdSecInterface.hh"
+#include "XrdOuc/XrdOucErrInfo.hh"
+#include "XrdOAuth2/XrdOAuth2.hh"
 #include "Xrd/XrdLink.hh"
 #include "XrdCrypto/XrdCryptoX509Chain.hh"
 #include "XrdCrypto/XrdCryptosslAux.hh"
@@ -48,6 +65,113 @@ const char *TraceID = "Security";
 }
 
 using namespace XrdHttpProtoInfo;
+
+namespace
+{
+
+std::string sha256Hex(std::string_view data)
+{
+   unsigned char md[EVP_MAX_MD_SIZE];
+   unsigned int mdLen = 0;
+   if (data.empty()
+   ||  !EVP_Digest(data.data(), data.size(), md, &mdLen, EVP_sha256(), nullptr))
+      return {};
+   static constexpr char kHex[] = "0123456789abcdef";
+   std::string out(mdLen * 2, '\0');
+   for (unsigned int i = 0; i < mdLen; ++i)
+      {out[i * 2]     = kHex[(md[i] >> 4) & 0x0f];
+       out[i * 2 + 1] = kHex[md[i] & 0x0f];
+      }
+   return out;
+}
+
+bool iequals(std::string_view a, std::string_view b)
+{
+   return a.size() == b.size()
+       && std::equal(a.begin(), a.end(), b.begin(), b.end(),
+            [](unsigned char x, unsigned char y) {
+               return std::tolower(x) == std::tolower(y);
+            });
+}
+
+void copyEntityAttrs(XrdSecEntity &dst, const XrdSecEntity &src)
+{
+   for (const auto &key : src.eaAPI->Keys())
+      {std::string val;
+       if (src.eaAPI->Get(key, val)) dst.eaAPI->Add(key, val, true);
+      }
+}
+
+// RFC 6750 WWW-Authenticate challenges returned with 4xx responses so that
+// clients can detect a bearer-protected resource and drive token refresh.
+constexpr std::string_view kBearerChallenge =
+   "WWW-Authenticate: Bearer realm=\"XRootD\"";
+constexpr std::string_view kBearerChallengeInvalid =
+   "WWW-Authenticate: Bearer realm=\"XRootD\", error=\"invalid_token\", "
+   "error_description=\"The access token is missing, invalid, or expired\"";
+constexpr std::string_view kBearerChallengeBadRequest =
+   "WWW-Authenticate: Bearer realm=\"XRootD\", error=\"invalid_request\", "
+   "error_description=\"Malformed or duplicate Authorization credentials\"";
+
+const char *oauth2ErrText(XrdOucErrInfo &eMsg)
+{
+   int ec = 0;
+   const char *et = eMsg.getErrText(ec);
+   return (et && *et) ? et : "unknown";
+}
+
+uint64_t nowUnixSeconds()
+{
+   return static_cast<uint64_t>(std::chrono::system_clock::to_time_t(
+       std::chrono::system_clock::now()));
+}
+
+struct SecProtocolHolder {
+   XrdSecProtocol *prot{nullptr};
+   ~SecProtocolHolder() { if (prot) prot->Delete(); }
+   explicit operator bool() const { return prot != nullptr; }
+   XrdSecProtocol *get() { return prot; }
+};
+
+// Extract the bearer token from the request. Returns true and sets token when a
+// single credential is found. Returns false otherwise; malformed is set true
+// when the request is ambiguous (e.g. more than one Authorization header) and
+// must be rejected rather than treated as token-less.
+bool extractBearerToken(const XrdHttpReq &req, std::string &token, bool &malformed)
+{
+   malformed = false;
+   const std::string &cgi = req.hdr2cgistr;
+   constexpr std::string_view kAuthzKey = "authz=";
+   if (const auto pos = cgi.find(kAuthzKey); pos != std::string::npos)
+      {const auto start = pos + kAuthzKey.size();
+       const auto end = cgi.find('&', start);
+       token = (end == std::string::npos ? cgi.substr(start)
+                                         : cgi.substr(start, end - start));
+       return !token.empty();
+      }
+
+   // Reject more than one Authorization header. Case-variant duplicates
+   // (e.g. "Authorization" and "authorization") survive header parsing as
+   // distinct map entries, so a case-insensitive count is required; ambiguous
+   // credentials are a hallmark of request-smuggling attempts.
+   const std::string *found = nullptr;
+   int count = 0;
+   constexpr std::string_view kAuthorization = "authorization";
+   for (const auto &hdr : req.allheaders)
+      {if (iequals(hdr.first, kAuthorization))
+          {++count;
+           found = &hdr.second;
+          }
+      }
+   if (count > 1) {malformed = true; return false;}
+   if (count == 1 && found)
+      {token = *found;
+       return !token.empty();
+      }
+   return false;
+}
+
+} // namespace
 
 /******************************************************************************/
 /*                          I n i t S e c u r i t y                           */
@@ -81,9 +205,177 @@ bool XrdHttpProtocol::InitSecurity() {
        secxtractor->Init(sslctx, XrdHttpTrace.What);
       }
 
+// Load the security framework when HTTP bearer OAuth2 is enabled.
+//
+   if (oauth2HttpMode != OAuth2HttpMode::Off && !CIA)
+      {if (oauth2ConfigFN.empty())
+          {eDest.Say("Error: http.oauth2 requires a configuration file path");
+           return false;
+          }
+       if (configEnv)
+          CIA = static_cast<XrdSecService *>(configEnv->GetPtr("XrdSecService*"));
+       if (!CIA)
+          {XrdSecGetProt_t getProt = nullptr;
+           XrdSecProtector *dhs = nullptr;
+           CIA = XrdSecLoadSecService(&eDest, oauth2ConfigFN.data(), nullptr,
+                                      &getProt, &dhs);
+           if (CIA && configEnv)
+              {configEnv->PutPtr("XrdSecService*", CIA);
+               if (getProt) configEnv->PutPtr("XrdSecGetProtocol*", (void *)getProt);
+               if (dhs)     configEnv->PutPtr("XrdSecProtector*", (void *)dhs);
+              }
+          }
+       else if (configEnv)
+          configEnv->PutPtr("XrdSecService*", CIA);
+       if (!CIA)
+          {eDest.Say("Error loading security framework for http.oauth2");
+           return false;
+          }
+      }
+
 // All done
 //
    return true;
+}
+
+/******************************************************************************/
+/*          H a n d l e O A u t h 2 A u t h e n t i c a t i o n               */
+/******************************************************************************/
+
+int
+XrdHttpProtocol::HandleOAuth2Authentication()
+{
+#undef  TRACELINK
+#define TRACELINK Link
+
+  if (oauth2HttpMode == OAuth2HttpMode::Off || !CIA) return 0;
+
+  // Client-certificate identity is fixed for the TLS connection.
+  if (SecEntity.name
+  &&  std::string_view(SecEntity.prot) != XrdOAuth2::kProtocolId) return 0;
+
+  std::string bearer;
+  bool tokMalformed = false;
+  if (!extractBearerToken(CurrentReq, bearer, tokMalformed))
+     {if (tokMalformed)
+         {TRACEI(REQ, " OAuth2 ambiguous Authorization credentials; rejecting.");
+          SendSimpleResp(400, nullptr, kBearerChallengeBadRequest.data(),
+                         "Malformed authorization", 0, false);
+          return 1;
+         }
+      // A bearer token must be presented on *every* request in require mode;
+      // a token validated earlier on this keep-alive connection does not
+      // authorize subsequent token-less requests (mTLS identity, handled
+      // above, still satisfies the requirement).
+      if (oauth2HttpMode == OAuth2HttpMode::Require)
+         {TRACEI(REQ, " OAuth2 bearer token required but not provided.");
+          SendSimpleResp(401, nullptr, kBearerChallenge.data(),
+                         "Authentication required", 0, false);
+          return 1;
+         }
+      return 0;
+     }
+
+  const int rawLen = static_cast<int>(bearer.size());
+  int tlen = rawLen;
+  const char *tok = XrdOAuth2::StripToken(bearer.data(), tlen, rawLen);
+  if (!tok || tlen <= 0)
+     {TRACEI(REQ, " OAuth2 bearer token malformed.");
+      SendSimpleResp(401, nullptr, kBearerChallengeInvalid.data(),
+                     "Authentication failed", 0, false);
+      return 1;
+     }
+
+  const std::string_view tokenView(tok, static_cast<std::size_t>(tlen));
+  const std::string tokKey = sha256Hex(tokenView);
+  if (tokKey.empty())
+     {TRACEI(REQ, " OAuth2 bearer token fingerprint failed.");
+      SendSimpleResp(500, nullptr, nullptr, "Authentication failed", 0, false);
+      return 1;
+     }
+
+  // Fast path: the same token presented again on this connection is accepted
+  // without re-validation only while it has not yet expired. This is a pure
+  // clock comparison (no crypto/JSON/allocation). Once the recorded expiry has
+  // passed we fall through and re-validate, so an expired token can never be
+  // reused for the lifetime of a keep-alive connection.
+  if (!oauth2BearerTokKey.empty() && tokKey == oauth2BearerTokKey
+  &&  oauth2BearerTokExp != 0 && nowUnixSeconds() < oauth2BearerTokExp)
+     return 0;
+
+  // Validate the presented token. The shared validated-token cache keeps an
+  // unexpired token cheap (no signature/JWKS work); expiry, JWKS rotation and
+  // config reloads are all still enforced here.
+  auto cred = XrdOAuth2::makeCredentials(tokenView);
+  if (!cred)
+     {TRACEI(REQ, " OAuth2 credential allocation failed.");
+      SendSimpleResp(500, nullptr, nullptr, "Authentication failed", 0, false);
+      return 1;
+     }
+
+  XrdOucErrInfo eMsg;
+  SecProtocolHolder authProt{CIA->getProtocol(Link->Host(), *(Link->AddrInfo()),
+                                             cred.get(), eMsg)};
+  if (!authProt)
+     {TRACEI(REQ, " OAuth2 protocol unavailable: " << oauth2ErrText(eMsg));
+      SendSimpleResp(401, nullptr, kBearerChallengeInvalid.data(),
+                     "Authentication failed", 0, false);
+      return 1;
+     }
+
+  XrdSecParameters *parm = nullptr;
+  const int rc = authProt.get()->Authenticate(cred.get(), &parm, &eMsg);
+  if (parm) delete parm;
+
+  if (rc != 0 || !CIA->PostProcess(authProt.get()->Entity, eMsg))
+     {TRACEI(REQ, " OAuth2 token validation failed: " << oauth2ErrText(eMsg));
+      SendSimpleResp(401, nullptr, kBearerChallengeInvalid.data(),
+                     "Authentication failed", 0, false);
+      return 1;
+     }
+
+  const bool firstToken   = oauth2BearerTokKey.empty();
+  const bool tokenChanged = !firstToken && tokKey != oauth2BearerTokKey;
+
+  // If the identity is unchanged (same token re-validated OK) keep the existing
+  // login and entity untouched; only the re-validation above mattered. Refresh
+  // the recorded expiry so the fast path can resume.
+  if (!firstToken && !tokenChanged)
+     {oauth2BearerTokExp = XrdOAuth2::CachedTokenExpiry(tok, tlen);
+      return 0;
+     }
+
+  // A new or changed token must (re)establish the login. Tear down any existing
+  // bridge so the request re-logs in under the new identity.
+  if (Bridge)
+     {if (!Bridge->Disc())
+         {const char *busyMsg = tokenChanged
+                              ? " OAuth2 token changed but bridge is busy."
+                              : " OAuth2 login busy.";
+          TRACEI(REQ, busyMsg);
+          SendSimpleResp(503, nullptr, nullptr, "Authentication busy", 0, false);
+          return 1;
+         }
+      Bridge = nullptr;
+      DoingLogin = false;
+      DoneSetInfo = false;
+     }
+  if (tokenChanged)
+     TRACEI(REQ, " OAuth2 bearer token changed; re-authenticating.");
+
+  // Clear any identity/attributes from a previous token before applying the new
+  // one, so stale scopes/groups/paths cannot leak into the new identity.
+  XrdOAuth2::copyEntityField(SecEntity.name, authProt.get()->Entity.name);
+  XrdOAuth2::copyEntityField(SecEntity.role, authProt.get()->Entity.role);
+  XrdOAuth2::copyEntityField(SecEntity.grps, authProt.get()->Entity.grps);
+  XrdOAuth2::copyProtocolId(SecEntity.prot);
+  SecEntity.eaAPI->Reset();
+  copyEntityAttrs(SecEntity, authProt.get()->Entity);
+
+  oauth2BearerTokKey = tokKey;
+  oauth2BearerTokExp = XrdOAuth2::CachedTokenExpiry(tok, tlen);
+  TRACEI(REQ, " OAuth2 authenticated as: " << SecEntity.name);
+  return 0;
 }
 
 /******************************************************************************/

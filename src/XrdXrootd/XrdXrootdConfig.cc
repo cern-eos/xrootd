@@ -286,7 +286,7 @@ int XrdXrootdProtocol::Configure(char *parms, XrdProtocol_Config *pi)
 
 // Initialize the security system if this is wanted
 //
-   if (!ConfigSecurity(xrootdEnv, pi->ConfigFN)) return 0;
+   if (!ConfigSecurity(xrootdEnv, pi->ConfigFN, pi->theEnv)) return 0;
 
 // Set up the network for self-identification and display it
 //
@@ -791,7 +791,8 @@ bool XrdXrootdProtocol::ConfigRedirPI(const char *path, XrdOucEnv &xEnv,
 /*                        C o n f i g S e c u r i t y                         */
 /******************************************************************************/
 
-int XrdXrootdProtocol::ConfigSecurity(XrdOucEnv &xEnv, const char *cfn)
+int XrdXrootdProtocol::ConfigSecurity(XrdOucEnv &xEnv, const char *cfn,
+                                      XrdOucEnv *sharedEnv)
 {
    XrdSecGetProt_t secGetProt = 0;
    char idBuff[256];
@@ -831,13 +832,31 @@ int XrdXrootdProtocol::ConfigSecurity(XrdOucEnv &xEnv, const char *cfn)
 //
    TRACE(DEBUG, "Loading security library " <<SecLib);
 
+// Reuse a security service already loaded by another protocol (e.g. http).
+//
+   if (!CIA && sharedEnv)
+      {CIA = static_cast<XrdSecService *>(sharedEnv->GetPtr("XrdSecService*"));
+       secGetProt = reinterpret_cast<XrdSecGetProt_t>(
+                       sharedEnv->GetPtr("XrdSecGetProtocol*"));
+       DHS = static_cast<XrdSecProtector *>(sharedEnv->GetPtr("XrdSecProtector*"));
+      }
+
 // Load the security server
 //
-   if (!(CIA = XrdSecLoadSecService(&eDest, cfn,
+   if (!CIA
+   &&  !(CIA = XrdSecLoadSecService(&eDest, cfn,
                (strcmp(SecLib,"default") ? SecLib : 0),
                &secGetProt, &DHS)))
       {eDest.Emsg("Config", "Unable to load security system.");
        return 0;
+      }
+
+// Publish for other protocols in the same process.
+//
+   if (sharedEnv)
+      {sharedEnv->PutPtr("XrdSecService*", CIA);
+       if (secGetProt) sharedEnv->PutPtr("XrdSecGetProtocol*", (void *)secGetProt);
+       if (DHS)        sharedEnv->PutPtr("XrdSecProtector*", (void *)DHS);
       }
 
 // Set environmental pointers

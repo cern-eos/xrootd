@@ -134,6 +134,10 @@ static char *subLogfn(XrdSysError &eDest, const char *inst, char *logfn);
 
 static void  toLower(char *str);
 
+static bool  Enabled(const char *env);
+
+static void  DebugEnabled(const char *env, const char *tag, const std::string &msg);
+
 static int   Token(const char **str, char delim, char *buff, int bsz);
 
 static void  Undercover(XrdSysError &eDest, int noLog, int *pipeFD = 0);
