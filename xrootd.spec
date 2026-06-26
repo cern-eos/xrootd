@@ -541,6 +541,8 @@ fi
 %{_libdir}/libXrdSecunix-6.so
 %{_libdir}/libXrdSecztn-6.so
 %{_libdir}/libXrdSecoauth2-6.so
+%{_libdir}/libXrdAccToken-6.so
+%doc src/XrdAccToken/README.md
 %license COPYING* LICENSE
 
 %files devel
