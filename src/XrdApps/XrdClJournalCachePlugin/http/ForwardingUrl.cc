@@ -3,6 +3,9 @@
 
 #include "XrdCl/XrdClURL.hh"
 
+#include <filesystem>
+#include <vector>
+
 namespace JournalCache {
 namespace {
 
@@ -19,6 +22,41 @@ std::string stripQuery(const std::string &path) {
   return path.substr(0, pos);
 }
 
+std::string safeNormalizeRemotePath(const std::string &path) {
+  std::string in = path.empty() ? "/" : path;
+  if (in.front() != '/') {
+    in.insert(in.begin(), '/');
+  }
+  std::vector<std::string> parts;
+  size_t i = 1;
+  while (i <= in.size()) {
+    const size_t j = (i >= in.size()) ? in.size() : in.find('/', i);
+    const size_t end = (j == std::string::npos) ? in.size() : j;
+    const std::string seg = in.substr(i, end - i);
+    if (seg == ".") {
+    } else if (seg == "..") {
+      if (!parts.empty()) {
+        parts.pop_back();
+      }
+    } else {
+      parts.push_back(seg);
+    }
+    if (end >= in.size()) {
+      break;
+    }
+    i = end + 1;
+  }
+  if (parts.empty()) {
+    return "/";
+  }
+  std::string out;
+  for (const auto &part : parts) {
+    out += '/';
+    out += part;
+  }
+  return out;
+}
+
 bool isEmbeddedProtocolPrefix(const std::string &value) {
   static const char *prefixes[] = {"https://",  "http://",   "roots://",
                                      "root://",   "xroots://", "xroot://"};
@@ -28,16 +66,6 @@ bool isEmbeddedProtocolPrefix(const std::string &value) {
     }
   }
   return false;
-}
-
-std::string normalizeRemotePath(const std::string &path) {
-  if (path.empty()) {
-    return "/";
-  }
-  if (path[0] == '/') {
-    return path;
-  }
-  return "/" + path;
 }
 
 EmbeddedFileUrl canonicalizeFileUrl(const std::string &url) {
@@ -122,27 +150,33 @@ std::string resolveJournalDirWithSettings(const std::string &cacheRoot,
                                           const std::string &remotePath,
                                           bool flatHierarchy,
                                           const std::string &basePath) {
-  const std::string normPath = normalizeRemotePath(remotePath);
+  const std::string normPath = safeNormalizeRemotePath(remotePath);
+  const std::string key = serverUrl + normPath;
+  std::string resolved;
   if (flatHierarchy) {
-    return cacheRoot + computeSHA256(serverUrl + normPath);
-  }
-
-  if (!basePath.empty()) {
-    const size_t pos = normPath.find(basePath);
-    if (pos != std::string::npos) {
-      return cacheRoot + normPath.substr(pos);
-    }
+    resolved = cacheRoot + computeSHA256(key);
+  } else if (!basePath.empty() &&
+             normPath.find(basePath) != std::string::npos) {
+    resolved = cacheRoot + normPath.substr(normPath.find(basePath));
+  } else {
     XrdCl::URL url(serverUrl);
-    const size_t urlPos = url.GetPath().find(basePath);
-    if (urlPos != std::string::npos) {
-      return cacheRoot + normPath;
-    }
+    const std::string host =
+        url.GetHostName() + ":" + std::to_string(url.GetPort());
+    resolved = cacheRoot + host + normPath;
   }
 
-  XrdCl::URL url(serverUrl);
-  const std::string host =
-      url.GetHostName() + ":" + std::to_string(url.GetPort());
-  return cacheRoot + host + normPath;
+  if (cacheRoot.empty()) {
+    return resolved;
+  }
+  const auto normalPath = std::filesystem::path(resolved).lexically_normal();
+  const auto normalRoot = std::filesystem::path(cacheRoot).lexically_normal();
+  const auto relative = normalPath.lexically_relative(normalRoot);
+  const std::string rel = relative.generic_string();
+  if (!rel.empty() && rel.rfind("..", 0) != 0 &&
+      rel.find("/../") == std::string::npos) {
+    return resolved;
+  }
+  return cacheRoot + computeSHA256(key);
 }
 
 std::string resolveJournalPathFromCacheKey(const std::string &cacheRoot,

@@ -1,44 +1,34 @@
 #pragma once
-/*----------------------------------------------------------------------------*/
 #include "XrdCl/XrdClFile.hh"
 #include "XrdCl/XrdClXRootDResponses.hh"
-/*----------------------------------------------------------------------------*/
 #include "cache/Journal.hh"
-/*----------------------------------------------------------------------------*/
+#include <memory>
 
 namespace XrdCl {
 
-class JournalCacheReadVHandler : public XrdCl::ResponseHandler
-// ---------------------------------------------------------------------- //
-{
+class JournalCacheReadVHandler : public XrdCl::ResponseHandler {
 public:
-  JournalCacheReadVHandler() {}
-
-  JournalCacheReadVHandler(JournalCacheReadVHandler *other) {
-    journal = other->journal;
-    rvbytes = other->rvbytes;
-  }
-
   JournalCacheReadVHandler(XrdCl::ResponseHandler *handler,
-                           std::atomic<uint64_t> *rvbytes, Journal *journal)
-      : handler(handler), rvbytes(rvbytes), journal(journal) {}
+                           std::atomic<uint64_t> *rvbytes,
+                           std::shared_ptr<Journal> journal)
+      : handler(handler), rvbytes(rvbytes), journal(std::move(journal)) {}
 
   virtual ~JournalCacheReadVHandler() {}
 
   virtual void HandleResponse(XrdCl::XRootDStatus *pStatus,
                               XrdCl::AnyObject *pResponse) {
-    if (pStatus->IsOK()) {
-      if (pResponse) {
-        VectorReadInfo *vReadInfo;
-        pResponse->Get(vReadInfo);
+    if (pStatus->IsOK() && pResponse) {
+      VectorReadInfo *vReadInfo = nullptr;
+      pResponse->Get(vReadInfo);
+      if (vReadInfo) {
         ChunkList *chunks = &(vReadInfo->GetChunks());
-        if (journal) {
-          for (auto it = chunks->begin(); it != chunks->end(); ++it) {
+        for (auto it = chunks->begin(); it != chunks->end(); ++it) {
+          if (journal) {
             journal->pwrite(it->GetBuffer(), it->GetLength(), it->GetOffset());
           }
-        }
-        for (auto it = chunks->begin(); it != chunks->end(); ++it) {
-          *rvbytes += it->GetLength();
+          if (rvbytes) {
+            *rvbytes += it->GetLength();
+          }
         }
       }
     }
@@ -48,7 +38,7 @@ public:
 
   XrdCl::ResponseHandler *handler;
   std::atomic<uint64_t> *rvbytes;
-  Journal *journal;
+  std::shared_ptr<Journal> journal;
 };
 
 } // namespace XrdCl

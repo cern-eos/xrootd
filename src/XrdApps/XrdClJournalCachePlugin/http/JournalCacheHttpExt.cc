@@ -103,7 +103,7 @@ bool fetchHttpHeadParams(const std::string &url, XrdSysError *log,
   curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
   curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, curlHeaderCallback);
   curl_easy_setopt(curl, CURLOPT_HEADERDATA, &responseHeaders);
-  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
 
   const CURLcode rc = curl_easy_perform(curl);
@@ -191,7 +191,11 @@ bool JournalCacheHttpExtHandler::loadConfig(const char *cfgfile) {
     } else if (key == "policy") {
       mPolicyPath = value;
     } else if (key == "policy_poll") {
-      mPolicyPoll = static_cast<unsigned>(std::stoul(value));
+      try {
+        mPolicyPoll = static_cast<unsigned>(std::stoul(value));
+      } catch (...) {
+        mLog->Emsg("Config", "invalid policy_poll value:", value.c_str());
+      }
     } else if (key == "bypass") {
       mBootstrapPolicy.bypass = parseBool(value);
     } else if (key == "multi_origin") {
@@ -457,6 +461,10 @@ int JournalCacheHttpExtHandler::ProcessReq(XrdHttpExtReq &req) {
                target.fileUrl.c_str());
     return req.SendSimpleResp(403, nullptr, nullptr,
                               "Upstream origin not allowed", 0);
+  }
+
+  if (policy.bypass) {
+    return XrdHttpExtContinueProcessing;
   }
 
   const CacheValidators validators = extractValidators(req.headers);

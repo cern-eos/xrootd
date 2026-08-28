@@ -22,6 +22,11 @@ std::string trim(const std::string &value) {
   return value.substr(start, end - start);
 }
 
+bool looksLikeUrlPattern(const std::string &pattern) {
+  return pattern.find("://") != std::string::npos ||
+         (!pattern.empty() && pattern.front() == '^');
+}
+
 } // namespace
 
 void OriginAllowlist::clear() {
@@ -75,14 +80,27 @@ bool OriginAllowlist::isAllowed(const std::string &fileUrl) const {
 
   XrdCl::URL url(fileUrl);
   const std::string hostId = url.IsValid() ? url.GetHostId() : std::string{};
-  const std::string location = url.IsValid() ? url.GetLocation() : fileUrl;
+  const std::string host = url.IsValid() ? url.GetHostName() : std::string{};
 
-  for (const auto &regex : mRegexes) {
-    if (std::regex_search(fileUrl, regex) || std::regex_search(location, regex)) {
+  for (size_t i = 0; i < mPatterns.size(); ++i) {
+    std::regex compiled;
+    try {
+      compiled = std::regex(mPatterns[i], std::regex::ECMAScript);
+    } catch (const std::regex_error &) {
+      continue;
+    }
+
+    if (looksLikeUrlPattern(mPatterns[i])) {
+      if (std::regex_search(fileUrl, compiled)) {
+        return true;
+      }
+      continue;
+    }
+
+    if (!hostId.empty() && std::regex_match(hostId, compiled)) {
       return true;
     }
-    if (!hostId.empty() &&
-        (std::regex_match(hostId, regex) || std::regex_search(hostId, regex))) {
+    if (!host.empty() && std::regex_match(host, compiled)) {
       return true;
     }
   }

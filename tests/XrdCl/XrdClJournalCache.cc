@@ -227,6 +227,7 @@ TEST_F(JournalTest, JournalManagerReusesInstance) {
   first.reset();
   second.reset();
   manager.release("file-a");
+  manager.release("file-a");
 
   std::shared_ptr<Journal> third = manager.attach("file-a");
   ASSERT_NE(third, nullptr);
@@ -680,6 +681,18 @@ TEST_F(CacheHeadersTest, NoStoreDisablesCacheUse) {
   EXPECT_TRUE(JournalCache::isCacheEntryStale(headers, 1000));
 }
 
+TEST_F(CacheHeadersTest, PrivateAndStaleDisableStorage) {
+  JournalCache::CacheHeaders priv;
+  priv.cacheControl = "private, max-age=60";
+  priv.cachedAt = 1000;
+  EXPECT_FALSE(JournalCache::shouldUseJournalCache(priv, 1000));
+
+  JournalCache::CacheHeaders stale;
+  stale.cacheControl = "max-age=10";
+  stale.cachedAt = 1000;
+  EXPECT_FALSE(JournalCache::shouldUseJournalCache(stale, 1020));
+}
+
 TEST_F(CacheHeadersTest, GetterHeadersRoundTrip) {
   JournalCache::CacheHeaders headers;
   headers.cacheControl = "public, max-age=600";
@@ -844,6 +857,29 @@ TEST(OriginAllowlistTest, AllowsMatchingHostOrUrl) {
   EXPECT_FALSE(allowlist.isAllowed("root://evil.example.net//store/file.dat"));
 }
 
+TEST(OriginAllowlistTest, HostPatternDoesNotSubstringMatch) {
+  JournalCache::OriginAllowlist allowlist;
+  allowlist.addPattern("example.com");
+  EXPECT_TRUE(allowlist.isAllowed("root://example.com:1094//file"));
+  EXPECT_FALSE(allowlist.isAllowed("root://notexample.com:1094//file"));
+}
+
+TEST(CachePathTest, NormalizeRejectsParentTraversal) {
+  EXPECT_EQ(JournalCache::normalizeRemotePath("/foo/../bar"), "/bar");
+  EXPECT_EQ(JournalCache::normalizeRemotePath("/foo/../../etc/passwd"),
+            "/etc/passwd");
+  EXPECT_EQ(JournalCache::normalizeRemotePath("/https://host/a/../b"),
+            "/https://host/b");
+}
+
+TEST_F(ListCacheTest, CacheDirStaysInsideRoot) {
+  const std::string escaped = JournalCache::resolveCacheDirWithSettings(
+      cacheRoot, "root://host.example:1094//", "/foo/../../outside", false,
+      "");
+  EXPECT_EQ(escaped.rfind(cacheRoot, 0), 0u);
+  EXPECT_EQ(escaped.find(".."), std::string::npos);
+}
+
 TEST(ExternalRedirectTest, ResolvesLongestPrefixMatch) {
   JournalCache::ExternalRedirect redirects;
   redirects.addRule("/store/", "root://origin.cern.ch:1094//store/");
@@ -984,6 +1020,7 @@ TEST(XjcdRenderTest, RendersConfigsAndOpenPolicy) {
   EXPECT_NE(xrootdText.find("http.key /etc/ssl/key.pem"), std::string::npos);
   EXPECT_NE(xrootdText.find("libXrdClJournalCacheHttpExt-5.so"),
             std::string::npos);
+  EXPECT_NE(xrootdText.find("pss.permit"), std::string::npos);
 
   JournalCache::PolicySettings policy;
   ASSERT_TRUE(JournalCache::loadPolicyFile(policyPath, policy));

@@ -210,7 +210,9 @@ public:
   //----------------------------------------------------------------------------
   //! @brief validate the local cache
   //----------------------------------------------------------------------------
-  inline bool IsValid() { return true; }
+  inline bool IsValid() {
+    return mIsOpen && mOpenState == OPEN;
+  }
 
   //----------------------------------------------------------------------------
   //! @brief set the local cache path
@@ -286,6 +288,9 @@ public:
   std::atomic<int> mOpenState;
 
 private:
+  void releaseJournal();
+  void invalidateJournal();
+
   //! @brief attach for read
   bool AttachForRead();
 

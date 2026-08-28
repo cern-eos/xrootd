@@ -4,6 +4,7 @@
 //------------------------------------------------------------------------------
 // This file is part of the XRootD software suite.
 
+#include "file/CacheEvict.hh"
 #include "file/CleanerConfig.hh"
 
 #include <algorithm>
@@ -66,9 +67,13 @@ time_t getLastAccessTime(const fs::path &filePath) {
 
 long long getDirectorySize(const fs::path &directory) {
   long long totalSize = 0;
-  for (const auto &entry : fs::recursive_directory_iterator(directory)) {
+  std::error_code ec;
+  for (const auto &entry : fs::recursive_directory_iterator(directory, ec)) {
+    if (JournalCache::pathHasXjcComponent(entry.path())) {
+      continue;
+    }
     if (fs::is_regular_file(entry)) {
-      totalSize += fs::file_size(entry);
+      totalSize += fs::file_size(entry, ec);
     }
   }
   return totalSize;
@@ -77,11 +82,15 @@ long long getDirectorySize(const fs::path &directory) {
 std::vector<std::pair<long long, fs::path>>
 getFilesByAccessTime(const fs::path &directory) {
   std::vector<std::pair<long long, fs::path>> fileList;
-  for (const auto &entry : fs::recursive_directory_iterator(directory)) {
-    if (fs::is_regular_file(entry)) {
-      auto accessTime = getLastAccessTime(entry.path());
-      fileList.emplace_back(accessTime, entry.path());
+  std::error_code ec;
+  for (const auto &entry : fs::recursive_directory_iterator(directory, ec)) {
+    if (!fs::is_regular_file(entry) ||
+        JournalCache::pathHasXjcComponent(entry.path()) ||
+        !JournalCache::isEvictableCacheFile(entry.path())) {
+      continue;
     }
+    auto accessTime = getLastAccessTime(entry.path());
+    fileList.emplace_back(accessTime, entry.path());
   }
   std::sort(fileList.begin(), fileList.end());
   return fileList;
@@ -107,9 +116,7 @@ void cleanDirectory(const fs::path &directory, long long highWatermark,
     try {
       fs::remove(filePath);
       currentSize -= fileSize;
-      fs::path parentDir = filePath.parent_path();
-      std::error_code ec;
-      fs::remove_all(parentDir, ec);
+      JournalCache::removeEmptyParents(filePath, directory);
       printCurrentTime();
       std::cout << "Deleted: " << filePath << " (Size: " << fileSize
                 << " bytes)" << std::endl;

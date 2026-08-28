@@ -62,9 +62,9 @@ public:
 
   // Method to start the cleaning process in a separate thread
   void run() {
+    stop();
     stopFlag = false;
     cleanerThread = std::thread(&Cleaner::cleanLoop, this);
-    cleanerThread.detach();
   }
 
   // Method to stop the cleaning process and join the thread

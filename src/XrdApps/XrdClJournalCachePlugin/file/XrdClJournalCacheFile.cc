@@ -34,6 +34,7 @@
 /*----------------------------------------------------------------------------*/
 #include "XrdCl/XrdClMessageUtils.hh"
 #include "XrdCl/XrdClStatus.hh"
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 /*----------------------------------------------------------------------------*/
@@ -63,8 +64,10 @@ namespace XrdCl {
 //------------------------------------------------------------------------------
 JournalCacheFile::JournalCacheFile(const std::string &url)
     : mIsOpen(false), pFile(0), mOpenAsync(false) {
+  (void)url;
   mAttachedForRead = false;
   mOpenState = JournalCacheFile::CLOSED;
+  pStats = new JournalCache::CacheStats();
   mLog = DefaultEnv::GetLog();
   pOpenHandler = nullptr;
 }
@@ -83,16 +86,22 @@ JournalCacheFile::JournalCacheFile() : mIsOpen(false), pFile(0), mOpenAsync(fals
 // Destructor
 //------------------------------------------------------------------------------
 JournalCacheFile::~JournalCacheFile() {
+  releaseJournal();
   LogStats();
-  pStats->AddToStats(sStats);
+  if (pStats) {
+    pStats->AddToStats(sStats);
+  }
   if (pFile) {
     delete pFile;
+    pFile = nullptr;
   }
   if (pStats) {
     delete pStats;
+    pStats = nullptr;
   }
   if (pOpenHandler) {
     delete pOpenHandler;
+    pOpenHandler = nullptr;
   }
 }
 
@@ -148,8 +157,6 @@ XRootDStatus JournalCacheFile::Open(const std::string &url, OpenFlags::Flags fla
     return st;
   }
 
-  pFile = new XrdCl::File(false);
-
   XrdCl::URL origUrl(url);
   const std::string externalRedirect = ResolveExternalRedirect(origUrl);
   if (!externalRedirect.empty()) {
@@ -181,6 +188,8 @@ XRootDStatus JournalCacheFile::Open(const std::string &url, OpenFlags::Flags fla
                  fetchUrl.c_str());
     }
   }
+
+  pFile = new XrdCl::File(false);
 
   // sanitize named connections and CGI for the URL to cache
   XrdCl::URL cleanUrl;
@@ -264,7 +273,7 @@ XRootDStatus JournalCacheFile::Open(const std::string &url, OpenFlags::Flags fla
     }
     if (st.IsOK()) {
       mIsOpen = true;
-      mOpenState = OPENING;
+      mOpenState = mOpenAsync ? OPENING : OPEN;
       if (sEnableJournalCache && !bypassCache() && !mNoStoreCache) {
         if ((flags & OpenFlags::Flags::Read) == OpenFlags::Flags::Read) {
           const std::string JournalDir =
@@ -274,35 +283,32 @@ XRootDStatus JournalCacheFile::Open(const std::string &url, OpenFlags::Flags fla
                                          JournalCache::FORCE_CLEAN_CGI)) {
             std::error_code ec;
             std::filesystem::remove(pJournalPath, ec);
+            std::filesystem::remove(JournalDir + "/.journalcache_stat", ec);
             mLog->Info(1, "JournalCache : force-clean removed journal %s",
                        pJournalPath.c_str());
           }
-          if (sFlatHierarchy) {
-            if (!JournalCache::ensureCacheDirectory(JournalDir)) {
-              st = XRootDStatus(stError, errOSError);
-              mLog->Error(1,
-                          "JournalCache : unable to create cache directory: %s",
-                          JournalDir.c_str());
-              return st;
-            }
-          } else if (!JournalCache::makeHierarchy(pJournalPath)) {
-            st = XRootDStatus(stError, errOSError);
+          bool dirOk = sFlatHierarchy
+                            ? JournalCache::ensureCacheDirectory(JournalDir)
+                            : JournalCache::makeHierarchy(pJournalPath);
+          if (!dirOk) {
             mLog->Error(1,
                         "JournalCache : unable to create cache directory: %s",
                         JournalDir.c_str());
-            return st;
+            if (pFile) {
+              (void)pFile->Close();
+            }
+            mIsOpen = false;
+            mOpenState = FAILED;
+            return XRootDStatus(stError, errOSError);
           }
         }
       }
-      mOpenState = OPENING;
-      // call the external handler to pretend all is already good!
-      handler->HandleResponseWithHosts(new XRootDStatus(st), 0, 0);
+      handler->HandleResponseWithHosts(new XRootDStatus(stOK, 0), 0, 0);
     } else {
       mOpenState = FAILED;
     }
   } else {
-    // run with the user handler
-    st = pFile->Open(url, flags, mode, handler, timeout);
+    st = pFile->Open(fetchUrl, flags, mode, handler, timeout);
     mOpenState = OPEN;
     mIsOpen = true;
   }
@@ -327,12 +333,8 @@ XRootDStatus JournalCacheFile::Close(ResponseHandler *handler, time_t timeout) {
     } else {
       st = XRootDStatus(stOK, 0);
     }
-    if (sEnableJournalCache && pJournal && !pJournalPath.empty()) {
-      pJournal->sync();
-      pJournal->detach();
-      sJournalManager.release(pJournalPath);
-      pJournal.reset();
-    }
+    releaseJournal();
+    mAttachedForRead = false;
   } else {
     st = XRootDStatus(stOK, 0);
   }
@@ -350,14 +352,14 @@ XRootDStatus JournalCacheFile::Stat(bool force, ResponseHandler *handler,
   if (pFile) {
     if (!force && mOpenAsync) {
       if (sEnableJournalCache && !mNoStoreCache && AttachForRead() &&
-          CanServeFromJournalCache() && mOpenAsync) {
-        // let's create a stat response using the cache
+          CanServeFromJournalCache() && mOpenAsync && pJournal &&
+          pJournal->getHeaderFileSize() > 0) {
         AnyObject *obj = new AnyObject();
         std::string id = pUrl;
         auto statInfo = new StatInfo(id, pJournal->getHeaderFileSize(), 0,
                                      pJournal->getHeaderMtime());
         obj->Set(statInfo);
-        XRootDStatus *ret_st = new XRootDStatus(XRootDStatus(stOK, 0));
+        XRootDStatus *ret_st = new XRootDStatus(stOK, 0);
         handler->HandleResponse(ret_st, obj);
         st = XRootDStatus(stOK, 0);
         return st;
@@ -399,8 +401,7 @@ XRootDStatus JournalCacheFile::Read(uint64_t offset, uint32_t size, void *buffer
       if ((rb == size) || (eof && rb)) {
         pStats->bytesCached += rb;
         pStats->readOps++;
-        // we can only serve success full reads from the cache for now
-        XRootDStatus *ret_st = new XRootDStatus(st);
+        XRootDStatus *ret_st = new XRootDStatus(stOK, 0);
         ChunkInfo *chunkInfo = new ChunkInfo(offset, rb, buffer);
         AnyObject *obj = new AnyObject();
         obj->Set(chunkInfo);
@@ -420,7 +421,7 @@ XRootDStatus JournalCacheFile::Read(uint64_t offset, uint32_t size, void *buffer
 
     auto jhandler = new JournalCacheReadHandler(
         handler, &pStats->bytesRead,
-        sEnableJournalCache && !bypassCache() && !mNoStoreCache ? pJournal.get()
+        sEnableJournalCache && !bypassCache() && !mNoStoreCache ? pJournal
                                                                 : nullptr);
     pStats->readOps++;
     st = pFile->Read(offset, size, buffer, jhandler, timeout);
@@ -438,6 +439,7 @@ XRootDStatus JournalCacheFile::Write(uint64_t offset, uint32_t size,
                                time_t timeout) {
   XRootDStatus st;
   if (pFile) {
+    invalidateJournal();
     st = pFile->Write(offset, size, buffer, handler, timeout);
   } else {
     st = XRootDStatus(stError, errInvalidOp);
@@ -455,30 +457,8 @@ XRootDStatus JournalCacheFile::PgRead(uint64_t offset, uint32_t size, void *buff
   if (pFile) {
     sStats.bench.AddMeasurement(size);
 
-    if (sEnableJournalCache && !mNoStoreCache && AttachForRead() &&
-        CanServeFromJournalCache() && !bypassCache()) {
-      mLog->Info(1,
-                 "JournalCache : PgRead: offset=%llu size=%u buffer=%p path='%s'",
-                 static_cast<unsigned long long>(offset), size, buffer,
-                 pUrl.c_str());
-      bool eof = false;
-      auto rb = pJournal->pread(buffer, size, offset, eof);
-
-      mLog->Info(1, "JournalCache : PgRead: rb=%llu size=%u eof=%d path='%s'",
-                 static_cast<unsigned long long>(rb), size, eof, pUrl.c_str());
-      if ((rb == size) || (eof && rb)) {
-        pStats->bytesCached += rb;
-        pStats->readOps++;
-        // we can only serve complete reads from the cache for now
-        XRootDStatus *ret_st = new XRootDStatus(st);
-        PageInfo *pageInfo = new PageInfo(offset, rb, buffer);
-        AnyObject *obj = new AnyObject();
-        obj->Set(pageInfo);
-        handler->HandleResponse(ret_st, obj);
-        st = XRootDStatus(stOK, 0);
-        return st;
-      }
-    }
+    // PgRead checksums are not stored in the journal; always fetch from origin
+    // and populate the journal from the response handler.
 
     // we have to be sure the file is opened
     if (pOpenHandler) {
@@ -487,9 +467,10 @@ XRootDStatus JournalCacheFile::PgRead(uint64_t offset, uint32_t size, void *buff
         return st;
       }
     }
+    AttachForRead();
     auto jhandler = new JournalCachePgReadHandler(
         handler, &pStats->bytesRead,
-        sEnableJournalCache && !bypassCache() && !mNoStoreCache ? pJournal.get()
+        sEnableJournalCache && !bypassCache() && !mNoStoreCache ? pJournal
                                                                 : nullptr);
     pStats->readOps++;
     st = pFile->PgRead(offset, size, buffer, jhandler, timeout);
@@ -509,6 +490,7 @@ XRootDStatus JournalCacheFile::PgWrite(uint64_t offset, uint32_t nbpgs,
   XRootDStatus st;
 
   if (pFile) {
+    invalidateJournal();
     st = pFile->PgWrite(offset, nbpgs, buffer, cksums, handler, timeout);
   } else {
     st = XRootDStatus(stError, errInvalidOp);
@@ -540,6 +522,7 @@ XRootDStatus JournalCacheFile::Truncate(uint64_t size, ResponseHandler *handler,
   XRootDStatus st;
 
   if (pFile) {
+    invalidateJournal();
     st = pFile->Truncate(size, handler, timeout);
   } else {
     st = XRootDStatus(stError, errInvalidOp);
@@ -568,9 +551,13 @@ XRootDStatus JournalCacheFile::VectorRead(const ChunkList &chunks, void *buffer,
         AttachForRead() && CanServeFromJournalCache()) {
       bool inJournal = true;
       size_t cachedLen = 0;
+      std::vector<std::vector<char>> temps;
+      temps.reserve(chunks.size());
       for (auto it = chunks.begin(); it != chunks.end(); ++it) {
+        temps.emplace_back(it->length);
         bool eof = false;
-        auto rb = pJournal->pread(it->buffer, it->length, it->offset, eof);
+        auto rb = pJournal->pread(temps.back().data(), it->length, it->offset,
+                                 eof);
         if (rb != it->length) {
           inJournal = false;
           break;
@@ -578,11 +565,13 @@ XRootDStatus JournalCacheFile::VectorRead(const ChunkList &chunks, void *buffer,
         cachedLen += it->length;
       }
       if (inJournal) {
+        for (size_t i = 0; i < chunks.size(); ++i) {
+          std::memcpy(chunks[i].buffer, temps[i].data(), chunks[i].length);
+        }
         pStats->readVOps++;
         pStats->readVreadOps += chunks.size();
         pStats->bytesCachedV += cachedLen;
-        XRootDStatus *ret_st = new XRootDStatus(st);
-        *ret_st = XRootDStatus(stOK, 0);
+        XRootDStatus *ret_st = new XRootDStatus(stOK, 0);
         AnyObject *obj = new AnyObject();
         VectorReadInfo *vReadInfo = new VectorReadInfo();
         vReadInfo->SetSize(len);
@@ -590,7 +579,7 @@ XRootDStatus JournalCacheFile::VectorRead(const ChunkList &chunks, void *buffer,
         vResp = chunks;
         obj->Set(vReadInfo);
         handler->HandleResponse(ret_st, obj);
-        return st;
+        return XRootDStatus(stOK, 0);
       }
     }
 
@@ -604,7 +593,7 @@ XRootDStatus JournalCacheFile::VectorRead(const ChunkList &chunks, void *buffer,
 
     auto jhandler = new JournalCacheReadVHandler(
         handler, &pStats->bytesReadV,
-        sEnableJournalCache && !bypassCache() && !mNoStoreCache ? pJournal.get()
+        sEnableJournalCache && !bypassCache() && !mNoStoreCache ? pJournal
                                                                 : nullptr);
     pStats->readVOps++;
     pStats->readVreadOps += chunks.size();
@@ -736,6 +725,7 @@ void JournalCacheFile::ApplyCacheHeaderPolicy(const StatInfo *statInfo) {
     mLog->Info(1, "JournalCache : validation headers require refresh for %s",
                pUrl.c_str());
     pJournal->reset();
+    mMustRevalidate = true;
     mRevalidatedThisSession = false;
     return;
   }
@@ -743,12 +733,31 @@ void JournalCacheFile::ApplyCacheHeaderPolicy(const StatInfo *statInfo) {
   if (JournalCache::isCacheEntryStale(stored, now)) {
     mLog->Info(1, "JournalCache : cache headers expired for %s", pUrl.c_str());
     pJournal->reset();
+    mMustRevalidate = true;
     mRevalidatedThisSession = false;
   }
 }
 
+void JournalCacheFile::releaseJournal() {
+  if (!pJournal) {
+    return;
+  }
+  pJournal->sync();
+  if (!pJournalPath.empty()) {
+    sJournalManager.release(pJournalPath);
+  }
+  pJournal.reset();
+}
+
+void JournalCacheFile::invalidateJournal() {
+  if (pJournal) {
+    pJournal->reset();
+  }
+  mRevalidatedThisSession = false;
+}
+
 bool JournalCacheFile::CanServeFromJournalCache() const {
-  if (mNoStoreCache || !mAttachedForRead) {
+  if (mNoStoreCache || !mAttachedForRead || !pJournal) {
     return false;
   }
   if (mMustRevalidate && !mRevalidatedThisSession) {
@@ -811,12 +820,9 @@ bool JournalCacheFile::AttachForRead() {
         if (pJournal->attach(pJournalPath, sinfo->GetModTime(), 0,
                              sinfo->GetSize())) {
           if (!bypassCache()) {
-            // when bypass=true this might throw an error because we don't
-            // create the journal directory - we just don't want to see this
             mLog->Error(1, "JournalCache : failed to attach to cache file: %s",
                         pJournalPath.c_str());
           }
-          mAttachedForRead = true;
           delete sinfo;
           return false;
         }
@@ -832,6 +838,8 @@ bool JournalCacheFile::AttachForRead() {
         mLog->Info(1, "JournalCache : attached to cache file: %s",
                    pJournalPath.c_str());
         delete sinfo;
+      } else {
+        return false;
       }
     }
   }

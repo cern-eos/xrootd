@@ -167,7 +167,11 @@ private:
 
 class JournalManager {
 private:
-  std::map<std::string, std::shared_ptr<Journal>> journals;
+  struct Entry {
+    std::shared_ptr<Journal> journal;
+    int refs = 0;
+  };
+  std::map<std::string, Entry> journals;
   std::mutex jMutex;
 
 public:
@@ -176,18 +180,24 @@ public:
 
   std::shared_ptr<Journal> attach(const std::string &key) {
     std::lock_guard<std::mutex> guard(jMutex);
-    auto it = journals.find(key);
-    if (it == journals.end()) {
-      auto journal = std::make_shared<Journal>();
-      journals[key] = journal;
-      return journal;
+    auto &entry = journals[key];
+    if (!entry.journal) {
+      entry.journal = std::make_shared<Journal>();
     }
-    return it->second;
+    ++entry.refs;
+    return entry.journal;
   }
 
-  //! Remove a journal from the pool when the owning file is closed.
+  //! Drop one file-level reference. The journal object stays alive while
+  //! handlers still hold shared_ptr copies; the fd is closed in ~Journal.
   void release(const std::string &key) {
     std::lock_guard<std::mutex> guard(jMutex);
-    journals.erase(key);
+    auto it = journals.find(key);
+    if (it == journals.end()) {
+      return;
+    }
+    if (--it->second.refs <= 0) {
+      journals.erase(it);
+    }
   }
 };

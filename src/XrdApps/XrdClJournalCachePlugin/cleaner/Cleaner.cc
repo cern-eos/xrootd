@@ -23,7 +23,7 @@
 
 /*----------------------------------------------------------------------------*/
 #include "cleaner/Cleaner.hh"
-#include <sys/statvfs.h>
+#include "file/CacheEvict.hh"
 /*----------------------------------------------------------------------------*/
 
 namespace fs = std::filesystem;
@@ -51,38 +51,19 @@ time_t Cleaner::getLastAccessTime(const fs::path &filePath) {
 // @param  directory - path to the directory
 // @return total size of all files in the directory in bytes
 //----------------------------------------------------------------------------
-long long Cleaner::getDirectorySize(const fs::path &directory, bool scan) {
-
+long long Cleaner::getDirectorySize(const fs::path &directory, bool /*scan*/) {
   long long totalSize = 0;
-  if (scan) {
-    for (const auto &entry : fs::recursive_directory_iterator(directory)) {
-      if (stopFlag.load()) {
-        return 0;
-      }
-      if (fs::is_regular_file(entry)) {
-        totalSize += fs::file_size(entry);
-      }
-    }
-  } else {
-    struct statvfs fs_info;
-
-    if (statvfs(directory.c_str(), &fs_info) != 0) {
-      mLog->Error(1,
-                  "JournalCache:Cleaner: failed to get directory size using statvfs.");
+  std::error_code ec;
+  for (const auto &entry : fs::recursive_directory_iterator(directory, ec)) {
+    if (stopFlag.load()) {
       return 0;
     }
-    // Calculate total space in bytes
-    unsigned long long total_blocks = fs_info.f_blocks;
-    unsigned long long block_size = fs_info.f_bsize;
-    unsigned long long total_space = total_blocks * block_size;
-
-    // Calculate free space in bytes
-    unsigned long long free_blocks = fs_info.f_bfree;
-    unsigned long long free_space = free_blocks * block_size;
-
-    // Calculate used space in bytes
-    unsigned long long used_space = total_space - free_space;
-    totalSize = used_space;
+    if (pathHasXjcComponent(entry.path())) {
+      continue;
+    }
+    if (fs::is_regular_file(entry)) {
+      totalSize += fs::file_size(entry, ec);
+    }
   }
   return totalSize;
 }
@@ -97,11 +78,14 @@ long long Cleaner::getDirectorySize(const fs::path &directory, bool scan) {
 std::vector<std::pair<long long, fs::path>>
 Cleaner::getFilesByAccessTime(const fs::path &directory) {
   std::vector<std::pair<long long, fs::path>> fileList;
-  for (const auto &entry : fs::recursive_directory_iterator(directory)) {
-    if (fs::is_regular_file(entry)) {
-      auto accessTime = getLastAccessTime(entry.path());
-      fileList.emplace_back(accessTime, entry.path());
+  std::error_code ec;
+  for (const auto &entry : fs::recursive_directory_iterator(directory, ec)) {
+    if (!fs::is_regular_file(entry) || pathHasXjcComponent(entry.path()) ||
+        !isEvictableCacheFile(entry.path())) {
+      continue;
     }
+    auto accessTime = getLastAccessTime(entry.path());
+    fileList.emplace_back(accessTime, entry.path());
   }
   std::sort(fileList.begin(), fileList.end());
   return fileList;
@@ -141,13 +125,7 @@ void Cleaner::cleanDirectory(const fs::path &directory, long long highWatermark,
     try {
       fs::remove(filePath);
       currentSize -= fileSize;
-      fs::path parentDir = filePath.parent_path();
-      std::error_code ec;
-      fs::remove_all(parentDir, ec);
-      if (ec) {
-        mLog->Error(1, "JournalCache::Cleaner: error deleting directory '%s'",
-                    parentDir.c_str());
-      }
+      removeEmptyParents(filePath, directory);
       mLog->Info(1, "JournalCache:Cleaner : deleted '%s' (Size: %lld bytes)",
                  filePath.c_str(), fileSize);
     } catch (const std::exception &e) {

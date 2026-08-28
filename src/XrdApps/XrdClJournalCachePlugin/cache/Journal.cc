@@ -422,6 +422,10 @@ int Journal::detach() {
 //------------------------------------------------------------------------------
 int Journal::unlink() {
   std::lock_guard<std::mutex> guard(mtx);
+  close_fd();
+  if (path.empty()) {
+    return 0;
+  }
   struct stat buf;
   int rc = stat(path.c_str(), &buf);
   if (!rc) {
@@ -435,11 +439,10 @@ int Journal::unlink() {
 //! Journal pread
 //------------------------------------------------------------------------------
 ssize_t Journal::pread(void *buf, size_t count, off_t offset, bool &eof) {
+  std::lock_guard<std::mutex> guard(mtx);
   if (fd < 0) {
     return 0;
   }
-
-  std::lock_guard<std::mutex> guard(mtx);
 
   if ((off_t)(offset + count) > (off_t)jheader.filesize) {
     if ((off_t)jheader.filesize > offset) {
@@ -573,11 +576,10 @@ int Journal::update_cache(std::vector<chunk_t> &updates) {
 //! Journal pwrite
 //------------------------------------------------------------------------------
 ssize_t Journal::pwrite(const void *buf, size_t count, off_t offset) {
+  std::lock_guard<std::mutex> guard(mtx);
   if (fd < 0) {
     return 0;
   }
-
-  std::lock_guard<std::mutex> guard(mtx);
   if (count <= 0) {
     return 0;
   }

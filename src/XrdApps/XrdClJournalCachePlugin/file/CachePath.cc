@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace JournalCache {
 
@@ -49,13 +50,62 @@ void removeListingFilesInDir(const std::filesystem::path &dir) {
 } // namespace
 
 std::string normalizeRemotePath(const std::string &path) {
-  if (path.empty()) {
+  std::string in = path.empty() ? "/" : path;
+  if (in.front() != '/') {
+    in.insert(in.begin(), '/');
+  }
+
+  std::vector<std::string> parts;
+  size_t i = 1;
+  while (i <= in.size()) {
+    const size_t j = (i >= in.size()) ? in.size() : in.find('/', i);
+    const size_t end = (j == std::string::npos) ? in.size() : j;
+    const std::string seg = in.substr(i, end - i);
+    if (seg == ".") {
+      // skip
+    } else if (seg == "..") {
+      if (!parts.empty()) {
+        parts.pop_back();
+      }
+    } else {
+      parts.push_back(seg);
+    }
+    if (end >= in.size()) {
+      break;
+    }
+    i = end + 1;
+  }
+
+  if (parts.empty()) {
     return "/";
   }
-  if (path[0] == '/') {
-    return path;
+  std::string out;
+  for (const auto &part : parts) {
+    out += '/';
+    out += part;
   }
-  return "/" + path;
+  return out;
+}
+
+bool pathIsUnderRoot(const std::string &path, const std::string &root) {
+  if (root.empty()) {
+    return true;
+  }
+  const auto normalPath = std::filesystem::path(path).lexically_normal();
+  const auto normalRoot = std::filesystem::path(root).lexically_normal();
+  const auto relative = normalPath.lexically_relative(normalRoot);
+  const std::string rel = relative.generic_string();
+  return !rel.empty() && rel.rfind("..", 0) != 0 &&
+         rel.find("/../") == std::string::npos;
+}
+
+std::string confineToCacheRoot(const std::string &resolved,
+                               const std::string &cacheRoot,
+                               const std::string &fallbackKey) {
+  if (pathIsUnderRoot(resolved, cacheRoot)) {
+    return resolved;
+  }
+  return cacheRoot + computeSHA256(fallbackKey);
 }
 
 std::string resolveCacheDir(const std::string &fsUrl,
@@ -72,27 +122,21 @@ std::string resolveCacheDirWithSettings(const std::string &cacheRoot,
                                         bool flatHierarchy,
                                         const std::string &basePath) {
   const std::string normPath = normalizeRemotePath(remotePath);
+  const std::string key = fsUrl + normPath;
+  std::string resolved;
 
   if (flatHierarchy) {
-    return cacheRoot + computeSHA256(fsUrl + normPath);
-  }
-
-  if (!basePath.empty()) {
-    const size_t pos = normPath.find(basePath);
-    if (pos != std::string::npos) {
-      return cacheRoot + normPath.substr(pos);
-    }
+    resolved = cacheRoot + computeSHA256(key);
+  } else if (!basePath.empty() && normPath.find(basePath) != std::string::npos) {
+    resolved = cacheRoot + normPath.substr(normPath.find(basePath));
+  } else {
     XrdCl::URL url(fsUrl);
-    const size_t urlPos = url.GetPath().find(basePath);
-    if (urlPos != std::string::npos) {
-      return cacheRoot + normPath;
-    }
+    const std::string host =
+        url.GetHostName() + ":" + std::to_string(url.GetPort());
+    resolved = cacheRoot + host + normPath;
   }
 
-  XrdCl::URL url(fsUrl);
-  const std::string host =
-      url.GetHostName() + ":" + std::to_string(url.GetPort());
-  return cacheRoot + host + normPath;
+  return confineToCacheRoot(resolved, cacheRoot, key);
 }
 
 std::string parentRemotePath(const std::string &path) {

@@ -132,7 +132,7 @@ bool etagMatches(const std::string &stored, const std::string &candidate) {
   const std::string storedValue = unquoteEtag(stored);
   const std::string candidateValue = unquoteEtag(candidate);
   if (candidateValue == "*") {
-    return false;
+    return !storedValue.empty();
   }
   return !storedValue.empty() && storedValue == candidateValue;
 }
@@ -343,11 +343,12 @@ bool shouldUseJournalCache(const CacheHeaders &headers, uint64_t nowSeconds) {
   }
 
   const CachePolicy policy = parseCacheControl(headers.cacheControl);
-  if (policy.noStore) {
+  if (policy.noStore || policy.isPrivate) {
     return false;
   }
-
-  (void)nowSeconds;
+  if (isCacheEntryStale(headers, nowSeconds)) {
+    return false;
+  }
   return true;
 }
 

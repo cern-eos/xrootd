@@ -48,6 +48,8 @@ http.cert {{tls_cert}}
 http.key {{tls_key}}
 
 pss.origin =root,http,https
+# Restrict PSS independently of JournalCache allow_origin (required for a closed proxy):
+# pss.permit /* .example.org
 all.export /
 ofs.osslib libXrdPss.so
 
