@@ -8,6 +8,8 @@ HTTP/1.1 and HTTP/2 wire-protocol substrate for XrdHTTP.
   framing continues to use the existing read path in `XrdHttpReq`.
 - `XrdHttp1ResponseWriter` — HTTP/1.1 response header and body framing.
 - `XrdHttp2Session` — nghttp2-backed HTTP/2 session (HTTPS + ALPN `h2`).
+  Streams request bodies as DATA arrives and queues concurrent streams
+  through the single application request.
 - `XrdHttp2ResponseWriter` — HTTP/2 response headers and DATA frames.
 
 Both protocols funnel parsed requests into `XrdHttpReq` and
@@ -38,4 +40,4 @@ cmake .. -DENABLE_HTTP=ON
 - `tests/XRootD/httpparser` — llhttp smoke tests (port 7095)
 - `tests/XRootD/httpparserlegacy` — legacy parser regression (port 7098)
 - `tests/XRootD/http` — full HTTP/1.1 integration suite (port 7094)
-- `tests/XRootD/httph2` — HTTPS + ALPN h2 smoke tests (port 7097, TLS fixture)
+- `tests/XRootD/httph2` — HTTPS + ALPN h2 integration tests (port 7097, TLS fixture)

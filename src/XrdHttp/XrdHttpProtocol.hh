@@ -141,8 +141,13 @@ public:
   /// Send wire bytes (used by HTTP/2 framing)
   int SendWireData(const char *body, int bodylen);
 
-  /// Append bytes to the read buffer (used by HTTP/2 request bodies)
-  void BuffInject(const char *data, int len);
+  /// Receive raw TLS/TCP bytes into a caller buffer (HTTP/2 framing)
+  int RecvWireData(char *buf, int buflen);
+
+  /// Append bytes to the read buffer (used by HTTP/2 request bodies).
+  /// Returns the number of bytes actually stored (may be short if the
+  /// protocol buffer is full).
+  int BuffInject(const char *data, int len);
 
   /// Handle a fully parsed HTTP request (shared by HTTP/1 and HTTP/2)
   int processParsedRequest(XrdLink *lp);

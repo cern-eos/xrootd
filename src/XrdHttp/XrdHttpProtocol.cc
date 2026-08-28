@@ -1675,18 +1675,55 @@ int XrdHttpProtocol::SendWireData(const char *body, int bodylen)
   return total;
 }
 
-void XrdHttpProtocol::BuffInject(const char *data, int len)
+int XrdHttpProtocol::RecvWireData(char *buf, int buflen)
+{
+  if (!buf || buflen <= 0)
+    return 0;
+
+  if (ishttps) {
+    if (!ssl)
+      return -1;
+    const int r = SSL_read(ssl, buf, buflen);
+    if (r <= 0) {
+      const int err = SSL_get_error(ssl, r);
+      if (r < 0 && (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE))
+        return 0;
+      if (r == 0 && err == SSL_ERROR_ZERO_RETURN)
+        return 0;
+      ERR_print_errors(sslbio_err);
+      CurrentReq.monState = XrdHttpMonState::ERR_NET;
+      return -1;
+    }
+    return r;
+  }
+
+  if (!Link)
+    return -1;
+
+  const int r = Link->Recv(buf, buflen);
+  if (r == 0) {
+    Link->setEtext("link read error or closed");
+    return -1;
+  }
+  if (r < 0)
+    return 0;
+  return r;
+}
+
+int XrdHttpProtocol::BuffInject(const char *data, int len)
 {
   if (!myBuff || !data || len <= 0)
-    return;
+    return 0;
 
-  for (int i = 0; i < len; ++i) {
+  int n = 0;
+  for (; n < len; ++n) {
     if (BuffFree() <= 0)
       break;
-    *myBuffEnd++ = data[i];
+    *myBuffEnd++ = data[n];
     if (myBuffEnd >= myBuff->buff + myBuff->bsize)
       myBuffEnd = myBuff->buff;
   }
+  return n;
 }
 
 #ifdef HAVE_NGHTTP2

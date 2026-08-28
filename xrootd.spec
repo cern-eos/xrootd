@@ -36,7 +36,8 @@ BuildRequires:	make
 BuildRequires:	pkgconfig
 BuildRequires:	fuse-devel
 BuildRequires:	krb5-devel
-BuildRequires:	libcurl-devel
+	BuildRequires:	libcurl-devel
+	BuildRequires:	libnghttp2-devel
 BuildRequires:	libxml2-devel
 BuildRequires:	libzip-devel
 BuildRequires:	ncurses-devel

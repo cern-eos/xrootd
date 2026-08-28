@@ -101,6 +101,12 @@ HTTP/2 is available when XRootD is built with nghttp2 (`BUILD_HTTP2`).
 - `detectWireMode()` also recognises the cleartext connection preface and a
   SETTINGS-frame heuristic for edge cases.
 - Multiple requests on one connection are supported (same-connection reuse).
+- Request bodies are streamed into `XrdHttpReq` as DATA frames arrive (PUT
+  does not wait for `END_STREAM` when `content-length` is present).
+- Concurrent streams are accepted (SETTINGS `MAX_CONCURRENT_STREAMS=100`) and
+  serialized through the single `CurrentReq` / Bridge path.
+- RST_STREAM and GOAWAY drop the affected queued streams; the active request
+  is abandoned if the peer resets it.
 - `Http2OutboundPending()` defers connection close while response DATA is still
   queued.
 
@@ -171,7 +177,8 @@ when the build includes nghttp2 and the client offers ALPN `h2`.
 ## Build
 
 HTTP support is controlled by `ENABLE_HTTP`. HTTP/2 additionally requires
-**libnghttp2** (the development library, not tools-only packages):
+**libnghttp2** (the development library, not tools-only packages). Packaging
+pulls this in via `libnghttp2-devel` (RPM) / `libnghttp2-dev` (Debian):
 
 ```bash
 # macOS
@@ -206,7 +213,7 @@ ctest -R 'XRootD::(http|httpparser|httph2)' --output-on-failure
 | `XRootD::http` | `tests/XRootD/http.sh` | 7094 | Full HTTP/1.1 integration |
 | `XRootD::httpparser` | `tests/XRootD/httpparser.sh` | 7095 | llhttp header parsing |
 | `XRootD::httpparserlegacy` | `tests/XRootD/httpparserlegacy.sh` | 7098 | Legacy line parser regression |
-| `XRootD::httph2` | `tests/XRootD/httph2.sh` | 7097 | HTTPS + ALPN h2 (GET/PUT/HEAD/DELETE, same-connection reuse) |
+| `XRootD::httph2` | `tests/XRootD/httph2.sh` | 7097 | HTTPS + ALPN h2 (GET/PUT/HEAD/DELETE, ranges, digests, listing, CORS, multiplexed streams) |
 
 ## Source layout
 

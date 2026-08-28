@@ -15,6 +15,7 @@ Build-Depends:
  libkrb5-dev,
  libcrypt-dev,
  libcurl4-openssl-dev,
+ libnghttp2-dev,
  libxml2-dev,
  libzip-dev,
  ncurses-dev,

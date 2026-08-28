@@ -7,6 +7,9 @@
 #define XRDHTTP2SESSION_HH
 
 #include <cstdint>
+#include <deque>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -35,7 +38,11 @@ struct XrdHttp2StreamState
   std::string authority;
   std::vector<std::pair<std::string, std::string>> headers;
   std::vector<char> body;
+  std::size_t body_offset{0};
+  bool headers_done{false};
   bool end_stream{false};
+  bool dispatched{false};
+  bool queued{false};
 };
 
 class XrdHttp2Session
@@ -64,26 +71,44 @@ public:
   void *nghttp2SessionHandle() const { return session_; }
 
   void beginStream(int32_t stream_id);
-  void addHeader(const std::string &name, const std::string &value);
-  void appendBody(const uint8_t *data, size_t len);
-  void markEndStream();
-  bool requestReady() const { return requestReady_; }
-  void consumeRequestReady() { requestReady_ = false; }
+  void addHeader(int32_t stream_id, const std::string &name,
+                 const std::string &value);
+  void appendBody(int32_t stream_id, const uint8_t *data, size_t len);
+  void markHeadersComplete(int32_t stream_id, bool end_stream);
+  void markEndStream(int32_t stream_id);
+  void onStreamClosed(int32_t stream_id, uint32_t error_code);
+  void onGoaway();
 
 private:
 
-  bool needsContinueProcessing(XrdHttpProtocol &prot) const;
+  static const uint32_t kMaxConcurrentStreams = 100;
+  static const size_t kRecvBufSize = 16384;
 
-  int applyTo(XrdHttpReq &req);
-  int dispatchReadyRequest(XrdHttpProtocol &prot, XrdLink *lp);
-  void clearStream();
+  XrdHttp2StreamState *findStream(int32_t stream_id);
+  bool appInFlight(XrdHttpProtocol &prot) const;
+  bool readyToDispatch(const XrdHttp2StreamState *st) const;
+  void enqueueIfReady(XrdHttp2StreamState *st);
+  void dropStream(int32_t stream_id);
+  void synthesizeContentLength(XrdHttp2StreamState *st);
+
+  int applyTo(XrdHttp2StreamState *st, XrdHttpReq &req);
+  int injectPendingBody(XrdHttpProtocol &prot);
+  int recvFrames(XrdHttpProtocol &prot, XrdLink *lp);
+  int feedRecv(XrdHttpProtocol &prot, const uint8_t *data, size_t len);
+  int ensureSession(XrdHttpProtocol &prot);
+  int dispatchStream(int32_t stream_id, XrdHttpProtocol &prot, XrdLink *lp);
+  int dispatchNext(XrdHttpProtocol &prot, XrdLink *lp);
+  bool finishActiveIfIdle(XrdHttpProtocol &prot);
 
   void *session_;
   void *sessionCtx_;
   int32_t activeStreamId_;
-  bool requestReady_;
-  XrdHttp2StreamState *stream_;
+  bool goaway_;
+  bool wire_drained_;
+  std::map<int32_t, std::unique_ptr<XrdHttp2StreamState>> streams_;
+  std::deque<int32_t> ready_queue_;
   XrdHttp2PendingResponse pendingResponse_;
+  uint8_t recvbuf_[kRecvBufSize];
 };
 
 #endif
