@@ -34,6 +34,7 @@
 #include "XrdCks/XrdCksCalc.hh"
 #include "XrdCks/XrdCksData.hh"
 
+#include <algorithm>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -574,6 +575,13 @@ void FileCopyTest::CopyTestFunc( bool thirdParty )
   // now test if the xattrs were preserved
   std::vector<XAttr> xattrs;
   EXPECT_XRDST_OK( fs.ListXAttr( targetPath, xattrs ) );
+#ifdef __APPLE__
+  xattrs.erase( std::remove_if( xattrs.begin(), xattrs.end(),
+                                []( const XAttr &a ) {
+                                  return a.name.compare( 0, 10, "com.apple." ) == 0;
+                                } ),
+                xattrs.end() );
+#endif
   ASSERT_EQ( xattrs.size(), 1u );
   XAttr &xattr = xattrs.front();
   EXPECT_XRDST_OK( xattr.status );

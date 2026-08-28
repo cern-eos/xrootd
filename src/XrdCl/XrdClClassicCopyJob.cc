@@ -131,7 +131,8 @@ namespace
                                 const std::vector<XrdCl::xattr_t> &xattrs )
   {
     std::vector<XrdCl::XAttrStatus> rsp;
-    file.SetXAttr( xattrs, rsp );
+    XrdCl::XRootDStatus st = file.SetXAttr( xattrs, rsp );
+    if( !st.IsOK() ) return st;
     std::vector<XrdCl::XAttrStatus>::iterator itr = rsp.begin();
     for( ; itr != rsp.end() ; ++itr )
       if( !itr->status.IsOK() ) return itr->status;

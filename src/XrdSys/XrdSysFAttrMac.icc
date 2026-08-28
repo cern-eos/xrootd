@@ -116,11 +116,14 @@ int XrdSysFAttr::List(AList **aPL, const char *Path, int fd, int getSz)
       }
    if (!Tlen) return 0;
 
-// Run through the memory and allocate an AList entry for each.
+// Run through the memory and allocate an AList entry for each. Skip
+// Apple system metadata so listing matches Linux user-namespace-only
+// behaviour and so preserveXAttr does not try to copy them.
 //
    bP = Buff; bEnd = Buff+Tlen;
    while(bP < bEnd)
-        {if ((aNew = getEnt(Path, fd, bP, *aPL, msP))) *aPL = aNew;
+        {if (strncmp(bP, "com.apple.", 10)
+         &&  (aNew = getEnt(Path, fd, bP, *aPL, msP))) *aPL = aNew;
          bP = bP + strlen(bP) + 1;
         }
 

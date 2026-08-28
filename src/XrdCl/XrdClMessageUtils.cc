@@ -422,15 +422,13 @@ namespace XrdCl
     size_t nlen = 0, vlen = 0;
     for( auto itr = attrs.begin(); itr != attrs.end(); ++itr )
     {
-      nlen += std::get<xattr_name>( *itr ).size() + name_overhead;
-      vlen += std::get<xattr_value>( *itr ).size() + value_overhead;
+      const size_t nsz = std::get<xattr_name>( *itr ).size();
+      const size_t vsz = std::get<xattr_value>( *itr ).size();
+      if( nsz > xfaLimits::kXR_faMaxNlen || vsz > xfaLimits::kXR_faMaxVlen )
+        return Status( stError, errInvalidArgs );
+      nlen += nsz + name_overhead;
+      vlen += vsz + value_overhead;
     }
-
-    if( nlen > xfaLimits::kXR_faMaxNlen )
-      return Status( stError, errInvalidArgs );
-
-    if( vlen > xfaLimits::kXR_faMaxVlen )
-      return Status( stError, errInvalidArgs );
 
     //----------------------------------------------------------------------
     // Create name and value vectors
