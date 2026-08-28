@@ -111,6 +111,46 @@ write_configs() {
        done
 }
 
+find_data_file() {
+       local name=$1
+       local srv
+
+       for srv in "${datanodes[@]}"; do
+              if [[ -f "${DATAFOLDER}/${srv}/data/${name}" ]]; then
+                     echo "${DATAFOLDER}/${srv}/data/${name}"
+                     return 0
+              fi
+       done
+       return 1
+}
+
+# Recopy canonical metalinks (ports 10943-10946) and refresh size/hash
+# from the generated data files. generate() skips when ./data already
+# exists, and stop() deletes ports.env, so leftover dynamic ports would
+# otherwise survive into the next cluster start.
+refresh_metalink_files() {
+       local dest metalink file datafile
+
+       if [[ -d "${DATAFOLDER}/srv1/data" ]]; then
+              mkdir -p "${DATAFOLDER}/srv1/data/metalink"
+       fi
+
+       for dest in "${DATAFOLDER}"/*/data/metalink; do
+              [[ -d "${dest}" ]] || continue
+              cp "${PREDEF}"/input*.meta* "${PREDEF}"/ml*.meta* "${dest}/"
+              for metalink in "${dest}"/*; do
+                     [[ -f "${metalink}" ]] || continue
+                     for file in "${filenames[@]}"; do
+                            grep -q "${file}" "${metalink}" || continue
+                            datafile=$(find_data_file "${file}") || continue
+                            new_size=$(filesize "${datafile}")
+                            new_hash=$(${CRC32C} < "${datafile}" | cut -d' ' -f1)
+                            formatfiles "${metalink}"
+                     done
+              done
+       done
+}
+
 patch_metalink_ports() {
        local file
        local sed_inplace
@@ -127,10 +167,6 @@ patch_metalink_ports() {
                      -e "s/localhost:10944/localhost:${XRD_PORT_SRV2}/g" \
                      -e "s/localhost:10945/localhost:${XRD_PORT_SRV3}/g" \
                      -e "s/localhost:10946/localhost:${XRD_PORT_SRV4}/g" \
-                     -e "s/localhost:${PREV_XRD_PORT_SRV1}/localhost:${XRD_PORT_SRV1}/g" \
-                     -e "s/localhost:${PREV_XRD_PORT_SRV2}/localhost:${XRD_PORT_SRV2}/g" \
-                     -e "s/localhost:${PREV_XRD_PORT_SRV3}/localhost:${XRD_PORT_SRV3}/g" \
-                     -e "s/localhost:${PREV_XRD_PORT_SRV4}/localhost:${XRD_PORT_SRV4}/g" \
                      "${file}"
        done
 }
@@ -300,25 +336,13 @@ stop() {
 }
 
 start(){
-       PREV_XRD_PORT_SRV1=10943
-       PREV_XRD_PORT_SRV2=10944
-       PREV_XRD_PORT_SRV3=10945
-       PREV_XRD_PORT_SRV4=10946
-       if [[ -f "${PORTS_ENV}" ]]; then
-              # shellcheck disable=SC1091
-              source "${PORTS_ENV}"
-              PREV_XRD_PORT_SRV1=${XRD_PORT_SRV1}
-              PREV_XRD_PORT_SRV2=${XRD_PORT_SRV2}
-              PREV_XRD_PORT_SRV3=${XRD_PORT_SRV3}
-              PREV_XRD_PORT_SRV4=${XRD_PORT_SRV4}
-       fi
-
        stop
 
        allocate_ports
        write_configs
        write_ports_env
        generate
+       refresh_metalink_files
        patch_all_metalink_ports
 
        local need_cleanup=0
