@@ -156,7 +156,9 @@ public:
   int processHttp2(XrdLink *lp);
   void detectWireMode();
   bool Http2OutboundPending() const;
+  bool maybeUpgradeH2c();
 #endif
+  static const std::vector<std::string> &h2pushPaths() { return m_h2push_paths; }
 
   /// Ctor, dtors and copy ctor
   XrdHttpProtocol(const XrdHttpProtocol&) = delete;
@@ -283,6 +285,7 @@ private:
   static int xparser(XrdOucStream &Config);
   static int xtlsclientauth(XrdOucStream &Config);
   static int xmaxdelay(XrdOucStream &Config);
+  static int xh2push(XrdOucStream &Config);
 
   static bool isRequiredXtractor; // If true treat secxtractor errors as fatal
   static XrdHttpSecXtractor *secxtractor;
@@ -553,5 +556,8 @@ protected:
   /// The static string version of m_staticheader_map.  After config parsing is done, this is
   /// computed and we won't need to reference m_staticheader_map in the response path.
   static std::unordered_map<std::string, std::string> m_staticheaders;
+
+  /// Paths to PUSH_PROMISE after a successful GET (http.h2push)
+  static std::vector<std::string> m_h2push_paths;
 };
 #endif

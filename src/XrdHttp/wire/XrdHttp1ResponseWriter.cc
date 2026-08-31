@@ -92,12 +92,14 @@ int XrdHttp1ResponseWriter::sendSimple(XrdHttpProtocol &prot, int code,
     return -1;
   }
 
-  int r = 0;
-  if (body)
-    r = prot.SendData(body, content_length);
+  if (body && content_length > 0 &&
+      prot.SendData(body, content_length) < 0) {
+    XrdHttpMon::Record(prot.CurrentReq, code);
+    return -1;
+  }
 
   XrdHttpMon::Record(prot.CurrentReq, code);
-  return r <= 0 ? -1 : 0;
+  return 0;
 }
 
 int XrdHttp1ResponseWriter::startChunked(XrdHttpProtocol &prot, int code,

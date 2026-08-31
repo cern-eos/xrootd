@@ -96,19 +96,22 @@ regression test suite.
 
 HTTP/2 is available when XRootD is built with nghttp2 (`BUILD_HTTP2`).
 
-- Negotiated on **HTTPS** connections via TLS ALPN (`h2`).
-- Plain HTTP connections remain HTTP/1.1.
-- `detectWireMode()` also recognises the cleartext connection preface and a
-  SETTINGS-frame heuristic for edge cases.
+- Negotiated on **HTTPS** via TLS ALPN (`h2`), and on **cleartext** via the
+  connection preface (h2c prior knowledge) or `Upgrade: h2c`.
+- `detectWireMode()` also uses a SETTINGS-frame heuristic on TLS only.
 - Multiple requests on one connection are supported (same-connection reuse).
 - Request bodies are streamed into `XrdHttpReq` as DATA frames arrive (PUT
   does not wait for `END_STREAM` when `content-length` is present).
-- Concurrent streams are accepted (SETTINGS `MAX_CONCURRENT_STREAMS=100`) and
-  serialized through the single `CurrentReq` / Bridge path.
+- Concurrent streams are accepted (SETTINGS `MAX_CONCURRENT_STREAMS=100`).
+  `Bridge::Run()` remains one-at-a-time; response DATA for stream N can flush
+  while stream N+2 starts on the Bridge.
+- `http.h2push /path` sends `PUSH_PROMISE` after a successful GET when the
+  client advertised `SETTINGS_ENABLE_PUSH=1`, then serves the promised GET
+  through the serialized Bridge.
 - RST_STREAM and GOAWAY drop the affected queued streams; the active request
   is abandoned if the peer resets it.
-- `Http2OutboundPending()` defers connection close while response DATA is still
-  queued.
+- `hasPendingSend()` uses `nghttp2_session_want_write()` (it must not consume
+  frames). `Http2OutboundPending()` defers close while response DATA is queued.
 
 ## Request lifecycle
 
@@ -167,12 +170,13 @@ http.parser llhttp
 | Directive | Values | Notes |
 |-----------|--------|-------|
 | `http.parser` | `llhttp`, `legacy` | HTTP/1.1 header parsing only |
+| `http.h2push` | path (repeatable) | HTTP/2 PUSH_PROMISE targets after a successful GET |
 | `http.tlsclientauth` | `on`, `off` | TLS client certificate authentication |
 | `http.selfhttps2http` | `yes`, `no` | Signed redirect from HTTPS to HTTP |
 | `http.auth` | `krb5`, `tpc`, … | See feature READMEs |
 
-HTTP/2 requires no separate config directive; it is negotiated at the TLS layer
-when the build includes nghttp2 and the client offers ALPN `h2`.
+HTTP/2 is negotiated via TLS ALPN `h2`, the cleartext connection preface
+(h2c prior knowledge), or HTTP/1.1 `Upgrade: h2c`.
 
 ## Build
 

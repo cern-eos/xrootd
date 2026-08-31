@@ -55,6 +55,7 @@
 #include "XrdOuc/XrdOucPrivateUtils.hh"
 #include "XrdHttpCors/XrdHttpCors.hh"
 
+#include <cerrno>
 #include <charconv>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -137,6 +138,7 @@ XrdHttpParserMode XrdHttpProtocol::parserMode = XrdHttpParserMode::kLlhttp;
 
 decltype(XrdHttpProtocol::m_staticheader_map) XrdHttpProtocol::m_staticheader_map;
 decltype(XrdHttpProtocol::m_staticheaders) XrdHttpProtocol::m_staticheaders;
+std::vector<std::string> XrdHttpProtocol::m_h2push_paths;
 
 XrdSysTrace XrdHttpTrace("http");
 
@@ -548,6 +550,11 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
 #endif
         CurrentReq.reqstate++;
     }
+#ifdef HAVE_NGHTTP2
+    if (!ishttps && wireMode_ == XrdHttpWireMode::kHttp1 &&
+        !CurrentReq.headerok && !DoingLogin && BuffUsed() > 0)
+      detectWireMode();
+#endif
   } else if (!DoneSetInfo && !CurrentReq.userAgent().empty()) { // DoingLogin is true, meaning the login finished.
     std::string mon_info = "monitor info " + CurrentReq.userAgent();
     DoneSetInfo = true;
@@ -655,6 +662,11 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
 int XrdHttpProtocol::processParsedRequest(XrdLink *lp)
 {
   int rc = 0;
+
+#ifdef HAVE_NGHTTP2
+  if (wireMode_ == XrdHttpWireMode::kHttp1)
+    maybeUpgradeH2c();
+#endif
 
   // If we are in self-redirect mode, then let's do it
   // Do selfredirect only with 'simple' requests, otherwise poor clients may misbehave
@@ -1085,6 +1097,7 @@ int XrdHttpProtocol::Config(const char *ConfigFN, XrdOucEnv *myEnv) {
       else if TS_Xeq("parser", xparser);
       else if TS_Xeq("tlsclientauth", xtlsclientauth);
       else if TS_Xeq("maxdelay", xmaxdelay);
+      else if TS_Xeq("h2push", xh2push);
       else {
         eDest.Say("Config warning: ignoring unknown directive '", var, "'.");
         Config.Echo();
@@ -1621,7 +1634,7 @@ int XrdHttpProtocol::SendData(const char *body, int bodylen) {
     TRACE(REQ, "Sending " << bodylen << " bytes");
 #ifdef HAVE_NGHTTP2
     if (wireMode_ == XrdHttpWireMode::kHttp2 &&
-        http2Session_.pendingResponse().active)
+        http2Session_.hasOutboundPending())
       return XrdHttp2ResponseWriter::sendStreamData(*this, body, bodylen);
 #endif
     if (ishttps) {
@@ -1688,8 +1701,6 @@ int XrdHttpProtocol::RecvWireData(char *buf, int buflen)
       const int err = SSL_get_error(ssl, r);
       if (r < 0 && (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE))
         return 0;
-      if (r == 0 && err == SSL_ERROR_ZERO_RETURN)
-        return 0;
       ERR_print_errors(sslbio_err);
       CurrentReq.monState = XrdHttpMonState::ERR_NET;
       return -1;
@@ -1700,14 +1711,18 @@ int XrdHttpProtocol::RecvWireData(char *buf, int buflen)
   if (!Link)
     return -1;
 
-  const int r = Link->Recv(buf, buflen);
-  if (r == 0) {
+  // Timeout is milliseconds. 0 = non-blocking, matching SSL WANT_READ.
+  // Recv() returns 0 on timeout, -ENOMSG when the peer closed, <0 on error.
+  const int r = Link->Recv(buf, buflen, 0);
+  if (r > 0)
+    return r;
+  if (r == 0)
+    return 0;
+  if (r == -ENOMSG) {
     Link->setEtext("link read error or closed");
     return -1;
   }
-  if (r < 0)
-    return 0;
-  return r;
+  return -1;
 }
 
 int XrdHttpProtocol::BuffInject(const char *data, int len)
@@ -1730,15 +1745,15 @@ int XrdHttpProtocol::BuffInject(const char *data, int len)
 void XrdHttpProtocol::detectWireMode()
 {
   wireMode_ = XrdHttpWireMode::kHttp1;
-  if (!ssl)
-    return;
 
-  const unsigned char *alpn = nullptr;
-  unsigned int alpn_len = 0;
-  SSL_get0_alpn_selected(ssl, &alpn, &alpn_len);
-  if (alpn_len == 2 && alpn[0] == 'h' && alpn[1] == '2') {
-    wireMode_ = XrdHttpWireMode::kHttp2;
-    return;
+  if (ssl) {
+    const unsigned char *alpn = nullptr;
+    unsigned int alpn_len = 0;
+    SSL_get0_alpn_selected(ssl, &alpn, &alpn_len);
+    if (alpn_len == 2 && alpn[0] == 'h' && alpn[1] == '2') {
+      wireMode_ = XrdHttpWireMode::kHttp2;
+      return;
+    }
   }
 
   static const char kPreface[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
@@ -1752,7 +1767,8 @@ void XrdHttpProtocol::detectWireMode()
   }
 
   // h2 over TLS does not send the connection preface; detect a SETTINGS frame.
-  if (avail >= 9) {
+  // Do not apply this heuristic on cleartext — it can misread HTTP/1.1.
+  if (ssl && avail >= 9) {
     const auto *b = reinterpret_cast<const unsigned char *>(data);
     const unsigned char type = b[3];
     if (type <= 0x0a) {
@@ -1781,14 +1797,98 @@ bool XrdHttpProtocol::Http2OutboundPending() const
 {
   if (wireMode_ != XrdHttpWireMode::kHttp2)
     return false;
-
-  const XrdHttp2PendingResponse &pending = http2Session_.pendingResponse();
-  if (pending.active) {
-    if (pending.streaming &&
-        pending.bytes_sent < pending.content_length)
-      return true;
-  }
+  if (http2Session_.hasOutboundPending())
+    return true;
   return http2Session_.hasPendingSend();
+}
+
+namespace
+{
+bool findHeaderCI(const std::map<std::string, std::string> &headers,
+                  const char *name, std::string &value)
+{
+  for (const auto &kv : headers) {
+    if (strcasecmp(kv.first.c_str(), name) == 0) {
+      value = kv.second;
+      while (!value.empty() && (value.back() == '\r' || value.back() == '\n' ||
+                                value.back() == ' '))
+        value.pop_back();
+      return true;
+    }
+  }
+  return false;
+}
+
+bool decodeBase64Url(const std::string &in, std::vector<uint8_t> &out)
+{
+  std::string b64 = in;
+  for (char &c : b64) {
+    if (c == '-')
+      c = '+';
+    else if (c == '_')
+      c = '/';
+  }
+  while (b64.size() % 4)
+    b64.push_back('=');
+  base64ToBytes(b64, out);
+  return !out.empty() || in.empty();
+}
+}
+
+bool XrdHttpProtocol::maybeUpgradeH2c()
+{
+  if (ishttps || wireMode_ == XrdHttpWireMode::kHttp2)
+    return false;
+  if (CurrentReq.request != XrdHttpReq::rtGET &&
+      CurrentReq.request != XrdHttpReq::rtHEAD &&
+      CurrentReq.request != XrdHttpReq::rtOPTIONS)
+    return false;
+
+  std::string upgrade, settings;
+  if (!findHeaderCI(CurrentReq.allheaders, "upgrade", upgrade) ||
+      strcasecmp(upgrade.c_str(), "h2c") != 0)
+    return false;
+  if (!findHeaderCI(CurrentReq.allheaders, "http2-settings", settings))
+    return false;
+
+  // Attempt the upgrade only once; leave the request as HTTP/1 on failure.
+  CurrentReq.allheaders.erase("upgrade");
+  CurrentReq.allheaders.erase("Upgrade");
+  CurrentReq.allheaders.erase("http2-settings");
+  CurrentReq.allheaders.erase("HTTP2-Settings");
+
+  std::vector<uint8_t> payload;
+  if (!decodeBase64Url(settings, payload))
+    return false;
+
+  const bool ishead = CurrentReq.request == XrdHttpReq::rtHEAD;
+  if (http2Session_.acceptH2cUpgrade(*this, payload.data(), payload.size(),
+                                     ishead) < 0)
+    return false;
+
+  // RFC 7540 §3.2: 101 must be HTTP/1.1 with Connection: Upgrade only.
+  // Do not use SendSimpleResp() — it adds Keep-Alive / Content-Length.
+  static const char k101[] =
+      "HTTP/1.1 101 Switching Protocols\r\n"
+      "Connection: Upgrade\r\n"
+      "Upgrade: h2c\r\n"
+      "\r\n";
+  if (SendData(k101, static_cast<int>(sizeof(k101) - 1)) < 0) {
+    http2Session_.reset();
+    return false;
+  }
+
+  CurrentReq.keepalive = true;
+  wireMode_ = XrdHttpWireMode::kHttp2;
+  if (http2Session_.flushSend(*this) < 0) {
+    http2Session_.reset();
+    wireMode_ = XrdHttpWireMode::kHttp1;
+    return false;
+  }
+
+  TRACEI(ALL, " HTTP/2 h2c upgrade accepted, stream=1 "
+         << CurrentReq.resource.c_str());
+  return true;
 }
 #endif
 
@@ -3286,6 +3386,17 @@ int XrdHttpProtocol::xtlsclientauth(XrdOucStream &Config) {
 
   eDest.Emsg("config", "invalid tlsclientauth parameter -", val);
   return 1;
+}
+
+int XrdHttpProtocol::xh2push(XrdOucStream &Config) {
+  char *val = Config.GetWord();
+  if (!val || !*val) {
+    eDest.Emsg("Config", "http.h2push requires a path");
+    return 1;
+  }
+  m_h2push_paths.emplace_back(val);
+  eDest.Say("Config http.h2push ", val);
+  return 0;
 }
 
 int XrdHttpProtocol::xparser(XrdOucStream &Config) {

@@ -61,14 +61,23 @@ public:
 
   int32_t activeStreamId() const { return activeStreamId_; }
 
-  XrdHttp2PendingResponse &pendingResponse() { return pendingResponse_; }
-  const XrdHttp2PendingResponse &pendingResponse() const { return pendingResponse_; }
+  XrdHttp2PendingResponse &pendingResponse();
+  XrdHttp2PendingResponse *pendingFor(int32_t stream_id);
+  XrdHttp2PendingResponse &ensurePending(int32_t stream_id);
+  bool hasOutboundPending() const;
 
   int flushSend(XrdHttpProtocol &prot);
 
   bool hasPendingSend() const;
 
   void *nghttp2SessionHandle() const { return session_; }
+
+  int acceptH2cUpgrade(XrdHttpProtocol &prot, const uint8_t *settings,
+                       size_t settings_len, bool head_request);
+  void attachUpgradedRequest();
+  void maybePush(XrdHttpProtocol &prot, const std::string &scheme,
+                 const std::string &authority, const std::string &current_path,
+                 const std::vector<std::string> &paths);
 
   void beginStream(int32_t stream_id);
   void addHeader(int32_t stream_id, const std::string &name,
@@ -95,7 +104,7 @@ private:
   int injectPendingBody(XrdHttpProtocol &prot);
   int recvFrames(XrdHttpProtocol &prot, XrdLink *lp);
   int feedRecv(XrdHttpProtocol &prot, const uint8_t *data, size_t len);
-  int ensureSession(XrdHttpProtocol &prot);
+  int ensureSession(XrdHttpProtocol &prot, bool flush = true);
   int dispatchStream(int32_t stream_id, XrdHttpProtocol &prot, XrdLink *lp);
   int dispatchNext(XrdHttpProtocol &prot, XrdLink *lp);
   bool finishActiveIfIdle(XrdHttpProtocol &prot);
@@ -107,7 +116,8 @@ private:
   bool wire_drained_;
   std::map<int32_t, std::unique_ptr<XrdHttp2StreamState>> streams_;
   std::deque<int32_t> ready_queue_;
-  XrdHttp2PendingResponse pendingResponse_;
+  std::map<int32_t, XrdHttp2PendingResponse> pendingResponses_;
+  XrdHttp2PendingResponse emptyPending_;
   uint8_t recvbuf_[kRecvBufSize];
 };
 

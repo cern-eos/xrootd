@@ -46,9 +46,10 @@ ssize_t readResponse(nghttp2_session * /*session*/, int32_t stream_id,
 
   auto *session = static_cast<XrdHttp2Session *>(source->ptr);
 
-  XrdHttp2PendingResponse &resp = session->pendingResponse();
-  if (!resp.active || resp.stream_id != stream_id)
+  XrdHttp2PendingResponse *respP = session->pendingFor(stream_id);
+  if (!respP || !respP->active)
     return NGHTTP2_ERR_CALLBACK_FAILURE;
+  XrdHttp2PendingResponse &resp = *respP;
 
   const size_t remain = resp.body.size() - resp.body_offset;
   if (remain == 0) {
@@ -214,7 +215,7 @@ int XrdHttp2ResponseWriter::sendSimple(XrdHttpProtocol &prot, int code,
       !body && content_length > 0 &&
       prot.CurrentReq.request != XrdHttpReq::rtHEAD;
 
-  XrdHttp2PendingResponse &pending = prot.http2Session_.pendingResponse();
+  XrdHttp2PendingResponse &pending = prot.http2Session_.ensurePending(stream_id);
   pending = {};
   pending.stream_id = stream_id;
   pending.status_code = code;
@@ -236,6 +237,15 @@ int XrdHttp2ResponseWriter::sendSimple(XrdHttpProtocol &prot, int code,
     return -1;
   }
 
+  if (code >= 200 && code < 300 &&
+      prot.CurrentReq.request == XrdHttpReq::rtGET &&
+      !XrdHttpProtocol::h2pushPaths().empty()) {
+    const std::string &authority = prot.CurrentReq.host;
+    prot.http2Session_.maybePush(prot, prot.isHTTPS() ? "https" : "http",
+                                 authority, prot.CurrentReq.resource.c_str(),
+                                 XrdHttpProtocol::h2pushPaths());
+  }
+
   XrdHttpMon::Record(prot.CurrentReq, code);
   (void)desc;
   return 0;
@@ -247,7 +257,11 @@ int XrdHttp2ResponseWriter::sendStreamData(XrdHttpProtocol &prot,
   if (!body || bodylen <= 0)
     return 0;
 
-  XrdHttp2PendingResponse &pending = prot.http2Session_.pendingResponse();
+  XrdHttp2PendingResponse *pendingP = prot.http2Session_.pendingFor(
+      prot.http2Session_.activeStreamId());
+  if (!pendingP)
+    pendingP = &prot.http2Session_.pendingResponse();
+  XrdHttp2PendingResponse &pending = *pendingP;
   if (!pending.active || !pending.streaming)
     return -1;
 
@@ -266,7 +280,11 @@ int XrdHttp2ResponseWriter::sendStreamData(XrdHttpProtocol &prot,
 
 int XrdHttp2ResponseWriter::finishStream(XrdHttpProtocol &prot)
 {
-  XrdHttp2PendingResponse &pending = prot.http2Session_.pendingResponse();
+  XrdHttp2PendingResponse *pendingP = prot.http2Session_.pendingFor(
+      prot.http2Session_.activeStreamId());
+  if (!pendingP)
+    pendingP = &prot.http2Session_.pendingResponse();
+  XrdHttp2PendingResponse &pending = *pendingP;
   if (!pending.active || !pending.streaming)
     return 0;
 

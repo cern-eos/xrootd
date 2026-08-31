@@ -235,10 +235,9 @@ void XrdHttp2Session::onStreamClosed(int32_t stream_id, uint32_t error_code)
   TRACE(ALL, " HTTP/2 stream reset stream=" << stream_id
         << " error=" << error_code);
 
-  if (stream_id == activeStreamId_) {
-    pendingResponse_ = {};
+  if (stream_id == activeStreamId_)
     activeStreamId_ = -1;
-  }
+  pendingResponses_.erase(stream_id);
   dropStream(stream_id);
 }
 
@@ -325,7 +324,8 @@ void XrdHttp2Session::synthesizeContentLength(XrdHttp2StreamState *st)
 
 void XrdHttp2Session::reset()
 {
-  pendingResponse_ = {};
+  pendingResponses_.clear();
+  emptyPending_ = {};
   streams_.clear();
   ready_queue_.clear();
   activeStreamId_ = -1;
@@ -381,10 +381,42 @@ bool XrdHttp2Session::hasPendingSend() const
 {
   if (!session_)
     return false;
+  return nghttp2_session_want_write(
+             static_cast<nghttp2_session *>(session_)) != 0;
+}
 
-  const uint8_t *data = nullptr;
-  return nghttp2_session_mem_send(static_cast<nghttp2_session *>(session_),
-                                  &data) > 0;
+XrdHttp2PendingResponse &XrdHttp2Session::pendingResponse()
+{
+  if (activeStreamId_ < 0)
+    return emptyPending_;
+  return pendingResponses_[activeStreamId_];
+}
+
+XrdHttp2PendingResponse *XrdHttp2Session::pendingFor(int32_t stream_id)
+{
+  auto it = pendingResponses_.find(stream_id);
+  if (it == pendingResponses_.end())
+    return nullptr;
+  return &it->second;
+}
+
+XrdHttp2PendingResponse &XrdHttp2Session::ensurePending(int32_t stream_id)
+{
+  return pendingResponses_[stream_id];
+}
+
+bool XrdHttp2Session::hasOutboundPending() const
+{
+  for (const auto &kv : pendingResponses_) {
+    const XrdHttp2PendingResponse &p = kv.second;
+    if (!p.active)
+      continue;
+    if (!p.body.empty() && p.body_offset < p.body.size())
+      return true;
+    if (p.streaming && p.bytes_sent < p.content_length)
+      return true;
+  }
+  return false;
 }
 
 static int applyLine(XrdHttpReq &req, bool firstLine, std::string &line)
@@ -509,7 +541,7 @@ int XrdHttp2Session::recvFrames(XrdHttpProtocol &prot, XrdLink *lp)
   return 0;
 }
 
-int XrdHttp2Session::ensureSession(XrdHttpProtocol &prot)
+int XrdHttp2Session::ensureSession(XrdHttpProtocol &prot, bool flush)
 {
   if (session_)
     return 0;
@@ -542,7 +574,7 @@ int XrdHttp2Session::ensureSession(XrdHttpProtocol &prot)
   nghttp2_settings_entry settings[] = {
       {NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, kMaxConcurrentStreams}};
   nghttp2_submit_settings(session, NGHTTP2_FLAG_NONE, settings, 1);
-  return flushSend(prot);
+  return flush ? flushSend(prot) : 0;
 }
 
 int XrdHttp2Session::dispatchStream(int32_t stream_id, XrdHttpProtocol &prot,
@@ -595,11 +627,8 @@ bool XrdHttp2Session::finishActiveIfIdle(XrdHttpProtocol &prot)
       prot.DoingLogin)
     return false;
 
-  if (pendingResponse_.active && pendingResponse_.streaming &&
-      pendingResponse_.bytes_sent < pendingResponse_.content_length)
-    return false;
-
-  pendingResponse_ = {};
+  // Leave pendingResponses_ in place so DATA can finish flushing while
+  // the next stream starts on the Bridge.
   dropStream(activeStreamId_);
   activeStreamId_ = -1;
   return true;
@@ -625,17 +654,19 @@ int XrdHttp2Session::drive(XrdHttpProtocol &prot, XrdLink *lp)
 
   if (appInFlight(prot)) {
     if (!prot.CurrentReq.headerok && !prot.DoingLogin)
-      return 0;
+      return 1;
     const int rc = prot.processParsedRequest(lp);
     if (rc < 0)
       return rc;
     if (flushSend(prot) < 0)
       return -1;
-    if (finishActiveIfIdle(prot) && !ready_queue_.empty() &&
-        !appInFlight(prot)) {
+    finishActiveIfIdle(prot);
+    if (!ready_queue_.empty() && !appInFlight(prot)) {
       const int drc = dispatchNext(prot, lp);
       if (drc != 0)
         return drc;
+      if (appInFlight(prot))
+        return 0;
     }
     return rc;
   }
@@ -655,4 +686,95 @@ int XrdHttp2Session::drive(XrdHttpProtocol &prot, XrdLink *lp)
   // Wait for the next poll event. Returning 0 here busy-loops the scheduler
   // on keep-alive connections that have no Bridge work left.
   return 1;
+}
+
+int XrdHttp2Session::acceptH2cUpgrade(XrdHttpProtocol &prot,
+                                      const uint8_t *settings,
+                                      size_t settings_len, bool head_request)
+{
+  if (ensureSession(prot, false) < 0)
+    return -1;
+
+  auto *session = static_cast<nghttp2_session *>(session_);
+  if (nghttp2_session_upgrade2(session, settings, settings_len,
+                               head_request ? 1 : 0, nullptr) != 0)
+    return -1;
+
+  attachUpgradedRequest();
+  return 0;
+}
+
+void XrdHttp2Session::attachUpgradedRequest()
+{
+  auto st = std::make_unique<XrdHttp2StreamState>();
+  st->stream_id = 1;
+  st->headers_done = true;
+  st->end_stream = true;
+  st->dispatched = true;
+  streams_[1] = std::move(st);
+  activeStreamId_ = 1;
+  wire_drained_ = true;
+}
+
+void XrdHttp2Session::maybePush(XrdHttpProtocol &prot, const std::string &scheme,
+                               const std::string &authority,
+                               const std::string &current_path,
+                               const std::vector<std::string> &paths)
+{
+  (void)prot;
+  if (!session_ || paths.empty() || activeStreamId_ <= 0)
+    return;
+  if ((activeStreamId_ % 2) == 0)
+    return;
+
+  auto *session = static_cast<nghttp2_session *>(session_);
+  if (nghttp2_session_get_remote_settings(
+          session, NGHTTP2_SETTINGS_ENABLE_PUSH) == 0)
+    return;
+
+  for (const auto &path : paths) {
+    if (path.empty() || path == current_path)
+      continue;
+
+    std::string method = "GET";
+    std::string sch = scheme.empty() ? "https" : scheme;
+    std::string auth = authority;
+    std::string pth = path;
+    if (auth.empty())
+      continue;
+
+    nghttp2_nv nva[4];
+    nva[0] = {reinterpret_cast<uint8_t *>(const_cast<char *>(":method")),
+              reinterpret_cast<uint8_t *>(method.data()),
+              7, method.size(), NGHTTP2_NV_FLAG_NONE};
+    nva[1] = {reinterpret_cast<uint8_t *>(const_cast<char *>(":path")),
+              reinterpret_cast<uint8_t *>(pth.data()),
+              5, pth.size(), NGHTTP2_NV_FLAG_NONE};
+    nva[2] = {reinterpret_cast<uint8_t *>(const_cast<char *>(":scheme")),
+              reinterpret_cast<uint8_t *>(sch.data()),
+              7, sch.size(), NGHTTP2_NV_FLAG_NONE};
+    nva[3] = {reinterpret_cast<uint8_t *>(const_cast<char *>(":authority")),
+              reinterpret_cast<uint8_t *>(auth.data()),
+              10, auth.size(), NGHTTP2_NV_FLAG_NONE};
+
+    const int32_t promised = nghttp2_submit_push_promise(
+        session, NGHTTP2_FLAG_NONE, activeStreamId_, nva, 4, nullptr);
+    if (promised <= 0)
+      continue;
+
+    auto st = std::make_unique<XrdHttp2StreamState>();
+    st->stream_id = promised;
+    st->method = method;
+    st->path = pth;
+    st->scheme = sch;
+    st->authority = auth;
+    st->headers_done = true;
+    st->end_stream = true;
+    XrdHttp2StreamState *ready = st.get();
+    streams_[promised] = std::move(st);
+    enqueueIfReady(ready);
+
+    TRACE(ALL, " HTTP/2 PUSH_PROMISE parent=" << activeStreamId_
+          << " promised=" << promised << " GET " << pth);
+  }
 }

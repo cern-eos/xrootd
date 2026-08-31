@@ -246,4 +246,46 @@ function test_httph2() {
 	for i in 1 2 3 4; do
 		assert diff -u "${tmpdir}/p${i}.txt" "${tmpdir}/g${i}"
 	done
+
+	echo "Testing overlapping large parallel GETs"
+	local j
+	for j in 1 2 3 4; do
+		dd if=/dev/urandom of="${tmpdir}/lg${j}.bin" bs=1024 count=512 status=none
+		assert h2 -s -T "${tmpdir}/lg${j}.bin" "${HTTPS_HOST}/h2-lg-${j}.bin"
+	done
+	assert h2 --parallel --parallel-immediate -s \
+		-o "${tmpdir}/lg1.out" "${HTTPS_HOST}/h2-lg-1.bin" \
+		-o "${tmpdir}/lg2.out" "${HTTPS_HOST}/h2-lg-2.bin" \
+		-o "${tmpdir}/lg3.out" "${HTTPS_HOST}/h2-lg-3.bin" \
+		-o "${tmpdir}/lg4.out" "${HTTPS_HOST}/h2-lg-4.bin"
+	for j in 1 2 3 4; do
+		assert cmp "${tmpdir}/lg${j}.bin" "${tmpdir}/lg${j}.out"
+	done
+
+	echo "Testing same-connection reuse after a large GET"
+	read -r code1 code2 <<< "$(h2 -s \
+		-o /dev/null -w '%{http_code} ' "${HTTPS_HOST}/h2-big.bin" \
+		--next --http2 --cacert "${CURL_CA}" \
+		-o /dev/null -w '%{http_code}' "${HTTPS_HOST}/h2-alphabet.txt")"
+	assert_eq 200 "${code1}" "large GET on reused connection should return 200"
+	assert_eq 200 "${code2}" "follow-up GET after large response should return 200"
+
+	echo "Testing HTTP/2 server push"
+	echo "pushed payload" > "${tmpdir}/push-target.txt"
+	assert h2 --connect-timeout 5 --max-time 15 -s -T "${tmpdir}/push-target.txt" \
+		"${HTTPS_HOST}/h2-push-target.txt"
+	assert h2 --connect-timeout 5 --max-time 15 -s -o /dev/null \
+		"${HTTPS_HOST}/h2-alphabet.txt"
+	if command -v nghttp >/dev/null 2>&1; then
+		nghttp -n -v --no-verify-peer --timeout=10 \
+			"${HTTPS_HOST}/h2-alphabet.txt" > "${tmpdir}/nghttp.out" 2>&1 || true
+		grep -qi 'PUSH_PROMISE' "${tmpdir}/nghttp.out" \
+			|| error "nghttp should observe PUSH_PROMISE"
+		grep -q 'HTTP/2 PUSH_PROMISE' "${XROOTD_SERVER_LOGFILE}" \
+			|| error "server should log PUSH_PROMISE for http.h2push"
+	elif grep -q 'HTTP/2 PUSH_PROMISE' "${XROOTD_SERVER_LOGFILE}"; then
+		echo "PUSH_PROMISE logged (curl may have SETTINGS_ENABLE_PUSH=0)"
+	else
+		echo "No HTTP/2 client with push enabled; skipping PUSH_PROMISE wire check"
+	fi
 }
