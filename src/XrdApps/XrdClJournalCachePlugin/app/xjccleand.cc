@@ -57,12 +57,23 @@ void printCurrentTime() {
             << std::setfill('0') << nanoseconds.count() << " ";
 }
 
+bool isTrustedConfigFile(const std::string &path) {
+  struct stat st;
+  if (::lstat(path.c_str(), &st) != 0) {
+    return false;
+  }
+  if (!S_ISREG(st.st_mode) || S_ISLNK(st.st_mode)) {
+    return false;
+  }
+  return (st.st_mode & S_IWOTH) == 0;
+}
+
 time_t getLastAccessTime(const fs::path &filePath) {
   struct stat fileInfo;
   if (stat(filePath.c_str(), &fileInfo) != 0) {
     return -1;
   }
-  return fileInfo.st_atime;
+  return fileInfo.st_mtime;
 }
 
 long long getDirectorySize(const fs::path &directory) {
@@ -152,7 +163,8 @@ struct ConfigState {
 
 bool loadConfigState(ConfigState &state) {
   JournalCache::CleanerSettings loaded;
-  if (!JournalCache::loadCleanerFile(state.path, loaded)) {
+  if (!isTrustedConfigFile(state.path) ||
+      !JournalCache::loadCleanerFile(state.path, loaded)) {
     return false;
   }
   state.settings = loaded;
@@ -174,7 +186,8 @@ bool reloadConfigIfChanged(ConfigState &state) {
   }
 
   JournalCache::CleanerSettings loaded;
-  if (!JournalCache::loadCleanerFile(state.path, loaded)) {
+  if (!isTrustedConfigFile(state.path) ||
+      !JournalCache::loadCleanerFile(state.path, loaded)) {
     return false;
   }
   state.settings = loaded;

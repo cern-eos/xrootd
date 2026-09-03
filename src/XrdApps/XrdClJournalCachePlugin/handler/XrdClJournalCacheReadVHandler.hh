@@ -23,8 +23,8 @@ public:
       if (vReadInfo) {
         ChunkList *chunks = &(vReadInfo->GetChunks());
         for (auto it = chunks->begin(); it != chunks->end(); ++it) {
-          if (journal) {
-            journal->pwrite(it->GetBuffer(), it->GetLength(), it->GetOffset());
+          if (auto j = journal.lock()) {
+            (void)j->pwrite(it->GetBuffer(), it->GetLength(), it->GetOffset());
           }
           if (rvbytes) {
             *rvbytes += it->GetLength();
@@ -38,7 +38,7 @@ public:
 
   XrdCl::ResponseHandler *handler;
   std::atomic<uint64_t> *rvbytes;
-  std::shared_ptr<Journal> journal;
+  std::weak_ptr<Journal> journal;
 };
 
 } // namespace XrdCl

@@ -32,6 +32,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
+#include <stdexcept>
 #include <iostream>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -45,7 +46,12 @@
 #define pwrite64 pwrite
 #endif
 
+#ifndef O_NOFOLLOW
+#define O_NOFOLLOW 0
+#endif
+
 namespace {
+constexpr uint64_t kMaxJournalEntrySize = 1ull << 30;
 
 ssize_t write_full(int fd, const void *buf, size_t count, off_t offset) {
   const char *cursor = static_cast<const char *>(buf);
@@ -122,7 +128,7 @@ void Journal::close_fd() {
     return;
   }
 
-  sync();
+  sync_unlocked();
 
   struct flock lock;
   std::memset(&lock, 0, sizeof(lock));
@@ -279,6 +285,17 @@ int Journal::read_journal() {
       const uint64_t header_off = totalBytesRead;
       const uint64_t data_size = header->size;
       const off_t data_off = header_off + sizeof(header_t);
+      const uint64_t trailer = uses_crc() ? sizeof(uint32_t) : 0;
+      const uint64_t entry_bytes = sizeof(header_t) + data_size + trailer;
+
+      struct stat st;
+      if (fstat(fd, &st) != 0 || data_size > kMaxJournalEntrySize ||
+          header_off + entry_bytes > static_cast<uint64_t>(st.st_size)) {
+        log(2, "journal entry size out of range at %s offset %llu - purging",
+            path.c_str(), static_cast<unsigned long long>(header_off));
+        reset();
+        return cachesize;
+      }
 
       if (uses_crc()) {
         std::vector<char> data(data_size);
@@ -336,8 +353,11 @@ int Journal::attach(const std::string &lpath, uint64_t mtime,
 
   if (ifexists) {
     struct stat buf;
-    if (::stat(path.c_str(), &buf)) {
+    if (::lstat(path.c_str(), &buf)) {
       return -ENOENT;
+    }
+    if (S_ISLNK(buf.st_mode) || !S_ISREG(buf.st_mode)) {
+      return -ELOOP;
     }
     if ((size_t)buf.st_size < sizeof(jheader_t)) {
       return -EINVAL;
@@ -345,9 +365,22 @@ int Journal::attach(const std::string &lpath, uint64_t mtime,
   }
 
   if (fd == -1) {
-    fd = open(path.c_str(), O_CREAT | O_RDWR, S_IRWXU);
+    fd = open(path.c_str(), O_CREAT | O_RDWR | O_NOFOLLOW, S_IRWXU);
     if (fd < 0) {
       return -errno;
+    }
+
+    struct stat opened;
+    if (::fstat(fd, &opened) != 0) {
+      const int err = errno;
+      close(fd);
+      fd = -1;
+      return -err;
+    }
+    if (!S_ISREG(opened.st_mode)) {
+      close(fd);
+      fd = -1;
+      return -ELOOP;
     }
 
     struct flock lock;
@@ -564,8 +597,9 @@ int Journal::update_cache(std::vector<chunk_t> &updates) {
   std::sort(updates.begin(), updates.end());
 
   for (auto &u : updates) {
-    if (write_full(fd, u.buff, u.size, u.offset) != (ssize_t)u.size) {
-      return -errno;
+    const ssize_t written = write_full(fd, u.buff, u.size, u.offset);
+    if (written != (ssize_t)u.size) {
+      return written < 0 ? -errno : -EIO;
     }
   }
 
@@ -578,7 +612,8 @@ int Journal::update_cache(std::vector<chunk_t> &updates) {
 ssize_t Journal::pwrite(const void *buf, size_t count, off_t offset) {
   std::lock_guard<std::mutex> guard(mtx);
   if (fd < 0) {
-    return 0;
+    log(2, "pwrite on closed journal %s", path.c_str());
+    return -1;
   }
   if (count <= 0) {
     return 0;
@@ -589,8 +624,14 @@ ssize_t Journal::pwrite(const void *buf, size_t count, off_t offset) {
   to_write.insert(offset, offset + count, buf);
   auto res = journal.query(offset, offset + count);
 
-  for (auto itr : res) {
-    process_intersection(to_write, itr, updates);
+  try {
+    for (auto itr : res) {
+      process_intersection(to_write, itr, updates);
+    }
+  } catch (const std::logic_error &ex) {
+    log(1, "%s at %s - resetting journal", ex.what(), path.c_str());
+    reset();
+    return -1;
   }
 
   int rc = update_cache(updates);
@@ -633,6 +674,12 @@ ssize_t Journal::pwrite(const void *buf, size_t count, off_t offset) {
   if ((ssize_t)(offset + count) > max_offset) {
     max_offset = offset + count;
   }
+  if ((uint64_t)(offset + count) > jheader.filesize) {
+    jheader.filesize = offset + count;
+    if (write_jheader()) {
+      log(2, "failed to persist grown filesize on %s", path.c_str());
+    }
+  }
 
   return count;
 }
@@ -640,7 +687,7 @@ ssize_t Journal::pwrite(const void *buf, size_t count, off_t offset) {
 //------------------------------------------------------------------------------
 //! Journal data sync
 //------------------------------------------------------------------------------
-int Journal::sync() {
+int Journal::sync_unlocked() {
   if (fd < 0) {
     return -1;
   }
@@ -649,6 +696,11 @@ int Journal::sync() {
 #else
   return ::fdatasync(fd);
 #endif
+}
+
+int Journal::sync() {
+  std::lock_guard<std::mutex> guard(mtx);
+  return sync_unlocked();
 }
 
 //------------------------------------------------------------------------------

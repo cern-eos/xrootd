@@ -43,7 +43,7 @@ export XRD_PLUGIN_1="lib=libXrdClJournalCachePlugin-5.so,enable=true,url=*,cache
 
 ### Forwarding cache proxy (`xjcd`)
 
-TLS cert and key are required. Initial policy is **open** (no `allow_origin`) until you add rules with `xjc`.
+TLS cert and key are required. Initial policy is **closed** (empty `allow_origin` denies chained origins) until you add rules with `xjc`.
 
 ```bash
 xjcd init --journal /var/tmp/journalcache \
@@ -151,7 +151,7 @@ cache = /var/tmp/journalcache/
 | `json` | empty | Directory for JSON summaries; empty disables. |
 | `noapp` | empty | Comma-separated `XRD_APPNAME` values forced to bypass (`xrdcp,eoscp`). |
 | `multi_origin` | `false` | Unwrap chained `root://proxy//root://origin//path` to the inner URL. |
-| `allow_origin` | empty | Regex or hostname allowlist for unwrapped upstreams. Empty = allow all. |
+| `allow_origin` | empty | Regex or hostname allowlist for unwrapped upstreams. Empty = deny chained origins. |
 | `external_redirect` | empty | `prefix\|target,...` — open becomes a client redirect. |
 | `policy` | `$cache/.xjc/policy.conf` | Hot-reloadable policy file. |
 | `policy_poll` | from env | Policy mtime poll (seconds). |
@@ -244,7 +244,7 @@ root://proxy//root://relay//root://origin.cern.ch:1094//store/file.dat
 
 Allowlist matches the **fully unwrapped** URL. Patterns that look like URLs (`^root://…` or contain `://`) are regex-searched against the URL. Bare host patterns (`example.com`) must match the hostname exactly — `notexample.com` is not allowed.
 
-Empty allowlist allows every origin. That is the `xjcd init` default. For a closed proxy, add `allow_origin` via `xjc` **and** `pss.permit` in `xrootd.cf` (commented in the generated file).
+Empty allowlist denies every chained origin. That is the `xjcd init` default. Add `allow_origin` via `xjc` before clients can fetch `/https://origin/path`. Also enable `pss.permit` in `xrootd.cf` (commented in the generated file).
 
 External redirect (no journal; HTTP 302 or XrdCl `errRedirect`):
 
@@ -371,5 +371,5 @@ There is no live XRootD/HTTP integration suite in that binary.
 - Shared journal: exclusive flock — a second process on the same file does not read the journal.
 - Large journals: attach scans every fragment (no compacted index yet).
 - `async` / federation `basepath`: no remote Stat on attach; stale data possible if the origin changes.
-- Empty `allow_origin` is an open forwarding proxy until you add rules (and `pss.permit`).
+- Empty `allow_origin` denies chained/forwarded origins until you add rules (and `pss.permit`).
 - Optional: dynamic read-ahead; automatic connection demux under contention.

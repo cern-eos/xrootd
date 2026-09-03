@@ -239,6 +239,7 @@ XRootDStatus JournalCacheFile::Open(const std::string &url, OpenFlags::Flags fla
   mFileBypass = false;
   mMustRevalidate = false;
   mRevalidatedThisSession = false;
+  mAlwaysRevalidate = false;
   if (JournalCache::extractCacheHeadersFromParams(origUrl.GetParams(),
                                                   mOpenCacheHeaders)) {
     const auto policy =
@@ -248,6 +249,7 @@ XRootDStatus JournalCacheFile::Open(const std::string &url, OpenFlags::Flags fla
       mLog->Info(1, "JournalCache : Cache-Control no-store disables caching");
     } else if (policy.noCache) {
       mMustRevalidate = true;
+      mAlwaysRevalidate = true;
       mOpenAsync = false;
       mLog->Info(1,
                  "JournalCache : Cache-Control no-cache requires revalidation");
@@ -694,14 +696,11 @@ void JournalCacheFile::ApplyCacheHeaderPolicy(const StatInfo *statInfo) {
 
   const uint64_t now = static_cast<uint64_t>(std::time(nullptr));
 
-  if (!mOpenCacheHeaders.empty() || statInfo) {
-    JournalCache::enrichCacheHeadersFromStat(statInfo, mOpenCacheHeaders);
-    if (!mOpenCacheHeaders.empty()) {
-      if (!mOpenCacheHeaders.cachedAt) {
-        mOpenCacheHeaders.cachedAt = now;
-      }
-      JournalCache::storeCacheHeaders(pJournalPath, mOpenCacheHeaders, mLog);
-    }
+  JournalCache::CacheHeaders persist;
+  JournalCache::enrichCacheHeadersFromStat(statInfo, persist);
+  if (!persist.empty()) {
+    persist.cachedAt = now;
+    JournalCache::storeCacheHeaders(pJournalPath, persist, mLog);
   }
 
   JournalCache::CacheHeaders stored;
@@ -757,7 +756,7 @@ void JournalCacheFile::invalidateJournal() {
 }
 
 bool JournalCacheFile::CanServeFromJournalCache() const {
-  if (mNoStoreCache || !mAttachedForRead || !pJournal) {
+  if (mNoStoreCache || mAlwaysRevalidate || !mAttachedForRead || !pJournal) {
     return false;
   }
   if (mMustRevalidate && !mRevalidatedThisSession) {
@@ -782,7 +781,7 @@ bool JournalCacheFile::AttachForRead() {
                  pUrl.c_str());
       pJournal = sJournalManager.attach(pJournalPath);
 
-      // try to attach to an existing journal (disconnected mode)
+      bool loadedOffline = false;
       if (mOpenAsync && !mMustRevalidate) {
         if (!pJournal->attach(pJournalPath, 0, 0, 0, true)) {
           ApplyCacheHeaderPolicy();
@@ -790,23 +789,33 @@ bool JournalCacheFile::AttachForRead() {
             mAttachedForRead = true;
             return false;
           }
-          if (CanServeFromJournalCache()) {
-            if (!sStats.HasUrl(pUrl)) {
-              sStats.totaldatasize += pJournal->getHeaderFileSize();
-            }
-            mLog->Info(1, "JournalCache : attached (async) to cache file: %s",
-                       pJournalPath.c_str());
-          }
-          sStats.AddUrl(pUrl);
-          mAttachedForRead = true;
-          return CanServeFromJournalCache();
+          loadedOffline = true;
+          mLog->Info(1, "JournalCache : loaded journal pending origin stat: %s",
+                     pJournalPath.c_str());
         } else {
           mOpenAsync = false;
         }
       }
 
-      // We need an open file here to proceed
-      pOpenHandler->Wait();
+      // Validate against origin before serving. Offline: Wait fails, journal
+      // already loaded, then serve without a fresh stat.
+      XRootDStatus waitSt;
+      if (pOpenHandler) {
+        waitSt = pOpenHandler->Wait();
+      }
+      if (!waitSt.IsOK()) {
+        if (loadedOffline) {
+          if (!sStats.HasUrl(pUrl)) {
+            sStats.totaldatasize += pJournal->getHeaderFileSize();
+          }
+          sStats.AddUrl(pUrl);
+          mAttachedForRead = true;
+          mLog->Info(1, "JournalCache : attached (offline) to cache file: %s",
+                     pJournalPath.c_str());
+          return CanServeFromJournalCache();
+        }
+        return false;
+      }
 
       StatInfo *sinfo = 0;
       auto st = pFile->Stat(false, sinfo);
@@ -832,7 +841,7 @@ bool JournalCacheFile::AttachForRead() {
           mAttachedForRead = true;
           return false;
         }
-        if (mMustRevalidate) {
+        if (mMustRevalidate && !mAlwaysRevalidate) {
           mRevalidatedThisSession = true;
         }
         mLog->Info(1, "JournalCache : attached to cache file: %s",

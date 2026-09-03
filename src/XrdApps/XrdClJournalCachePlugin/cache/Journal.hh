@@ -149,6 +149,7 @@ private:
   bool read_jheader();
 
   void close_fd();
+  int sync_unlocked();
   void log(int level, const char *fmt, ...) const;
 
   static LogCallback sLogCallback;

@@ -160,7 +160,20 @@ std::string ExternalRedirect::resolve(const std::string &path,
 
   const Rule &rule = *matches.front();
   std::string redirect = joinTarget(rule.target, suffixAfterPrefix(path, rule.prefix));
-  if (!querySuffix.empty()) {
+  bool querySafe = !querySuffix.empty();
+  if (querySafe) {
+    if (querySuffix.front() != '?' && querySuffix.front() != '&') {
+      querySafe = false;
+    } else {
+      for (unsigned char c : querySuffix) {
+        if (c < 0x20 && c != '\t') {
+          querySafe = false;
+          break;
+        }
+      }
+    }
+  }
+  if (querySafe) {
     if (redirect.find('?') == std::string::npos) {
       redirect += querySuffix;
     } else if (querySuffix.front() == '?') {

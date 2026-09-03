@@ -7,6 +7,12 @@ namespace JournalCache {
 
 std::string normalizeRemotePath(const std::string &path);
 
+//! True when path is a regular file and not a symlink.
+bool isRegularNonSymlinkFile(const std::string &path);
+
+//! True when candidate is the normalized prefix of path (segment-aligned).
+bool pathHasPrefix(const std::string &path, const std::string &prefix);
+
 //! Resolve the local cache directory for a remote path using plugin settings.
 std::string resolveCacheDir(const std::string &fsUrl, const std::string &remotePath);
 

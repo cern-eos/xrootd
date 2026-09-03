@@ -1,6 +1,7 @@
 #include "file/PolicyRuntime.hh"
 
 #include <filesystem>
+#include <sys/stat.h>
 
 namespace JournalCache {
 namespace {
@@ -22,6 +23,20 @@ std::chrono::system_clock::time_point fileWriteTime(const std::string &path) {
 
 } // namespace
 
+bool PolicyRuntime::isTrustedConfigFile(const std::string &path) {
+  struct stat st;
+  if (::lstat(path.c_str(), &st) != 0) {
+    return false;
+  }
+  if (!S_ISREG(st.st_mode) || S_ISLNK(st.st_mode)) {
+    return false;
+  }
+  if (st.st_mode & S_IWOTH) {
+    return false;
+  }
+  return true;
+}
+
 PolicyRuntime &PolicyRuntime::instance() {
   static PolicyRuntime runtime;
   return runtime;
@@ -40,16 +55,22 @@ void PolicyRuntime::configure(const std::string &policyPath,
     return;
   }
 
-  PolicySettings loaded;
-  if (loadPolicyFile(mPolicyPath, loaded)) {
-    mSettings = loaded;
-    mLastWriteTime = fileWriteTime(mPolicyPath);
-    mHasWriteTime = mLastWriteTime != std::chrono::system_clock::time_point{};
-  } else {
-    savePolicyFile(mPolicyPath, mSettings);
-    mLastWriteTime = fileWriteTime(mPolicyPath);
-    mHasWriteTime = mLastWriteTime != std::chrono::system_clock::time_point{};
+  std::error_code ec;
+  if (std::filesystem::exists(mPolicyPath, ec)) {
+    PolicySettings loaded;
+    if (isTrustedConfigFile(mPolicyPath) &&
+        loadPolicyFile(mPolicyPath, loaded)) {
+      mSettings = loaded;
+      mLastWriteTime = fileWriteTime(mPolicyPath);
+      mHasWriteTime =
+          mLastWriteTime != std::chrono::system_clock::time_point{};
+    }
+    return;
   }
+
+  savePolicyFile(mPolicyPath, mSettings);
+  mLastWriteTime = fileWriteTime(mPolicyPath);
+  mHasWriteTime = mLastWriteTime != std::chrono::system_clock::time_point{};
 }
 
 void PolicyRuntime::startWatcher(unsigned pollSeconds) {
@@ -97,7 +118,7 @@ void PolicyRuntime::reloadIfChanged() {
   }
 
   PolicySettings loaded;
-  if (!loadPolicyFile(path, loaded)) {
+  if (!isTrustedConfigFile(path) || !loadPolicyFile(path, loaded)) {
     return;
   }
 

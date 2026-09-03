@@ -139,6 +139,25 @@ bool etagMatches(const std::string &stored, const std::string &candidate) {
 
 } // namespace
 
+bool isSafeHeaderValue(const std::string &value) {
+  for (unsigned char c : value) {
+    if (c < 0x20 && c != '\t') {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool isSafeQuerySuffix(const std::string &querySuffix) {
+  if (querySuffix.empty()) {
+    return true;
+  }
+  if (querySuffix.front() != '?' && querySuffix.front() != '&') {
+    return false;
+  }
+  return isSafeHeaderValue(querySuffix);
+}
+
 std::string formatHttpDate(uint64_t unixSeconds) {
   struct tm tm = {};
   const time_t seconds = static_cast<time_t>(unixSeconds);
@@ -193,29 +212,18 @@ bool extractCacheHeadersFromParams(const XrdCl::URL::ParamsMap &params,
   out = CacheHeaders{};
   bool found = false;
 
-  auto cacheControl = params.find(CACHE_CONTROL_CGI);
-  if (cacheControl != params.end()) {
-    out.cacheControl = cacheControl->second;
+  auto take = [&](const char *key, std::string &dest) {
+    auto it = params.find(key);
+    if (it == params.end() || !isSafeHeaderValue(it->second)) {
+      return;
+    }
+    dest = it->second;
     found = true;
-  }
-
-  auto expires = params.find(EXPIRES_CGI);
-  if (expires != params.end()) {
-    out.expires = expires->second;
-    found = true;
-  }
-
-  auto etag = params.find(ETAG_CGI);
-  if (etag != params.end()) {
-    out.etag = etag->second;
-    found = true;
-  }
-
-  auto lastModified = params.find(LAST_MODIFIED_CGI);
-  if (lastModified != params.end()) {
-    out.lastModified = lastModified->second;
-    found = true;
-  }
+  };
+  take(CACHE_CONTROL_CGI, out.cacheControl);
+  take(EXPIRES_CGI, out.expires);
+  take(ETAG_CGI, out.etag);
+  take(LAST_MODIFIED_CGI, out.lastModified);
 
   return found;
 }
@@ -243,6 +251,16 @@ bool extractCacheValidatorsFromParams(const XrdCl::URL::ParamsMap &params,
 bool storeCacheHeaders(const std::string &journalPath,
                        const CacheHeaders &headers, XrdCl::Log *log) {
   if (journalPath.empty()) {
+    return false;
+  }
+  if (!isSafeHeaderValue(headers.cacheControl) ||
+      !isSafeHeaderValue(headers.expires) ||
+      !isSafeHeaderValue(headers.etag) ||
+      !isSafeHeaderValue(headers.lastModified)) {
+    if (log) {
+      log->Warning(1, "JournalCache : refusing to store unsafe cache headers on %s",
+                   journalPath.c_str());
+    }
     return false;
   }
 
@@ -307,12 +325,11 @@ bool loadCacheHeaders(const std::string &journalPath, CacheHeaders &out) {
 bool applyCacheHeadersFromParams(const std::string &journalPath,
                                  const XrdCl::URL::ParamsMap &params,
                                  XrdCl::Log *log) {
-  CacheHeaders headers;
-  if (!extractCacheHeadersFromParams(params, headers)) {
-    return false;
-  }
-  headers.cachedAt = static_cast<uint64_t>(std::time(nullptr));
-  return storeCacheHeaders(journalPath, headers, log);
+  (void)journalPath;
+  (void)params;
+  (void)log;
+  // Setter CGI is client-controlled; persist only origin Stat/HEAD headers.
+  return false;
 }
 
 void enrichCacheHeadersFromStat(const XrdCl::StatInfo *stat,
@@ -436,7 +453,7 @@ bool canRespondNotModified(const CacheHeaders &stored,
 void appendGetterResponseHeaders(const CacheHeaders &headers,
                                  std::string &out) {
   auto append = [&](const char *name, const std::string &value) {
-    if (value.empty()) {
+    if (value.empty() || !isSafeHeaderValue(value)) {
       return;
     }
     if (!out.empty()) {

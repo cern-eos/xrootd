@@ -23,6 +23,7 @@
 //------------------------------------------------------------------------------
 
 #include "plugin/XrdClJournalCachePlugin.hh"
+#include "XrdVersion.hh"
 
 bool XrdCl::JournalCacheFactory::sEnableFileSystem = true;
 

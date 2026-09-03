@@ -17,8 +17,12 @@ static bool makeHierarchy(const std::string &path) {
     if (parent.empty()) {
       return true;
     }
-    std::filesystem::create_directories(parent);
-    chmod(parent.c_str(), 0755);
+    std::error_code ec;
+    std::filesystem::create_directories(parent, ec);
+    if (ec) {
+      return false;
+    }
+    (void)chmod(parent.c_str(), 0755);
     return true;
   } catch (const std::exception &) {
     return false;

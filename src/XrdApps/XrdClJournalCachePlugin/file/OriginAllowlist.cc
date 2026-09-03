@@ -31,17 +31,23 @@ bool looksLikeUrlPattern(const std::string &pattern) {
 
 void OriginAllowlist::clear() {
   mPatterns.clear();
-  mRegexes.clear();
+  mCompiledPatterns.clear();
   mCompiled = false;
 }
 
-void OriginAllowlist::addPattern(const std::string &pattern) {
+bool OriginAllowlist::addPattern(const std::string &pattern) {
   const std::string trimmed = trim(pattern);
   if (trimmed.empty()) {
-    return;
+    return false;
+  }
+  try {
+    (void)std::regex(trimmed, std::regex::ECMAScript);
+  } catch (const std::regex_error &) {
+    return false;
   }
   mPatterns.push_back(trimmed);
   mCompiled = false;
+  return true;
 }
 
 void OriginAllowlist::addPatternsFromCsv(const std::string &csv) {
@@ -57,10 +63,14 @@ void OriginAllowlist::ensureCompiled() const {
     return;
   }
 
-  mRegexes.clear();
+  mCompiledPatterns.clear();
   for (const auto &pattern : mPatterns) {
     try {
-      mRegexes.emplace_back(pattern, std::regex::ECMAScript);
+      CompiledPattern compiled;
+      compiled.pattern = pattern;
+      compiled.regex = std::regex(pattern, std::regex::ECMAScript);
+      compiled.urlPattern = looksLikeUrlPattern(pattern);
+      mCompiledPatterns.push_back(std::move(compiled));
     } catch (const std::regex_error &) {
       continue;
     }
@@ -70,11 +80,11 @@ void OriginAllowlist::ensureCompiled() const {
 
 bool OriginAllowlist::isAllowed(const std::string &fileUrl) const {
   if (mPatterns.empty()) {
-    return true;
+    return false;
   }
 
   ensureCompiled();
-  if (mRegexes.empty()) {
+  if (mCompiledPatterns.empty()) {
     return false;
   }
 
@@ -82,25 +92,18 @@ bool OriginAllowlist::isAllowed(const std::string &fileUrl) const {
   const std::string hostId = url.IsValid() ? url.GetHostId() : std::string{};
   const std::string host = url.IsValid() ? url.GetHostName() : std::string{};
 
-  for (size_t i = 0; i < mPatterns.size(); ++i) {
-    std::regex compiled;
-    try {
-      compiled = std::regex(mPatterns[i], std::regex::ECMAScript);
-    } catch (const std::regex_error &) {
-      continue;
-    }
-
-    if (looksLikeUrlPattern(mPatterns[i])) {
-      if (std::regex_search(fileUrl, compiled)) {
+  for (const auto &compiled : mCompiledPatterns) {
+    if (compiled.urlPattern) {
+      if (std::regex_search(fileUrl, compiled.regex)) {
         return true;
       }
       continue;
     }
 
-    if (!hostId.empty() && std::regex_match(hostId, compiled)) {
+    if (!hostId.empty() && std::regex_match(hostId, compiled.regex)) {
       return true;
     }
-    if (!host.empty() && std::regex_match(host, compiled)) {
+    if (!host.empty() && std::regex_match(host, compiled.regex)) {
       return true;
     }
   }

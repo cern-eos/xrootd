@@ -18,6 +18,8 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <sys/stat.h>
+#include <vector>
 
 #ifdef JOURNALCACHE_HTTP_EXT_HAVE_CURL
 #include <curl/curl.h>
@@ -53,6 +55,51 @@ std::string stripQuery(const std::string &path) {
 bool startsWith(const std::string &value, const std::string &prefix) {
   return value.size() >= prefix.size() &&
          value.compare(0, prefix.size(), prefix) == 0;
+}
+
+#ifdef JOURNALCACHE_HTTP_EXT_HAVE_CURL
+std::string collapseRemotePath(const std::string &path) {
+  std::string in = path.empty() ? "/" : path;
+  if (in.front() != '/') {
+    in.insert(in.begin(), '/');
+  }
+  std::vector<std::string> parts;
+  size_t i = 1;
+  while (i <= in.size()) {
+    const size_t j = (i >= in.size()) ? in.size() : in.find('/', i);
+    const size_t end = (j == std::string::npos) ? in.size() : j;
+    const std::string seg = in.substr(i, end - i);
+    if (seg == ".") {
+    } else if (seg == "..") {
+      if (!parts.empty()) {
+        parts.pop_back();
+      }
+    } else {
+      parts.push_back(seg);
+    }
+    if (end >= in.size()) {
+      break;
+    }
+    i = end + 1;
+  }
+  if (parts.empty()) {
+    return "/";
+  }
+  std::string out;
+  for (const auto &part : parts) {
+    out += '/';
+    out += part;
+  }
+  return out;
+}
+#endif
+
+bool isRegularNonSymlinkFile(const std::string &path) {
+  struct stat st;
+  if (::lstat(path.c_str(), &st) != 0) {
+    return false;
+  }
+  return S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode);
 }
 
 bool parseBool(const std::string &value) {
@@ -105,6 +152,13 @@ bool fetchHttpHeadParams(const std::string &url, XrdSysError *log,
   curl_easy_setopt(curl, CURLOPT_HEADERDATA, &responseHeaders);
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+#ifdef CURLOPT_PROTOCOLS
+  curl_easy_setopt(curl, CURLOPT_PROTOCOLS,
+                   CURLPROTO_HTTP | CURLPROTO_HTTPS);
+#endif
+#ifdef CURLOPT_REDIR_PROTOCOLS
+  curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS, 0L);
+#endif
 
   const CURLcode rc = curl_easy_perform(curl);
   curl_easy_cleanup(curl);
@@ -324,18 +378,15 @@ CacheValidators JournalCacheHttpExtHandler::extractValidators(
 
 void JournalCacheHttpExtHandler::setResponseHeadersFromCache(
     XrdHttpExtReq &req, const CacheHeaders &headers) const {
-  if (!headers.cacheControl.empty()) {
-    req.SetResponseHeader("Cache-Control", headers.cacheControl);
-  }
-  if (!headers.expires.empty()) {
-    req.SetResponseHeader("Expires", headers.expires);
-  }
-  if (!headers.etag.empty()) {
-    req.SetResponseHeader("ETag", headers.etag);
-  }
-  if (!headers.lastModified.empty()) {
-    req.SetResponseHeader("Last-Modified", headers.lastModified);
-  }
+  auto setSafe = [&](const char *name, const std::string &value) {
+    if (!value.empty() && isSafeHeaderValue(value)) {
+      req.SetResponseHeader(name, value);
+    }
+  };
+  setSafe("Cache-Control", headers.cacheControl);
+  setSafe("Expires", headers.expires);
+  setSafe("ETag", headers.etag);
+  setSafe("Last-Modified", headers.lastModified);
 }
 
 bool JournalCacheHttpExtHandler::fetchXAttrParams(
@@ -414,6 +465,7 @@ bool JournalCacheHttpExtHandler::fetchHttpOriginParams(
       resourcePath.insert(resourcePath.begin(), '/');
     }
   }
+  resourcePath = collapseRemotePath(resourcePath);
 
   return fetchHttpHeadParams(mHttpOrigin + resourcePath, mLog, params);
 #else
@@ -449,7 +501,7 @@ int JournalCacheHttpExtHandler::ProcessReq(XrdHttpExtReq &req) {
 
   const std::string externalRedirect =
       policy.externalRedirect.resolve(path, querySuffix);
-  if (!externalRedirect.empty()) {
+  if (!externalRedirect.empty() && isSafeHeaderValue(externalRedirect)) {
     const std::string location = "Location: " + externalRedirect;
     mLog->Say("JournalCache HTTP external redirect to ", externalRedirect.c_str());
     return req.SendSimpleResp(302, nullptr, location.c_str(), nullptr, 0);
@@ -471,7 +523,7 @@ int JournalCacheHttpExtHandler::ProcessReq(XrdHttpExtReq &req) {
 
   CacheHeaders stored;
   const std::string journalPath = resolveJournalPath(path);
-  if (!journalPath.empty() && std::filesystem::exists(journalPath)) {
+  if (!journalPath.empty() && isRegularNonSymlinkFile(journalPath)) {
     loadCacheHeaders(journalPath, stored);
   }
 
@@ -487,6 +539,19 @@ int JournalCacheHttpExtHandler::ProcessReq(XrdHttpExtReq &req) {
   const auto params = collectCgiParams(path, req.headers);
   for (const auto &param : params) {
     req.AppendOpaque(param.first, param.second);
+  }
+
+  if (!journalPath.empty() && isRegularNonSymlinkFile(journalPath)) {
+    XrdCl::URL::ParamsMap originParams;
+    for (const auto &param : params) {
+      originParams[param.first] = param.second;
+    }
+    CacheHeaders originHeaders;
+    if (extractCacheHeadersFromParams(originParams, originHeaders) &&
+        !originHeaders.empty()) {
+      originHeaders.cachedAt = now;
+      storeCacheHeaders(journalPath, originHeaders, nullptr);
+    }
   }
 
   if (stored.empty()) {

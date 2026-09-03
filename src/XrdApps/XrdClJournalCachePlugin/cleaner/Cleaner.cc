@@ -41,7 +41,7 @@ time_t Cleaner::getLastAccessTime(const fs::path &filePath) {
   if (stat(filePath.c_str(), &fileInfo) != 0) {
     return -1; // Error occurred
   }
-  return fileInfo.st_atime;
+  return fileInfo.st_mtime;
 }
 
 //----------------------------------------------------------------------------

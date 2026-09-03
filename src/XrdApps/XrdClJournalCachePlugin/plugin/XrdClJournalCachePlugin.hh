@@ -316,8 +316,9 @@ public:
       log->Info(1, "JournalCache : multi-origin unwrap: %s",
                 JournalCacheFile::sMultiOriginUnwrap ? "true" : "false");
       log->Info(1, "JournalCache : allowed origin regex: %s",
-                JournalCacheFile::sOriginAllowlist.empty() ? "none"
-                                                           : "configured");
+                JournalCacheFile::sOriginAllowlist.empty()
+                    ? "empty (deny chained origins)"
+                    : "configured");
       log->Info(1, "JournalCache : external redirect rules: %zu",
                 JournalCacheFile::sExternalRedirect.rules().size());
       if (!policyPath.empty()) {
@@ -355,10 +356,8 @@ public:
   //! Create a file plug-in for the given URL
   //----------------------------------------------------------------------------
   virtual FilePlugIn *CreateFile(const std::string &url) {
-    std::unique_ptr<JournalCacheFile> ptr(new JournalCacheFile());
-    if (!ptr->IsValid())
-      return nullptr;
-    return static_cast<FilePlugIn *>(ptr.release());
+    (void)url;
+    return static_cast<FilePlugIn *>(new JournalCacheFile());
   }
 
   //----------------------------------------------------------------------------

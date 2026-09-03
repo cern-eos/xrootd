@@ -208,7 +208,7 @@ public:
   virtual bool GetProperty(const std::string &name, std::string &value) const override;
 
   //----------------------------------------------------------------------------
-  //! @brief validate the local cache
+  //! @brief true once Open has completed successfully
   //----------------------------------------------------------------------------
   inline bool IsValid() {
     return mIsOpen && mOpenState == OPEN;
@@ -335,6 +335,8 @@ private:
   bool mMustRevalidate = false;
   //! @brief set after a successful stat confirms the journal for this session
   bool mRevalidatedThisSession = false;
+  //! @brief Cache-Control: no-cache — never serve from journal this session
+  bool mAlwaysRevalidate = false;
   //! @brief pointer to logging object
   Log *mLog;
 

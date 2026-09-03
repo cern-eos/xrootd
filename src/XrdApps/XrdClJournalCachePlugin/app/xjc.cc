@@ -312,7 +312,10 @@ int main(int argc, char **argv) {
         std::cerr << "xjc: missing regex\n";
         return 1;
       }
-      settings.originAllowlist.addPattern(argv[pathArgi]);
+      if (!settings.originAllowlist.addPattern(argv[pathArgi])) {
+        std::cerr << "xjc: invalid allow_origin regex\n";
+        return 1;
+      }
       return savePolicy(policyPath, settings) ? 0 : 1;
     }
     if (sub == "remove") {

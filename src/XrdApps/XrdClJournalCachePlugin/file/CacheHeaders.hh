@@ -99,4 +99,10 @@ void appendGetterResponseHeaders(const CacheHeaders &headers, std::string &out);
 
 bool paramEnabled(const XrdCl::URL::ParamsMap &params, const char *key);
 
+//! False if value contains CR, LF, or other C0 controls (except TAB).
+bool isSafeHeaderValue(const std::string &value);
+
+//! Empty if query is missing, lacks ?/&, or contains control characters.
+bool isSafeQuerySuffix(const std::string &querySuffix);
+
 } // namespace JournalCache

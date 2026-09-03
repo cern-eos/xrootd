@@ -25,8 +25,8 @@ public:
       XrdCl::PageInfo *pageInfo = nullptr;
       pResponse->Get(pageInfo);
       if (pageInfo) {
-        if (journal) {
-          journal->pwrite(pageInfo->GetBuffer(), pageInfo->GetLength(),
+        if (auto j = journal.lock()) {
+          (void)j->pwrite(pageInfo->GetBuffer(), pageInfo->GetLength(),
                           pageInfo->GetOffset());
         }
         if (rbytes) {
@@ -40,7 +40,7 @@ public:
 
   XrdCl::ResponseHandler *handler;
   std::atomic<uint64_t> *rbytes;
-  std::shared_ptr<Journal> journal;
+  std::weak_ptr<Journal> journal;
 };
 
 } // namespace XrdCl

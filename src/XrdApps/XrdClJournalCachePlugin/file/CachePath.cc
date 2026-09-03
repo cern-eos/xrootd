@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <string>
+#include <sys/stat.h>
 #include <vector>
 
 namespace JournalCache {
@@ -87,6 +88,31 @@ std::string normalizeRemotePath(const std::string &path) {
   return out;
 }
 
+bool isRegularNonSymlinkFile(const std::string &path) {
+  struct stat st;
+  if (::lstat(path.c_str(), &st) != 0) {
+    return false;
+  }
+  return S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode);
+}
+
+bool pathHasPrefix(const std::string &path, const std::string &prefix) {
+  std::string p = prefix;
+  while (p.size() > 1 && p.back() == '/') {
+    p.pop_back();
+  }
+  if (p.empty() || p == "/") {
+    return true;
+  }
+  if (path.size() < p.size()) {
+    return false;
+  }
+  if (path.compare(0, p.size(), p) != 0) {
+    return false;
+  }
+  return path.size() == p.size() || path[p.size()] == '/';
+}
+
 bool pathIsUnderRoot(const std::string &path, const std::string &root) {
   if (root.empty()) {
     return true;
@@ -125,10 +151,12 @@ std::string resolveCacheDirWithSettings(const std::string &cacheRoot,
   const std::string key = fsUrl + normPath;
   std::string resolved;
 
+  const std::string normBase =
+      basePath.empty() ? std::string() : normalizeRemotePath(basePath);
   if (flatHierarchy) {
     resolved = cacheRoot + computeSHA256(key);
-  } else if (!basePath.empty() && normPath.find(basePath) != std::string::npos) {
-    resolved = cacheRoot + normPath.substr(normPath.find(basePath));
+  } else if (!normBase.empty() && pathHasPrefix(normPath, normBase)) {
+    resolved = cacheRoot + normPath;
   } else {
     XrdCl::URL url(fsUrl);
     const std::string host =

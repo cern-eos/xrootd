@@ -25,6 +25,9 @@ public:
   PolicySettings snapshot() const;
   std::string policyPath() const;
 
+  //! Regular file, not a symlink, not world-writable.
+  static bool isTrustedConfigFile(const std::string &path);
+
 private:
   PolicyRuntime() = default;
   ~PolicyRuntime();

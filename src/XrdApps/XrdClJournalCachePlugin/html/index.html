@@ -155,7 +155,7 @@ xrdcp root://host:1094//store/file.root /tmp/file.root</code></pre>
 <pre><code>export XRD_PLUGIN_1="lib=libXrdClJournalCachePlugin-5.so,enable=true,url=*,cache=/var/tmp/journalcache/"</code></pre>
 
       <h3>Forwarding cache proxy (<code>xjcd</code>)</h3>
-      <p>TLS cert and key are required. Initial policy is <strong>open</strong> (no <code>allow_origin</code>) until you add rules.</p>
+      <p>TLS cert and key are required. Initial policy is <strong>closed</strong> (empty <code>allow_origin</code> denies chained origins) until you add rules.</p>
 <pre><code>xjcd init --journal /var/tmp/journalcache \
   --xroot-port 1094 --https-port 8443 \
   --tls-cert /etc/xrootd/tls.crt --tls-key /etc/xrootd/tls.key \
@@ -226,7 +226,7 @@ cache = /var/tmp/journalcache/</code></pre>
           <tr><td><code>stats</code> / <code>summary</code> / <code>json</code></td><td>0 / true / empty</td><td>Periodic dump, exit summary, JSON dir</td></tr>
           <tr><td><code>noapp</code></td><td>empty</td><td>Force bypass for those <code>XRD_APPNAME</code> values</td></tr>
           <tr><td><code>multi_origin</code></td><td>false</td><td>Unwrap chained root URLs</td></tr>
-          <tr><td><code>allow_origin</code></td><td>empty</td><td>Allowlist; empty = allow all</td></tr>
+          <tr><td><code>allow_origin</code></td><td>empty</td><td>Allowlist; empty = deny chained origins</td></tr>
           <tr><td><code>external_redirect</code></td><td>empty</td><td><code>prefix|target,...</code></td></tr>
           <tr><td><code>policy</code> / <code>policy_poll</code></td><td><code>$cache/.xjc/policy.conf</code></td><td>Hot-reload file</td></tr>
         </tbody>
@@ -260,7 +260,7 @@ http.exthandler journalcache libXrdClJournalCacheHttpExt-5.so \
 GET /root://origin.cern.ch:1094//store/file.dat
 root://proxy//root://relay//root://origin.cern.ch:1094//store/file.dat</code></pre>
       <p>Allowlist matches the fully unwrapped URL. URL-shaped patterns are regex-searched; bare hosts must match the hostname exactly.</p>
-      <p class="warn"><strong>Open by default.</strong> Empty <code>allow_origin</code> (after <code>xjcd init</code>) allows every origin. Add rules with <code>xjc</code> and <code>pss.permit</code> in <code>xrootd.cf</code>.</p>
+      <p class="warn"><strong>Closed by default.</strong> Empty <code>allow_origin</code> (after <code>xjcd init</code>) denies chained origins. Add rules with <code>xjc</code> and <code>pss.permit</code> in <code>xrootd.cf</code>.</p>
       <p>External redirect (no journal): HTTP 302 or XrdCl <code>errRedirect</code>.</p>
 <pre><code>external_redirect = /live/ https://stream.example.org/live/
 external_redirect = /live/|https://stream.example.org/live/,/raw/|root://data//raw/</code></pre>
@@ -276,7 +276,7 @@ xjc redirect add /live/ https://stream.example.org/live/
 xjc cleaner enable on
 xjc cleaner set high 10737418240</code></pre>
       <h3><code>xjcd</code> — systemd proxy bootstrap</h3>
-      <p>Commands: <code>init</code>, <code>render</code>, <code>show</code>, <code>validate</code>. No <code>xjcd run</code> — systemd starts xrootd. <code>init</code> writes open policy and a <em>disabled</em> cleaner.</p>
+      <p>Commands: <code>init</code>, <code>render</code>, <code>show</code>, <code>validate</code>. No <code>xjcd run</code> — systemd starts xrootd. <code>init</code> writes closed policy and a <em>disabled</em> cleaner.</p>
 <pre><code>xjcd init --journal /var/tmp/journalcache \
   --xroot-port 1094 --https-port 8443 \
   --tls-cert /path/tls.crt --tls-key /path/tls.key \
@@ -316,8 +316,7 @@ ofs.osslib libXrdPss.so</code></pre>
       <ul>
         <li>Exclusive flock — a second process on the same journal does not read it.</li>
         <li>Attach scans every fragment (no compacted index).</li>
-        <li><code>async</code> / federation <code>basepath</code>: no remote Stat on attach.</li>
-        <li>Empty <code>allow_origin</code> is an open forwarding proxy.</li>
+        <li>Empty <code>allow_origin</code> denies chained origins until you add rules.</li>
         <li>Not implemented: dynamic read-ahead; automatic connection demux.</li>
       </ul>
     </section>

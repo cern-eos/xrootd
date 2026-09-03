@@ -240,6 +240,7 @@ bool parseLegacyListLine(const std::string &line, std::string &hostAddress,
 } // namespace
 
 bool isCacheEntryExpired(uint64_t created, uint64_t ttlSeconds) {
+  // ttlSeconds == 0 means never expire (plugin default).
   if (ttlSeconds == 0 || created == 0) {
     return false;
   }

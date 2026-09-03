@@ -25,8 +25,8 @@ public:
       XrdCl::ChunkInfo *chunkInfo = nullptr;
       pResponse->Get(chunkInfo);
       if (chunkInfo) {
-        if (journal) {
-          journal->pwrite(chunkInfo->GetBuffer(), chunkInfo->GetLength(),
+        if (auto j = journal.lock()) {
+          (void)j->pwrite(chunkInfo->GetBuffer(), chunkInfo->GetLength(),
                           chunkInfo->GetOffset());
         }
         if (rbytes) {
@@ -40,7 +40,7 @@ public:
 
   XrdCl::ResponseHandler *handler;
   std::atomic<uint64_t> *rbytes;
-  std::shared_ptr<Journal> journal;
+  std::weak_ptr<Journal> journal;
 };
 
 } // namespace XrdCl

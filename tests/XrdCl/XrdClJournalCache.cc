@@ -22,6 +22,7 @@
 #include <fcntl.h>
 #include <gtest/gtest.h>
 
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -185,6 +186,59 @@ TEST_F(JournalTest, SparseRegionsAreIndependent) {
             (ssize_t)sizeof(readHigh));
   EXPECT_EQ(std::memcmp(low, readLow, sizeof(readLow)), 0);
   EXPECT_EQ(std::memcmp(high, readHigh, sizeof(readHigh)), 0);
+}
+
+TEST_F(JournalTest, PwriteGrowsHeaderFilesize) {
+  Journal journal;
+  ASSERT_EQ(journal.attach(path, 1000, 0, 64, false), 0);
+
+  char writeBuf[128];
+  fillPattern(writeBuf, sizeof(writeBuf), 'z');
+  EXPECT_EQ(journal.pwrite(writeBuf, sizeof(writeBuf), 0),
+            (ssize_t)sizeof(writeBuf));
+  EXPECT_EQ(journal.getHeaderFileSize(), 128);
+
+  char readBuf[128] = {};
+  bool eof = false;
+  EXPECT_EQ(journal.pread(readBuf, sizeof(readBuf), 0, eof),
+            (ssize_t)sizeof(readBuf));
+  EXPECT_EQ(std::memcmp(writeBuf, readBuf, sizeof(writeBuf)), 0);
+}
+
+TEST_F(JournalTest, OversizedEntryPurgedOnLoad) {
+  {
+    Journal journal;
+    ASSERT_EQ(journal.attach(path, 1000, 0, 4096, false), 0);
+    char writeBuf[32];
+    fillPattern(writeBuf, sizeof(writeBuf), 'o');
+    EXPECT_EQ(journal.pwrite(writeBuf, sizeof(writeBuf), 0),
+              (ssize_t)sizeof(writeBuf));
+    EXPECT_EQ(journal.sync(), 0);
+  }
+
+  int fd = open(path.c_str(), O_RDWR);
+  ASSERT_GE(fd, 0);
+  const uint64_t huge = (1ull << 40);
+  ASSERT_EQ(pwrite(fd, &huge, sizeof(huge), 64 + 8), (ssize_t)sizeof(huge));
+  close(fd);
+
+  Journal reloaded;
+  ASSERT_EQ(reloaded.attach(path, 1000, 0, 4096, true), 0);
+  char readBuf[32] = {};
+  bool eof = false;
+  EXPECT_EQ(reloaded.pread(readBuf, sizeof(readBuf), 0, eof), 0);
+}
+
+TEST_F(JournalTest, RejectsSymlinkJournal) {
+  const std::string target = std::string(dir) + "/other";
+  {
+    int fd = open(target.c_str(), O_CREAT | O_RDWR, 0600);
+    ASSERT_GE(fd, 0);
+    close(fd);
+  }
+  ASSERT_EQ(symlink(target.c_str(), path.c_str()), 0);
+  Journal journal;
+  EXPECT_EQ(journal.attach(path, 1000, 0, 4096, true), -ELOOP);
 }
 
 TEST_F(JournalTest, EofShortReadFromCache) {
@@ -761,6 +815,13 @@ TEST_F(CacheHeadersTest, AppendGetterResponseHeaders) {
             std::string::npos);
 }
 
+TEST(CacheHeadersParamTest, RejectsControlCharacters) {
+  EXPECT_TRUE(JournalCache::isSafeHeaderValue("max-age=60"));
+  EXPECT_FALSE(JournalCache::isSafeHeaderValue("max-age=60\r\nETag: pwned"));
+  EXPECT_TRUE(JournalCache::isSafeQuerySuffix("?token=abc"));
+  EXPECT_FALSE(JournalCache::isSafeQuerySuffix("?\nSet-Cookie: x"));
+}
+
 TEST(CacheHeadersParamTest, ParamEnabledAcceptsTruthyValues) {
   XrdCl::URL::ParamsMap params;
   params[JournalCache::BYPASS_CGI] = "1";
@@ -864,12 +925,39 @@ TEST(OriginAllowlistTest, HostPatternDoesNotSubstringMatch) {
   EXPECT_FALSE(allowlist.isAllowed("root://notexample.com:1094//file"));
 }
 
+TEST(OriginAllowlistTest, EmptyDeniesChainedOrigins) {
+  JournalCache::OriginAllowlist allowlist;
+  EXPECT_TRUE(allowlist.empty());
+  EXPECT_FALSE(allowlist.isAllowed("https://cdn.example.org/store/file.dat"));
+  EXPECT_FALSE(allowlist.isAllowed("root://origin.cern.ch:1094//store/file.dat"));
+}
+
+TEST(OriginAllowlistTest, RejectsInvalidRegex) {
+  JournalCache::OriginAllowlist allowlist;
+  EXPECT_FALSE(allowlist.addPattern("("));
+  EXPECT_TRUE(allowlist.empty());
+  EXPECT_TRUE(allowlist.addPattern("example.com"));
+  EXPECT_EQ(allowlist.patterns().size(), 1u);
+}
+
 TEST(CachePathTest, NormalizeRejectsParentTraversal) {
   EXPECT_EQ(JournalCache::normalizeRemotePath("/foo/../bar"), "/bar");
   EXPECT_EQ(JournalCache::normalizeRemotePath("/foo/../../etc/passwd"),
             "/etc/passwd");
   EXPECT_EQ(JournalCache::normalizeRemotePath("/https://host/a/../b"),
             "/https://host/b");
+}
+
+TEST(CachePathTest, BasePathMatchesPrefixOnly) {
+  const std::string hit = JournalCache::resolveCacheDirWithSettings(
+      "/cache/", "root://host.example:1094//", "/store/file.dat", false,
+      "/store");
+  EXPECT_EQ(hit, "/cache//store/file.dat");
+
+  const std::string miss = JournalCache::resolveCacheDirWithSettings(
+      "/cache/", "root://host.example:1094//", "/evil/store/file.dat", false,
+      "/store");
+  EXPECT_NE(miss.find("evil"), std::string::npos);
 }
 
 TEST_F(ListCacheTest, CacheDirStaysInsideRoot) {
@@ -898,6 +986,14 @@ TEST(ExternalRedirectTest, PreservesQuerySuffix) {
 
   EXPECT_EQ(redirects.resolve("/live/event/1", "?token=abc"),
             "https://stream.example.org/live/event/1?token=abc");
+}
+
+TEST(ExternalRedirectTest, DropsControlCharsInQuery) {
+  JournalCache::ExternalRedirect redirects;
+  redirects.addRule("/live/", "https://stream.example.org/live/");
+
+  EXPECT_EQ(redirects.resolve("/live/event/1", "?\r\nX-Injected: 1"),
+            "https://stream.example.org/live/event/1");
 }
 
 TEST(ExternalRedirectTest, ParsesPipeSeparatedConfig) {
@@ -948,6 +1044,29 @@ TEST(PolicyRuntimeTest, ReloadsWhenMtimeChanges) {
   std::filesystem::remove(path);
 }
 
+TEST(PolicyRuntimeTest, IgnoresWorldWritablePolicy) {
+  const std::string path =
+      (std::filesystem::temp_directory_path() / "xjc-policy-untrusted.conf")
+          .string();
+  std::filesystem::remove(path);
+
+  JournalCache::PolicySettings bootstrap;
+  bootstrap.bypass = false;
+  auto &runtime = JournalCache::PolicyRuntime::instance();
+  runtime.stopWatcher();
+  runtime.configure(path, bootstrap);
+
+  std::ofstream out(path, std::ios::trunc);
+  out << "bypass = true\n";
+  out.close();
+  ASSERT_EQ(chmod(path.c_str(), 0666), 0);
+
+  runtime.reloadIfChanged();
+  EXPECT_FALSE(runtime.snapshot().bypass);
+
+  std::filesystem::remove(path);
+}
+
 TEST(ForwardingUrlTest, ResolveJournalPathMatchesFilePluginLayout) {
   const std::string cacheRoot = "/cache/";
   const std::string fileUrl = "https://cdn.example.org:443/store/file.dat";
@@ -990,7 +1109,7 @@ TEST(XjcdStateTest, RoundTripStateFile) {
   fs::remove_all(dir);
 }
 
-TEST(XjcdRenderTest, RendersConfigsAndOpenPolicy) {
+TEST(XjcdRenderTest, RendersConfigsAndClosedPolicy) {
   char tmpl[] = "/tmp/xjcd_render_XXXXXX";
   char *dir = mkdtemp(tmpl);
   ASSERT_NE(dir, nullptr);
