@@ -96,6 +96,19 @@ function test_httph2() {
 	printf 'abcd' > "${tmpdir}/range-single.ref"
 	assert diff -u "${tmpdir}/range-single.ref" "${tmpdir}/range-single.out"
 
+	echo "Testing open-once cache with Range GETs on one connection"
+	h2 -s -H 'range: bytes=0-12' -o "${tmpdir}/r1" "${HTTPS_HOST}/h2-alphabet.txt" \
+		--next --http2 --cacert "${CURL_CA}" \
+		-H 'range: bytes=13-25' -o "${tmpdir}/r2" "${HTTPS_HOST}/h2-alphabet.txt"
+	cat "${tmpdir}/r1" "${tmpdir}/r2" > "${tmpdir}/r-all"
+	assert diff -u "${alphabet}" "${tmpdir}/r-all"
+	assert h2 -s -o "${tmpdir}/r-full" "${HTTPS_HOST}/h2-chunked.txt" \
+		--next --http2 --cacert "${CURL_CA}" \
+		-H 'range: bytes=0-3' -o "${tmpdir}/r-after-switch" \
+		"${HTTPS_HOST}/h2-alphabet.txt"
+	printf 'abcd' > "${tmpdir}/r-after-switch.ref"
+	assert diff -u "${tmpdir}/r-after-switch.ref" "${tmpdir}/r-after-switch"
+
 	alphabetadler32="$(xrdadler32 "${alphabet}" | cut -d' ' -f1)"
 	alphabetcrc32c="$(xrdcrc32c -s "${alphabet}")"
 	alphabetmd5sumb64='mRykpCtRV62NckS3pmYroQ=='

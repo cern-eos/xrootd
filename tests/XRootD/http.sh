@@ -133,6 +133,13 @@ function test_http() {
   expectedDelimiters=3
   receivedDelimiters=$(grep -c '\-\-123456' "$outputFilePath")
   assert_eq "$expectedDelimiters" "$receivedDelimiters" "GET range-request test failed (boundary delimiters)"
+
+  echo "Testing open-once cache with sequential Range GETs"
+  assert curl -s -H 'range: bytes=0-12' -o "${TMPDIR}/r1" "${HTTP_HOST}/$alphabetFilePath" \
+    --next -H 'range: bytes=13-25' -o "${TMPDIR}/r2" "${HTTP_HOST}/$alphabetFilePath"
+  cat "${TMPDIR}/r1" "${TMPDIR}/r2" > "${TMPDIR}/r-all"
+  assert diff -u "$alphabetFilePath" "${TMPDIR}/r-all"
+
   ## GET with trailers
   curl -v -L --raw -H "X-Transfer-Status: true" -H "TE: trailers" "${HTTP_HOST}/$alphabetFilePath" --output - | tr -d '\r' > "$outputFilePath"
   cat "$outputFilePath"

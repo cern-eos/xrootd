@@ -1122,15 +1122,21 @@ int XrdHttpReq::ProcessHTTPReq() {
       switch (reqstate) {
         case 0: // Open the path for reading.
         {
+          if (!fopened)
+            prot->fileCacheApply(*this);
           if (fopened) {
             reqstate = 1;
+          } else if (prot->fileCacheCloseIfDifferent(*this)) {
+            return 0;
           } else {
           memset(&xrdreq, 0, sizeof (ClientRequest));
           xrdreq.open.requestid = htons(kXR_open);
           l = resourceplusopaque.length() + 1;
           xrdreq.open.dlen = htonl(l);
           xrdreq.open.mode = 0;
-          xrdreq.open.options = htons(kXR_retstat | kXR_open_read | ((readRangeHandler.getMaxRanges() <= 1) ? kXR_seqio : 0));
+          // Do not set kXR_seqio: the handle may be reused for later Range
+          // GETs of the same path on this connection (open-once cache).
+          xrdreq.open.options = htons(kXR_retstat | kXR_open_read);
 
           if (!prot->Bridge->Run((char *) &xrdreq, (char *) resourceplusopaque.c_str(), l)) {
             prot->SendSimpleResp(404, NULL, NULL, (char *) "Could not run request.", 0, false);
@@ -1251,6 +1257,19 @@ int XrdHttpReq::ProcessHTTPReq() {
           // --------- CLOSE
           if ( closeAfterError || readChunkList.empty() )
           {
+            if (!closeAfterError && prot->fileCacheKeepOpen(*this)) {
+              TRACEI(REQ, "Keeping cached open at end of GET");
+              if (m_transfer_encoding_chunked && m_trailer_headers) {
+                std::string trailer = "X-Transfer-Status: " +
+                    std::to_string(httpStatusCode) + ": " + httpErrorBody + "\r\n";
+                if (prot->ChunkResp(trailer.c_str(), -1))
+                  return -1;
+              }
+              const int rc = keepalive ? 1 : -1;
+              reset();
+              return rc;
+            }
+            prot->fileCacheForget();
             memset(&xrdreq, 0, sizeof (ClientRequest));
             xrdreq.close.requestid = htons(kXR_close);
             memcpy(xrdreq.close.fhandle, fhandle, 4);
@@ -1356,6 +1375,9 @@ int XrdHttpReq::ProcessHTTPReq() {
       //}
 
       if (!fopened) {
+
+        if (prot->fileCacheCloseIfOpen())
+          return 0;
 
         // --------- OPEN for write!
         memset(&xrdreq, 0, sizeof (ClientRequest));
@@ -1547,6 +1569,9 @@ int XrdHttpReq::ProcessHTTPReq() {
         {
 
 
+          if (prot->fileCacheCloseIfOpen())
+            return 0;
+
           // --------- STAT is always the first step
           memset(&xrdreq, 0, sizeof (ClientRequest));
           xrdreq.stat.requestid = htons(kXR_stat);
@@ -1698,6 +1723,9 @@ int XrdHttpReq::ProcessHTTPReq() {
     case XrdHttpReq::rtMKCOL:
     {
 
+      if (prot->fileCacheCloseIfOpen())
+        return 0;
+
       // --------- MKDIR
       memset(&xrdreq, 0, sizeof (ClientRequest));
       xrdreq.mkdir.requestid = htons(kXR_mkdir);
@@ -1718,6 +1746,9 @@ int XrdHttpReq::ProcessHTTPReq() {
     }
     case XrdHttpReq::rtMOVE:
     {
+      if (prot->fileCacheCloseIfOpen())
+        return 0;
+
       // Skip the protocol part of destination URL
       size_t skip = destination.find("://");
       skip = (skip == std::string::npos) ? 0 : skip + 3;
@@ -2127,6 +2158,9 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
   TRACEI(REQ, "PostProcessHTTPReq req: " << request << " reqstate: " << reqstate << " final_:" << final_);
   generateWebdavErrMsg();
 
+  if (prot->fileCacheFinishSwitchClose())
+    return 0;
+
   if(xrdreq.set.requestid == htons(kXR_set)) {
     // We have set the user agent, if it fails we return a 500 error, otherwise the callback is successful --> we continue
     if(xrdresp != kXR_ok) {
@@ -2250,6 +2284,7 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
               if (!length) {
                 length = filesize;
               }
+              prot->fileCacheStore(*this);
             }
             else {
               TRACEI(ALL, "GET returned no STAT information. Internal error?");

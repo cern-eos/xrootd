@@ -67,6 +67,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <algorithm>
+#include <cstring>
 
 #define XRHTTP_TK_GRACETIME     600
 
@@ -545,10 +546,14 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
       }
 
     } else {
+      bool skipInc = fileCacheHoldReqstate_;
+      fileCacheHoldReqstate_ = false;
 #ifdef HAVE_NGHTTP2
-      if (!(wireMode_ == XrdHttpWireMode::kHttp2 && !CurrentReq.headerok &&
-            !DoingLogin))
+      if (!skipInc && wireMode_ == XrdHttpWireMode::kHttp2 &&
+          !CurrentReq.headerok && !DoingLogin)
+        skipInc = true;
 #endif
+      if (!skipInc)
         CurrentReq.reqstate++;
     }
 #ifdef HAVE_NGHTTP2
@@ -2462,6 +2467,109 @@ void XrdHttpProtocol::Reset() {
   ssl = 0;
   sbio = 0;
 
+  fileCacheForget();
+}
+
+/******************************************************************************/
+/*                         f i l e C a c h e *                                */
+/******************************************************************************/
+
+const char *XrdHttpProtocol::fileCacheKey(const XrdHttpReq &req) const
+{
+  return req.resourceplusopaque.c_str();
+}
+
+bool XrdHttpProtocol::fileCacheApply(XrdHttpReq &req)
+{
+  if (!fileCache_.valid || fileCache_.switching)
+    return false;
+  if (fileCache_.key != fileCacheKey(req))
+    return false;
+  if (fileCache_.fileflags & kXR_isDir)
+    return false;
+
+  memcpy(req.fhandle, fileCache_.fhandle, 4);
+  req.filesize = fileCache_.filesize;
+  req.fileflags = fileCache_.fileflags;
+  req.filemodtime = fileCache_.filemodtime;
+  req.fopened = true;
+  req.readRangeHandler.SetFilesize(req.filesize);
+  if (!req.length)
+    req.length = req.filesize;
+  TRACE(REQ, "Reusing cached open " << fileCache_.key.c_str());
+  return true;
+}
+
+void XrdHttpProtocol::fileCacheStore(const XrdHttpReq &req)
+{
+  if (!req.fopened || (req.fileflags & kXR_isDir))
+    return;
+
+  fileCache_.valid = true;
+  fileCache_.switching = false;
+  fileCache_.key = fileCacheKey(req);
+  memcpy(fileCache_.fhandle, req.fhandle, 4);
+  fileCache_.filesize = req.filesize;
+  fileCache_.fileflags = req.fileflags;
+  fileCache_.filemodtime = req.filemodtime;
+  TRACE(REQ, "Cached open " << fileCache_.key.c_str());
+}
+
+bool XrdHttpProtocol::fileCacheKeepOpen(const XrdHttpReq &req) const
+{
+  if (!fileCache_.valid || fileCache_.switching || !req.keepalive)
+    return false;
+  return fileCache_.key == fileCacheKey(req);
+}
+
+bool XrdHttpProtocol::fileCacheBeginClose()
+{
+  if (!fileCache_.valid || !Bridge)
+    return false;
+
+  ClientRequest creq;
+  memset(&creq, 0, sizeof(creq));
+  creq.close.requestid = htons(kXR_close);
+  memcpy(creq.close.fhandle, fileCache_.fhandle, 4);
+  CurrentReq.xrdreq = creq;
+  fileCache_.switching = true;
+  TRACE(REQ, "Closing cached open " << fileCache_.key.c_str());
+  if (!Bridge->Run(reinterpret_cast<char *>(&CurrentReq.xrdreq), 0, 0)) {
+    fileCacheForget();
+    return false;
+  }
+  return true;
+}
+
+bool XrdHttpProtocol::fileCacheCloseIfDifferent(const XrdHttpReq &req)
+{
+  if (!fileCache_.valid || fileCache_.switching)
+    return false;
+  if (fileCache_.key == fileCacheKey(req))
+    return false;
+  return fileCacheBeginClose();
+}
+
+bool XrdHttpProtocol::fileCacheCloseIfOpen()
+{
+  if (!fileCache_.valid || fileCache_.switching)
+    return false;
+  return fileCacheBeginClose();
+}
+
+bool XrdHttpProtocol::fileCacheFinishSwitchClose()
+{
+  if (!fileCache_.switching)
+    return false;
+  fileCacheForget();
+  fileCacheHoldReqstate_ = true;
+  return true;
+}
+
+void XrdHttpProtocol::fileCacheForget()
+{
+  fileCache_ = FileOpenCache();
+  fileCacheHoldReqstate_ = false;
 }
 
 /******************************************************************************/
