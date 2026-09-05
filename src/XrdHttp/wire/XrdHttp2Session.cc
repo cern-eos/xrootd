@@ -100,7 +100,7 @@ int onHeader(nghttp2_session * /*session*/, const nghttp2_frame *frame,
   return 0;
 }
 
-int onDataChunk(nghttp2_session * /*session*/, uint8_t /*flags*/,
+int onDataChunk(nghttp2_session *session, uint8_t /*flags*/,
                 int32_t stream_id, const uint8_t *data, size_t len,
                 void *user_data)
 {
@@ -108,7 +108,11 @@ int onDataChunk(nghttp2_session * /*session*/, uint8_t /*flags*/,
   if (!ctx || !ctx->self)
     return 0;
 
-  ctx->self->appendBody(stream_id, data, len);
+  if (!ctx->self->appendBody(stream_id, data, len)) {
+    // Unknown/refused stream: nothing will ever consume these bytes, so
+    // release the connection window right away.
+    nghttp2_session_consume_connection(session, len);
+  }
   return 0;
 }
 
@@ -198,13 +202,27 @@ void XrdHttp2Session::addHeader(int32_t stream_id, const std::string &name,
     st->headers.emplace_back(name, value);
 }
 
-void XrdHttp2Session::appendBody(int32_t stream_id, const uint8_t *data,
+bool XrdHttp2Session::appendBody(int32_t stream_id, const uint8_t *data,
                                  size_t len)
 {
   XrdHttp2StreamState *st = findStream(stream_id);
-  if (!st || !data || !len)
-    return;
+  if (!st)
+    return false;
+  if (!data || !len)
+    return true;
   st->body.insert(st->body.end(), data, data + len);
+  return true;
+}
+
+void XrdHttp2Session::consumeWindow(int32_t stream_id, size_t len)
+{
+  if (!session_ || len == 0)
+    return;
+  auto *session = static_cast<nghttp2_session *>(session_);
+  // Stream may already be closed; the connection window must still be
+  // replenished so the peer can keep sending on other streams.
+  if (nghttp2_session_consume(session, stream_id, len) != 0)
+    nghttp2_session_consume_connection(session, len);
 }
 
 void XrdHttp2Session::markHeadersComplete(int32_t stream_id, bool end_stream)
@@ -288,7 +306,15 @@ void XrdHttp2Session::dropStream(int32_t stream_id)
   ready_queue_.erase(std::remove(ready_queue_.begin(), ready_queue_.end(),
                                  stream_id),
                      ready_queue_.end());
-  streams_.erase(stream_id);
+  auto it = streams_.find(stream_id);
+  if (it != streams_.end()) {
+    // Body bytes that were never injected still hold connection window.
+    const size_t unconsumed = it->second->body.size() - it->second->body_offset;
+    if (unconsumed && session_)
+      nghttp2_session_consume_connection(
+          static_cast<nghttp2_session *>(session_), unconsumed);
+    streams_.erase(it);
+  }
 }
 
 bool XrdHttp2Session::readyToDispatch(const XrdHttp2StreamState *st) const
@@ -407,16 +433,48 @@ XrdHttp2PendingResponse &XrdHttp2Session::ensurePending(int32_t stream_id)
 
 bool XrdHttp2Session::hasOutboundPending() const
 {
+  // Only bytes the application already produced count. Bytes the Bridge has
+  // not read yet must not block here, otherwise the close step never runs.
   for (const auto &kv : pendingResponses_) {
     const XrdHttp2PendingResponse &p = kv.second;
-    if (!p.active)
-      continue;
-    if (!p.body.empty() && p.body_offset < p.body.size())
-      return true;
-    if (p.streaming && p.bytes_sent < p.content_length)
+    if (p.active && p.unsent() > 0)
       return true;
   }
   return false;
+}
+
+void XrdHttp2Session::pruneFinishedResponses()
+{
+  for (auto it = pendingResponses_.begin(); it != pendingResponses_.end(); ) {
+    if (!it->second.active && it->first != activeStreamId_)
+      it = pendingResponses_.erase(it);
+    else
+      ++it;
+  }
+}
+
+bool XrdHttp2Session::activeBodyComplete() const
+{
+  if (activeStreamId_ < 0)
+    return true;
+  auto it = streams_.find(activeStreamId_);
+  if (it == streams_.end())
+    return true;
+  const XrdHttp2StreamState &st = *it->second;
+  return st.end_stream && st.body_offset >= st.body.size();
+}
+
+int XrdHttp2Session::recvOnce(XrdHttpProtocol &prot, int timeout_ms)
+{
+  if (!session_)
+    return -1;
+  const int n = prot.RecvWireData(reinterpret_cast<char *>(recvbuf_),
+                                  static_cast<int>(kRecvBufSize), timeout_ms);
+  if (n <= 0)
+    return n;
+  if (feedRecv(prot, recvbuf_, static_cast<size_t>(n)) < 0)
+    return -1;
+  return n;
 }
 
 static int applyLine(XrdHttpReq &req, bool firstLine, std::string &line)
@@ -467,6 +525,9 @@ int XrdHttp2Session::injectPendingBody(XrdHttpProtocol &prot)
   if (n < 0)
     return -1;
   st->body_offset += static_cast<size_t>(n);
+  // The bytes are now owned by the application buffer: open the receive
+  // window by the same amount (auto window update is disabled).
+  consumeWindow(st->stream_id, static_cast<size_t>(n));
   if (st->body_offset >= 4096 && st->body_offset >= st->body.size() / 2) {
     st->body.erase(st->body.begin(), st->body.begin() +
                    static_cast<std::ptrdiff_t>(st->body_offset));
@@ -559,16 +620,24 @@ int XrdHttp2Session::ensureSession(XrdHttpProtocol &prot, bool flush)
   nghttp2_session_callbacks_set_on_stream_close_callback(callbacks,
                                                          onStreamClose);
 
+  // Request bodies are only acknowledged (WINDOW_UPDATE) once injected into
+  // the application buffer, so a slow Bridge write throttles the client
+  // instead of buffering the whole upload in memory.
+  nghttp2_option *option = nullptr;
+  nghttp2_option_new(&option);
+  nghttp2_option_set_no_auto_window_update(option, 1);
+
   auto *ctx = new SessionCtx{this, &prot};
   sessionCtx_ = ctx;
   nghttp2_session *session = nullptr;
-  if (nghttp2_session_server_new(&session, callbacks, ctx) != 0) {
-    nghttp2_session_callbacks_del(callbacks);
+  const int nrc = nghttp2_session_server_new2(&session, callbacks, ctx, option);
+  nghttp2_option_del(option);
+  nghttp2_session_callbacks_del(callbacks);
+  if (nrc != 0) {
     delete ctx;
     sessionCtx_ = nullptr;
     return -1;
   }
-  nghttp2_session_callbacks_del(callbacks);
   session_ = session;
 
   nghttp2_settings_entry settings[] = {
@@ -627,10 +696,11 @@ bool XrdHttp2Session::finishActiveIfIdle(XrdHttpProtocol &prot)
       prot.DoingLogin)
     return false;
 
-  // Leave pendingResponses_ in place so DATA can finish flushing while
-  // the next stream starts on the Bridge.
+  // Leave still-flushing pendingResponses_ in place so DATA can finish while
+  // the next stream starts on the Bridge; drop the ones already handed over.
   dropStream(activeStreamId_);
   activeStreamId_ = -1;
+  pruneFinishedResponses();
   return true;
 }
 

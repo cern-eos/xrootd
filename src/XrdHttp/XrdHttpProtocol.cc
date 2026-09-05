@@ -57,6 +57,7 @@
 
 #include <cerrno>
 #include <charconv>
+#include <poll.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <vector>
@@ -1399,6 +1400,15 @@ int XrdHttpProtocol::getDataOneShot(int blen, bool wait) {
   if (!maxread)
     return 2;
 
+#ifdef HAVE_NGHTTP2
+  if (wireMode_ == XrdHttpWireMode::kHttp2) {
+    // Wire bytes are HTTP/2 frames; they must go through nghttp2, never
+    // straight into the body buffer (see BuffgetData / XrdHttp2Session).
+    TRACE(ALL, "getDataOneShot called on an HTTP/2 connection; refusing");
+    return -1;
+  }
+#endif
+
   if (ishttps) {
     int sslavail = maxread;
 
@@ -1589,7 +1599,39 @@ int XrdHttpProtocol::BuffgetData(int blen, char **data, bool wait) {
 
   TRACE(DEBUG, "BuffgetData: requested " << blen << " bytes");
  
-
+#ifdef HAVE_NGHTTP2
+  if (wireMode_ == XrdHttpWireMode::kHttp2) {
+    // Request bodies arrive as DATA frames. Never read the socket into the
+    // body buffer here: pull frames through nghttp2 and inject the decoded
+    // body for the active stream instead.
+    for (;;) {
+      if (http2Session_.injectPendingBody(*this) < 0)
+        return -1;
+      if (BuffUsed() >= blen || BuffFree() <= 0)
+        break;
+      if (http2Session_.activeBodyComplete())
+        break;
+      if (!wait) {
+        // Non-blocking: pick up frames already queued on the socket only.
+        const int n = http2Session_.recvOnce(*this, 0);
+        if (n < 0)
+          return -1;
+        if (n == 0)
+          break;
+        continue;
+      }
+      const int n = http2Session_.recvOnce(*this, readWait);
+      if (n < 0)
+        return -1;
+      if (n == 0) {
+        TRACE(REQ, "BuffgetData: timed out waiting for HTTP/2 body");
+        return 0;
+      }
+    }
+    // Fall through: hand out whatever is buffered (callers compare against
+    // the requested length).
+  } else
+#endif
   if (wait) {
     // If there's not enough data in the buffer then wait on the socket until it comes
     if  (blen > BuffUsed()) {
@@ -1633,9 +1675,19 @@ int XrdHttpProtocol::SendData(const char *body, int bodylen) {
   if (body && bodylen) {
     TRACE(REQ, "Sending " << bodylen << " bytes");
 #ifdef HAVE_NGHTTP2
-    if (wireMode_ == XrdHttpWireMode::kHttp2 &&
-        http2Session_.hasOutboundPending())
-      return XrdHttp2ResponseWriter::sendStreamData(*this, body, bodylen);
+    if (wireMode_ == XrdHttpWireMode::kHttp2) {
+      // Never fall through to a raw socket write on an HTTP/2 connection:
+      // unframed bytes would corrupt the whole session. If there is no
+      // active streaming response for this stream (e.g. the client reset
+      // it), the data is dropped and the request fails.
+      const int r2 = XrdHttp2ResponseWriter::sendStreamData(*this, body, bodylen);
+      if (r2 < 0) {
+        TRACE(REQ, "Dropping " << bodylen
+              << " bytes: no active HTTP/2 response stream");
+        CurrentReq.monState = XrdHttpMonState::ERR_NET;
+      }
+      return r2;
+    }
 #endif
     if (ishttps) {
       r = SSL_write(ssl, body, bodylen);
@@ -1688,7 +1740,7 @@ int XrdHttpProtocol::SendWireData(const char *body, int bodylen)
   return total;
 }
 
-int XrdHttpProtocol::RecvWireData(char *buf, int buflen)
+int XrdHttpProtocol::RecvWireData(char *buf, int buflen, int timeout_ms)
 {
   if (!buf || buflen <= 0)
     return 0;
@@ -1696,6 +1748,18 @@ int XrdHttpProtocol::RecvWireData(char *buf, int buflen)
   if (ishttps) {
     if (!ssl)
       return -1;
+    // The socket is blocking; SSL_read only returns without data when the
+    // caller has already established readability (poll) or SSL_pending().
+    // With a timeout and nothing pending, wait for the socket first.
+    if (timeout_ms > 0 && SSL_pending(ssl) <= 0 && Link) {
+      struct pollfd pfd = {Link->FDnum(), POLLIN | POLLRDNORM, 0};
+      int prc;
+      do { prc = poll(&pfd, 1, timeout_ms); } while (prc < 0 && errno == EINTR);
+      if (prc == 0)
+        return 0;
+      if (prc < 0 || !(pfd.revents & (POLLIN | POLLRDNORM)))
+        return -1;
+    }
     const int r = SSL_read(ssl, buf, buflen);
     if (r <= 0) {
       const int err = SSL_get_error(ssl, r);
@@ -1711,8 +1775,25 @@ int XrdHttpProtocol::RecvWireData(char *buf, int buflen)
   if (!Link)
     return -1;
 
-  // Timeout is milliseconds. 0 = non-blocking, matching SSL WANT_READ.
-  // Recv() returns 0 on timeout, -ENOMSG when the peer closed, <0 on error.
+  // Recv(buf, len, 0) polls once and reads whatever is queued (0 = nothing).
+  // For a positive timeout poll ourselves and then do a single read; the
+  // timed Recv() variant keeps waiting to fill the whole buffer.
+  if (timeout_ms > 0) {
+    struct pollfd pfd = {Link->FDnum(), POLLIN | POLLRDNORM, 0};
+    int prc;
+    do { prc = poll(&pfd, 1, timeout_ms); } while (prc < 0 && errno == EINTR);
+    if (prc == 0)
+      return 0;
+    if (prc < 0 || !(pfd.revents & (POLLIN | POLLRDNORM)))
+      return -1;
+    const int r = Link->Recv(buf, buflen);
+    if (r == 0) {
+      Link->setEtext("link read error or closed");
+      return -1;
+    }
+    return r;
+  }
+
   const int r = Link->Recv(buf, buflen, 0);
   if (r > 0)
     return r;
@@ -1756,31 +1837,15 @@ void XrdHttpProtocol::detectWireMode()
     }
   }
 
+  // RFC 7540 §3.5: every HTTP/2 connection (TLS or cleartext) starts with
+  // the client connection preface, so this is the only other signal needed.
   static const char kPreface[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
   const size_t kPrefaceLen = sizeof(kPreface) - 1;
   int avail = 0;
   char *data = BuffPeek(avail);
   if (avail >= static_cast<int>(kPrefaceLen) &&
-      !memcmp(data, kPreface, kPrefaceLen)) {
+      !memcmp(data, kPreface, kPrefaceLen))
     wireMode_ = XrdHttpWireMode::kHttp2;
-    return;
-  }
-
-  // h2 over TLS does not send the connection preface; detect a SETTINGS frame.
-  // Do not apply this heuristic on cleartext — it can misread HTTP/1.1.
-  if (ssl && avail >= 9) {
-    const auto *b = reinterpret_cast<const unsigned char *>(data);
-    const unsigned char type = b[3];
-    if (type <= 0x0a) {
-      const uint32_t sid =
-          (static_cast<uint32_t>(b[5]) << 24) |
-          (static_cast<uint32_t>(b[6]) << 16) |
-          (static_cast<uint32_t>(b[7]) << 8) |
-          static_cast<uint32_t>(b[8]);
-      if (!(sid & 0x80000000u))
-        wireMode_ = XrdHttpWireMode::kHttp2;
-    }
-  }
 }
 
 int XrdHttpProtocol::processHttp2(XrdLink *lp)
@@ -1797,9 +1862,9 @@ bool XrdHttpProtocol::Http2OutboundPending() const
 {
   if (wireMode_ != XrdHttpWireMode::kHttp2)
     return false;
-  if (http2Session_.hasOutboundPending())
-    return true;
-  return http2Session_.hasPendingSend();
+  // Buffered DATA that flow control did not let flushSend() send. Frames
+  // nghttp2 itself still wants to write are flushed on the next drive().
+  return http2Session_.hasOutboundPending();
 }
 
 namespace
@@ -1852,10 +1917,9 @@ bool XrdHttpProtocol::maybeUpgradeH2c()
     return false;
 
   // Attempt the upgrade only once; leave the request as HTTP/1 on failure.
+  // (allheaders keys are stored lowercase.)
   CurrentReq.allheaders.erase("upgrade");
-  CurrentReq.allheaders.erase("Upgrade");
   CurrentReq.allheaders.erase("http2-settings");
-  CurrentReq.allheaders.erase("HTTP2-Settings");
 
   std::vector<uint8_t> payload;
   if (!decodeBase64Url(settings, payload))
@@ -1942,9 +2006,17 @@ int XrdHttpProtocol::ChunkResp(const char *body, long long bodylen) {
 
 #ifdef HAVE_NGHTTP2
   if (wireMode_ == XrdHttpWireMode::kHttp2) {
-    if (body && SendData(body, static_cast<int>(content_length))) {
-      XrdHttpMon::Record(CurrentReq, code);
-      return -1;
+    // bodylen == -1 with a body carries trailer header lines (HTTP/1 sends
+    // them after the terminating chunk); on HTTP/2 they become a trailing
+    // HEADERS frame rather than body bytes.
+    if (body && content_length > 0) {
+      const int r = (bodylen == -1)
+                        ? XrdHttp2ResponseWriter::addTrailers(*this, body)
+                        : SendData(body, static_cast<int>(content_length));
+      if (r < 0) {
+        XrdHttpMon::Record(CurrentReq, code);
+        return -1;
+      }
     }
     if (content_length == 0 || bodylen == -1) {
       if (XrdHttp2ResponseWriter::finishStream(*this) < 0) {
@@ -1988,6 +2060,11 @@ int XrdHttpProtocol::ChunkResp(const char *body, long long bodylen) {
 /******************************************************************************/
 
 int XrdHttpProtocol::ChunkRespHeader(long long bodylen) {
+#ifdef HAVE_NGHTTP2
+  // HTTP/2 has no chunked transfer coding; DATA frames carry the framing.
+  if (wireMode_ == XrdHttpWireMode::kHttp2)
+    return 0;
+#endif
   const std::string crlf = "\r\n";
   std::stringstream ss;
 
@@ -2003,6 +2080,10 @@ int XrdHttpProtocol::ChunkRespHeader(long long bodylen) {
 /******************************************************************************/
 
 int XrdHttpProtocol::ChunkRespFooter() {
+#ifdef HAVE_NGHTTP2
+  if (wireMode_ == XrdHttpWireMode::kHttp2)
+    return 0;
+#endif
   const std::string crlf = "\r\n";
   return (SendData(crlf.c_str(), crlf.size())) ? -1 : 0;
 }

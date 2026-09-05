@@ -270,6 +270,54 @@ function test_httph2() {
 	assert_eq 200 "${code1}" "large GET on reused connection should return 200"
 	assert_eq 200 "${code2}" "follow-up GET after large response should return 200"
 
+	echo "Testing HTTP/2 trailers (X-Transfer-Status)"
+	h2 -s -v -H 'X-Transfer-Status: true' -H 'TE: trailers' \
+		-o "${out}" "${HTTPS_HOST}/h2-alphabet.txt" 2> "${tmpdir}/trailer.err"
+	assert diff -u "${alphabet}" "${out}"
+	grep -qi 'x-transfer-status: 200: OK' "${tmpdir}/trailer.err" \
+		|| error "HTTP/2 GET should deliver X-Transfer-Status trailer"
+
+	echo "Testing PROPFIND with request body over HTTP/2"
+	code=$(h2 -s -o "${outputFilePath}" -w '%{http_code}' -X PROPFIND \
+		-H 'Depth: 0' --data-binary \
+		'<?xml version="1.0"?><D:propfind xmlns:D="DAV:"><D:prop><D:getcontentlength/></D:prop></D:propfind>' \
+		"${HTTPS_HOST}/h2-alphabet.txt")
+	assert_eq 207 "${code}" "PROPFIND with body over HTTP/2 should return 207"
+	grep -q 'getcontentlength' "${outputFilePath}" \
+		|| error "PROPFIND response should contain getcontentlength"
+
+	echo "Testing RST_STREAM on an active transfer"
+	# --max-filesize makes curl cancel the stream; the connection must survive.
+	read -r code1 code2 <<< "$(h2 -s --max-filesize 1000 \
+		-o /dev/null -w '%{http_code} ' "${HTTPS_HOST}/h2-big.bin" \
+		--next --http2 --cacert "${CURL_CA}" \
+		-o /dev/null -w '%{http_code}' "${HTTPS_HOST}/h2-alphabet.txt" || true)"
+	assert_eq 200 "${code2}" "GET after a cancelled stream on the same connection should return 200"
+	assert h2 -s -o "${tmpdir}/big.out" "${HTTPS_HOST}/h2-big.bin"
+	assert cmp "${tmpdir}/big.bin" "${tmpdir}/big.out"
+
+	if command -v nghttp >/dev/null 2>&1; then
+		echo "Testing flow control with a 64KiB window (nghttp)"
+		# GET: server must park the read loop until WINDOW_UPDATE arrives.
+		# --no-push: the pushed http.h2push body would also land on stdout.
+		nghttp --no-verify-peer --no-push -w 16 -W 16 --timeout=30 \
+			"${HTTPS_HOST}/h2-big.bin" > "${tmpdir}/ng-get.out" \
+			|| error "nghttp small-window GET failed"
+		assert cmp "${tmpdir}/big.bin" "${tmpdir}/ng-get.out"
+		grep -q 'HTTP/2 flow control: response window exhausted' \
+			"${XROOTD_SERVER_LOGFILE}" \
+			|| error "server should have parked the read loop on a 64KiB window"
+		# PUT: server must only open the window as the body is consumed.
+		nghttp --no-verify-peer -w 16 -W 16 --timeout=30 -n \
+			-H ':method: PUT' -d "${tmpdir}/big.bin" \
+			"${HTTPS_HOST}/h2-ng-put.bin" \
+			|| error "nghttp small-window PUT failed"
+		assert h2 -s -o "${tmpdir}/ng-put.out" "${HTTPS_HOST}/h2-ng-put.bin"
+		assert cmp "${tmpdir}/big.bin" "${tmpdir}/ng-put.out"
+	else
+		echo "nghttp not available; skipping small-window flow control checks"
+	fi
+
 	echo "Testing HTTP/2 server push"
 	echo "pushed payload" > "${tmpdir}/push-target.txt"
 	assert h2 --connect-timeout 5 --max-time 15 -s -T "${tmpdir}/push-target.txt" \

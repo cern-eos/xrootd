@@ -141,8 +141,18 @@ public:
   /// Send wire bytes (used by HTTP/2 framing)
   int SendWireData(const char *body, int bodylen);
 
-  /// Receive raw TLS/TCP bytes into a caller buffer (HTTP/2 framing)
-  int RecvWireData(char *buf, int buflen);
+  /// Receive raw TLS/TCP bytes into a caller buffer (HTTP/2 framing).
+  /// timeout_ms == 0 never blocks; > 0 waits up to that long for data.
+  int RecvWireData(char *buf, int buflen, int timeout_ms = 0);
+
+  /// True when this connection speaks HTTP/2 (false if not built with nghttp2).
+  bool isHttp2() const {
+#ifdef HAVE_NGHTTP2
+    return wireMode_ == XrdHttpWireMode::kHttp2;
+#else
+    return false;
+#endif
+  }
 
   /// Append bytes to the read buffer (used by HTTP/2 request bodies).
   /// Returns the number of bytes actually stored (may be short if the

@@ -25,8 +25,14 @@ struct XrdHttp2PendingResponse
   std::size_t body_offset{0};
   bool        active{false};
   bool        streaming{false};
+  /// Set once the application signalled end of body (finishStream).
+  bool        finished{false};
+  /// content_length < 0 means unknown (chunked-style) length.
   long long   content_length{0};
   long long   bytes_sent{0};
+  std::vector<std::pair<std::string, std::string>> trailers;
+
+  std::size_t unsent() const { return body.size() - body_offset; }
 };
 
 struct XrdHttp2StreamState
@@ -64,7 +70,23 @@ public:
   XrdHttp2PendingResponse &pendingResponse();
   XrdHttp2PendingResponse *pendingFor(int32_t stream_id);
   XrdHttp2PendingResponse &ensurePending(int32_t stream_id);
+
+  /// True when response DATA is buffered but could not be sent (flow control).
   bool hasOutboundPending() const;
+
+  /// Drop pending responses whose DATA has fully been handed to nghttp2.
+  void pruneFinishedResponses();
+
+  /// True when the active stream received END_STREAM and all of its body has
+  /// been injected into the protocol buffer.
+  bool activeBodyComplete() const;
+
+  /// Read one batch of wire bytes (blocking up to timeout_ms) and feed nghttp2.
+  /// Returns >0 bytes consumed, 0 on timeout, <0 on error/close.
+  int recvOnce(XrdHttpProtocol &prot, int timeout_ms);
+
+  /// Move buffered body of the active stream into the protocol buffer.
+  int injectPendingBody(XrdHttpProtocol &prot);
 
   int flushSend(XrdHttpProtocol &prot);
 
@@ -82,7 +104,8 @@ public:
   void beginStream(int32_t stream_id);
   void addHeader(int32_t stream_id, const std::string &name,
                  const std::string &value);
-  void appendBody(int32_t stream_id, const uint8_t *data, size_t len);
+  /// Returns false if the stream is unknown (bytes were not stored).
+  bool appendBody(int32_t stream_id, const uint8_t *data, size_t len);
   void markHeadersComplete(int32_t stream_id, bool end_stream);
   void markEndStream(int32_t stream_id);
   void onStreamClosed(int32_t stream_id, uint32_t error_code);
@@ -99,9 +122,9 @@ private:
   void enqueueIfReady(XrdHttp2StreamState *st);
   void dropStream(int32_t stream_id);
   void synthesizeContentLength(XrdHttp2StreamState *st);
+  void consumeWindow(int32_t stream_id, size_t len);
 
   int applyTo(XrdHttp2StreamState *st, XrdHttpReq &req);
-  int injectPendingBody(XrdHttpProtocol &prot);
   int recvFrames(XrdHttpProtocol &prot, XrdLink *lp);
   int feedRecv(XrdHttpProtocol &prot, const uint8_t *data, size_t len);
   int ensureSession(XrdHttpProtocol &prot, bool flush = true);

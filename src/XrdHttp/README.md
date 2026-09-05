@@ -20,7 +20,7 @@ and HTTP/2.
   XrdHttpProtocol::Process()
     |
     +-- TLS handshake (HTTPS)
-    +-- detectWireMode()  (ALPN / H2 preface / SETTINGS heuristic)
+    +-- detectWireMode()  (ALPN / H2 preface)
     |
     +-- HTTP/1.1                          +-- HTTP/2 (HTTPS + ALPN h2)
     |     getDataOneShot()                |     XrdHttp2Session::drive()
@@ -98,7 +98,9 @@ HTTP/2 is available when XRootD is built with nghttp2 (`BUILD_HTTP2`).
 
 - Negotiated on **HTTPS** via TLS ALPN (`h2`), and on **cleartext** via the
   connection preface (h2c prior knowledge) or `Upgrade: h2c`.
-- `detectWireMode()` also uses a SETTINGS-frame heuristic on TLS only.
+- `detectWireMode()` decides on ALPN or the connection preface only.
+- Request header names are stored lowercase in `XrdHttpReq::allheaders` on
+  both HTTP/1 and HTTP/2; plugins should treat lookups as case-insensitive.
 - Multiple requests on one connection are supported (same-connection reuse).
 - Request bodies are streamed into `XrdHttpReq` as DATA frames arrive (PUT
   does not wait for `END_STREAM` when `content-length` is present).
@@ -109,9 +111,20 @@ HTTP/2 is available when XRootD is built with nghttp2 (`BUILD_HTTP2`).
   client advertised `SETTINGS_ENABLE_PUSH=1`, then serves the promised GET
   through the serialized Bridge.
 - RST_STREAM and GOAWAY drop the affected queued streams; the active request
-  is abandoned if the peer resets it.
+  is abandoned if the peer resets it. `SendData()` never falls back to a raw
+  socket write on an HTTP/2 connection (late Bridge data is dropped instead).
+- Flow control in both directions: the GET read loop parks (`return 1`) while
+  response DATA is blocked by the peer's window (`Http2OutboundPending()`),
+  and request bodies only open the receive window as they are injected
+  (`nghttp2_option_set_no_auto_window_update` + `nghttp2_session_consume`).
+- Request bodies are read only via nghttp2 (`BuffgetData()` pulls DATA frames
+  through the session); `getDataOneShot()` refuses to run in HTTP/2 mode.
+- sendfile is disabled for HTTP/2 (including h2c), as it is for HTTPS.
+- Unknown-length responses (`StartChunkedResp(-1)`) stream on the DATA
+  provider; `X-Transfer-Status` and other trailers become a trailing HEADERS
+  frame. `ChunkRespHeader()/ChunkRespFooter()` are no-ops on HTTP/2.
 - `hasPendingSend()` uses `nghttp2_session_want_write()` (it must not consume
-  frames). `Http2OutboundPending()` defers close while response DATA is queued.
+  frames).
 
 ## Request lifecycle
 

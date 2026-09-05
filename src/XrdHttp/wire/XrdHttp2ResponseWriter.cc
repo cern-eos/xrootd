@@ -37,27 +37,56 @@ void compactPendingBody(XrdHttp2PendingResponse &resp)
   }
 }
 
-ssize_t readResponse(nghttp2_session * /*session*/, int32_t stream_id,
+bool bodyComplete(const XrdHttp2PendingResponse &resp)
+{
+  if (!resp.streaming)
+    return true;
+  if (resp.finished)
+    return true;
+  return resp.content_length >= 0 && resp.bytes_sent >= resp.content_length;
+}
+
+// Emit EOF on the stream; if trailers were queued send them as a trailing
+// HEADERS frame instead of END_STREAM on the last DATA frame.
+void markEof(nghttp2_session *session, XrdHttp2PendingResponse &resp,
+             uint32_t *data_flags)
+{
+  *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+  resp.active = false;
+  if (resp.trailers.empty())
+    return;
+
+  std::vector<nghttp2_nv> nva;
+  nva.reserve(resp.trailers.size());
+  for (auto &kv : resp.trailers) {
+    nva.push_back({reinterpret_cast<uint8_t *>(const_cast<char *>(kv.first.data())),
+                   reinterpret_cast<uint8_t *>(const_cast<char *>(kv.second.data())),
+                   kv.first.size(), kv.second.size(), NGHTTP2_NV_FLAG_NONE});
+  }
+  if (nghttp2_submit_trailer(session, resp.stream_id, nva.data(),
+                             nva.size()) == 0)
+    *data_flags |= NGHTTP2_DATA_FLAG_NO_END_STREAM;
+}
+
+ssize_t readResponse(nghttp2_session *session, int32_t stream_id,
                      uint8_t *buf, size_t length, uint32_t *data_flags,
                      nghttp2_data_source *source, void * /*user_data*/)
 {
   if (!source || !source->ptr)
     return NGHTTP2_ERR_CALLBACK_FAILURE;
 
-  auto *session = static_cast<XrdHttp2Session *>(source->ptr);
+  auto *h2 = static_cast<XrdHttp2Session *>(source->ptr);
 
-  XrdHttp2PendingResponse *respP = session->pendingFor(stream_id);
+  XrdHttp2PendingResponse *respP = h2->pendingFor(stream_id);
   if (!respP || !respP->active)
     return NGHTTP2_ERR_CALLBACK_FAILURE;
   XrdHttp2PendingResponse &resp = *respP;
 
-  const size_t remain = resp.body.size() - resp.body_offset;
+  const size_t remain = resp.unsent();
   if (remain == 0) {
-    if (resp.streaming && resp.bytes_sent < resp.content_length)
+    if (!bodyComplete(resp))
       return NGHTTP2_ERR_DEFERRED;
-    *data_flags |= NGHTTP2_DATA_FLAG_EOF;
-    if (resp.streaming)
-      resp.active = false;
+    markEof(session, resp, data_flags);
     return 0;
   }
 
@@ -67,13 +96,8 @@ ssize_t readResponse(nghttp2_session * /*session*/, int32_t stream_id,
   resp.bytes_sent += static_cast<long long>(n);
   compactPendingBody(resp);
 
-  if (!resp.streaming && resp.body_offset >= resp.body.size())
-    *data_flags |= NGHTTP2_DATA_FLAG_EOF;
-  else if (resp.streaming && resp.bytes_sent >= resp.content_length)
-    *data_flags |= NGHTTP2_DATA_FLAG_EOF;
-
-  if (*data_flags & NGHTTP2_DATA_FLAG_EOF)
-    resp.active = false;
+  if (resp.unsent() == 0 && bodyComplete(resp))
+    markEof(session, resp, data_flags);
 
   return static_cast<ssize_t>(n);
 }
@@ -203,8 +227,15 @@ int XrdHttp2ResponseWriter::sendSimple(XrdHttpProtocol &prot, int code,
   prot.CurrentReq.setHttpStatusCode(code);
   XrdHttpMon::Record(prot.CurrentReq, code);
 
+  // bodylen < 0 with no inline body means "length unknown, body follows via
+  // SendData()/ChunkResp()" (the HTTP/1 chunked case).
+  const bool is_head = prot.CurrentReq.request == XrdHttpReq::rtHEAD;
+  const bool unknown_length = !body && bodylen < 0 && !is_head;
+
   long long content_length = bodylen;
-  if (bodylen <= 0)
+  if (unknown_length)
+    content_length = -1;
+  else if (bodylen <= 0)
     content_length = body ? static_cast<long long>(strlen(body)) : 0;
 
   const int32_t stream_id = prot.http2Session_.activeStreamId();
@@ -212,8 +243,7 @@ int XrdHttp2ResponseWriter::sendSimple(XrdHttpProtocol &prot, int code,
     return -1;
 
   const bool streaming =
-      !body && content_length > 0 &&
-      prot.CurrentReq.request != XrdHttpReq::rtHEAD;
+      !body && !is_head && (content_length > 0 || unknown_length);
 
   XrdHttp2PendingResponse &pending = prot.http2Session_.ensurePending(stream_id);
   pending = {};
@@ -227,7 +257,7 @@ int XrdHttp2ResponseWriter::sendSimple(XrdHttpProtocol &prot, int code,
     pending.body.assign(body, static_cast<size_t>(content_length));
 
   const bool use_provider =
-      content_length > 0 && (body != nullptr || streaming);
+      (content_length > 0 && body != nullptr) || streaming;
 
   const std::string merged = mergeHeaders(prot, header_to_add);
   if (submitResponse(prot.http2Session_, prot, pending, code,
@@ -288,7 +318,7 @@ int XrdHttp2ResponseWriter::finishStream(XrdHttpProtocol &prot)
   if (!pending.active || !pending.streaming)
     return 0;
 
-  pending.bytes_sent = pending.content_length;
+  pending.finished = true;
 
   nghttp2_session *session =
       static_cast<nghttp2_session *>(prot.http2Session_.nghttp2SessionHandle());
@@ -299,4 +329,33 @@ int XrdHttp2ResponseWriter::finishStream(XrdHttpProtocol &prot)
     return -1;
 
   return prot.http2Session_.flushSend(prot) < 0 ? -1 : 0;
+}
+
+int XrdHttp2ResponseWriter::addTrailers(XrdHttpProtocol &prot,
+                                        const char *header_lines)
+{
+  XrdHttp2PendingResponse *pending = prot.http2Session_.pendingFor(
+      prot.http2Session_.activeStreamId());
+  if (!pending || !pending->active || !pending->streaming)
+    return -1;
+  if (!header_lines || !header_lines[0])
+    return 0;
+
+  std::istringstream hdrs(header_lines);
+  std::string line;
+  while (std::getline(hdrs, line)) {
+    if (!line.empty() && line.back() == '\r')
+      line.pop_back();
+    const auto colon = line.find(':');
+    if (colon == std::string::npos || colon == 0)
+      continue;
+    std::string name = line.substr(0, colon);
+    std::string value = line.substr(colon + 1);
+    while (!value.empty() && value.front() == ' ')
+      value.erase(value.begin());
+    std::transform(name.begin(), name.end(), name.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    pending->trailers.emplace_back(std::move(name), std::move(value));
+  }
+  return 0;
 }

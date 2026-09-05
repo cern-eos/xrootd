@@ -145,15 +145,21 @@ int XrdHttpReq::parseLine(char *line, int len) {
     // Trim left
     while ( (!isgraph(*val) || (!*val)) && (val < line+len)) val++;
 
-    // We memorize the headers also as a string                                                                                                                                              
-    // because external plugins may need to process it differently                                                                                                                          
+    // We memorize the headers also as a string
+    // because external plugins may need to process it differently.
+    // Field names are case-insensitive (RFC 9110 §5.1) and HTTP/2 always
+    // delivers them lowercase; store them lowercase for both protocols so
+    // plugins see one convention regardless of the wire version.
     std::string ss = val;
     if(ss.length() >= 2 && ss.substr(ss.length() - 2, 2) != "\r\n") {
       request = rtMalformed;
       return -3;
     }
     trim(ss);
-    allheaders[key] = ss;
+    std::string lkey(key);
+    std::transform(lkey.begin(), lkey.end(), lkey.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    allheaders[lkey] = ss;
 	  
     // Here we are supposed to initialize whatever flag or variable that is needed
     // by looking at the first token of the line
@@ -1227,6 +1233,17 @@ int XrdHttpReq::ProcessHTTPReq() {
         // fallthrough
         default: // Read() or Close(); reqstate is 4+
         {
+#ifdef HAVE_NGHTTP2
+          // HTTP/2 flow control: response DATA the peer has not yet allowed
+          // us to send is still buffered. Do not read further (or close)
+          // until a WINDOW_UPDATE lets it drain; returning 1 parks this
+          // request until the link becomes readable again. This must run
+          // before NextReadList(), which errors on a re-issued list.
+          if (prot->Http2OutboundPending()) {
+            TRACEI(REQ, "HTTP/2 flow control: response window exhausted, parking read loop");
+            return 1;
+          }
+#endif
           const XrdHttpIOList &readChunkList = readRangeHandler.NextReadList();
 
           // Close() if we have finished, otherwise read the next chunk
@@ -1234,11 +1251,6 @@ int XrdHttpReq::ProcessHTTPReq() {
           // --------- CLOSE
           if ( closeAfterError || readChunkList.empty() )
           {
-#ifdef HAVE_NGHTTP2
-            if (prot->Http2OutboundPending())
-              return 1;
-#endif
-
             memset(&xrdreq, 0, sizeof (ClientRequest));
             xrdreq.close.requestid = htons(kXR_close);
             memcpy(xrdreq.close.fhandle, fhandle, 4);
@@ -1276,10 +1288,12 @@ int XrdHttpReq::ProcessHTTPReq() {
             xrdreq.read.offset = htonll(offs);
             xrdreq.read.rlen = htonl(l);
 
-            // If we are using HTTPS or if the client requested trailers, or if the
-            // read concerns a multirange reponse, disable sendfile
+            // If we are using HTTPS or HTTP/2 (bytes must be framed, never
+            // sendfile()'d to the socket), or if the client requested trailers,
+            // or if the read concerns a multirange reponse, disable sendfile
             // (in the latter two cases, the extra framing is only done in PostProcessHTTPReq)
-            if (prot->ishttps || (m_transfer_encoding_chunked && m_trailer_headers) ||
+            if (prot->ishttps || prot->isHttp2() ||
+                (m_transfer_encoding_chunked && m_trailer_headers) ||
                 !readRangeHandler.isSingleRange()) {
               if (!prot->Bridge->setSF((kXR_char *) fhandle, false)) {
                 TRACE(REQ, " XrdBridge::SetSF(false) failed.");

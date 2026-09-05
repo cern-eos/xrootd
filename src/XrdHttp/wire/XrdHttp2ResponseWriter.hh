@@ -27,6 +27,9 @@ public:
 
   static int finishStream(XrdHttpProtocol &prot);
 
+  /// Queue "Name: value\r\n" lines as HTTP/2 trailers for the active stream.
+  static int addTrailers(XrdHttpProtocol &prot, const char *header_lines);
+
 private:
 
   static std::string mergeHeaders(XrdHttpProtocol &prot,
