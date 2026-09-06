@@ -5,6 +5,7 @@
 #include <linux/fs.h>
 #include <linux/fs_context.h>
 #include <linux/fs_parser.h>
+#include <linux/kmod.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/statfs.h>
@@ -289,6 +290,8 @@ static struct file_system_type xiofs_type = {
 static int __init xiofs_init(void)
 {
 	int err;
+
+	request_module("tls");
 
 	xiofs_inode_cachep = kmem_cache_create("xiofs_inode_cache",
 			sizeof(struct xiofs_inode_info), 0,

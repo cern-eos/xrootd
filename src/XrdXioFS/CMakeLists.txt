@@ -29,6 +29,14 @@ add_executable(xiofscli fuse/xiofscli.cc)
 target_link_libraries(xiofscli PRIVATE XrdXioFS)
 install(TARGETS xiofscli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
+# TLS handshake agent: Linux only (kTLS + /dev/xiofsctl). RDMA/GPU stay stubs.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(xiofsagent agent/xiofsagent.cc)
+  target_link_libraries(xiofsagent PRIVATE XrdXioFS)
+  target_include_directories(xiofsagent PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/kernel)
+  install(TARGETS xiofsagent RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
 # FUSE daemon: Linux libfuse, or macFUSE (/usr/local, /opt/homebrew, /opt/brew).
 if(ENABLE_FUSE)
   find_package(fuse)

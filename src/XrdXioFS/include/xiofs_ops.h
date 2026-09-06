@@ -2,8 +2,8 @@
 // Shared XIOFS transport and I/O vocabulary.
 //
 // Userspace (FUSE / xiofscli) and the Linux module use the same operation
-// names. The HTTP/2 FUSE client and the future HTTP/1.1+kTLS kernel
-// transport both map these onto XrdHttp verbs.
+// names. The HTTP/2 FUSE client and the kernel HTTP/1.1+kTLS transport
+// both map these onto XrdHttp verbs.
 //
 // Copyright (c) 2026 by the XRootD Collaboration
 //------------------------------------------------------------------------------

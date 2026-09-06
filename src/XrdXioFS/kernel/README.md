@@ -14,12 +14,21 @@ On the distro you will run:
 ```bash
 # AlmaLinux 9 or 10, matching kernel-devel
 sudo dnf install kernel-devel-$(uname -r) kernel-headers-$(uname -r)
+sudo modprobe tls
 make -C /lib/modules/$(uname -r)/build M=$(pwd) modules
 sudo insmod xiofs.ko
-sudo mount -t xiofs -o host=storage.example,port=1094,path=/export none /mnt/xiofs
+# Handshake, kTLS, mount, import (from the XRootD build tree):
+sudo xiofsagent --cacert /path/ca.pem \
+    https://storage.example:1094/export /mnt/xiofs
 ```
 
-Until a kTLS socket is imported, I/O returns `-ENOTCONN`.
+`xiofsagent` is the userspace TLS handshake helper (`src/XrdXioFS/agent`).
+Until it imports a kTLS socket, I/O returns `-ENOTCONN`. HTTPS imports
+without kTLS TX+RX are rejected (`-EPROTO`). Plain `http://` skips TLS.
+
+OpenSSL 3.0 on Alma 9 often enables kTLS TX only for TLS 1.3; the agent
+reconnects at TLS 1.2 (AES-GCM or ChaCha20) so RX works too. Need
+`enable-ktls` in the distro OpenSSL (Alma/RHEL 9 include it).
 
 ## What is wired (VFS)
 
@@ -67,9 +76,12 @@ userspace TLS handshake agent
 xiofs.ko  -- plaintext HTTP/1.1 -->  kTLS  --> TCP  --> XrdHttp
 ```
 
-Do **not** extract TLS keys and implement a private record layer.
+Do **not** extract TLS keys and implement a private record layer. The
+agent sets `SSL_OP_ENABLE_KTLS` so OpenSSL installs `TLS_TX`/`TLS_RX`,
+then donates the fd.
 
 UAPI: `xiofs_uapi.h`. Match `host`, `port`, and `path` to the mount.
+`--import-only` re-handshakes into an existing mount (same host/port/path).
 
 ```c
 struct xiofs_import_sock im = {
@@ -101,12 +113,11 @@ encoding; XrdHttp sends `Content-Length`.
 ## Explicitly not done
 
 - HTTP/2 in-kernel (HPACK / streams / flow control)
-- Connection recovery / reconnect
+- Connection recovery / reconnect after drop (use `--import-only` by hand)
 - Chunked responses
 - Byte-range locks, hard links
 - `writeback_iter` error retry / congestion
 - RDMA / GPU-direct (`XIOFS_IOC_GPU_READ` returns `-EOPNOTSUPP`)
-- Handshake agent binary (userspace; ioctl only)
 
 ## License
 

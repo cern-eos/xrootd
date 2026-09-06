@@ -9,9 +9,25 @@
 #include <linux/net.h>
 #include <linux/slab.h>
 #include <linux/socket.h>
+#include <linux/string.h>
 #include <linux/uaccess.h>
+#include <net/inet_connection_sock.h>
+#include <net/tcp.h>
 
 #include "xiofs.h"
+
+static bool xiofs_sock_has_tls_ulp(struct socket *sock)
+{
+	struct inet_connection_sock *icsk;
+
+	if (!sock || !sock->sk)
+		return false;
+	if (sock->sk->sk_protocol != IPPROTO_TCP)
+		return false;
+	icsk = inet_csk(sock->sk);
+	return icsk->icsk_ulp_ops &&
+	       !strcmp(icsk->icsk_ulp_ops->name, "tls");
+}
 
 static LIST_HEAD(xiofs_mounts);
 static DEFINE_MUTEX(xiofs_mounts_lock);
@@ -64,6 +80,12 @@ static int xiofs_import_sock(struct xiofs_import_sock *im)
 	sock = sockfd_lookup(im->sockfd, &sockerr);
 	if (!sock)
 		return sockerr ? sockerr : -EBADF;
+
+	if ((im->flags & XIOFS_IMPORT_TLS) && !xiofs_sock_has_tls_ulp(sock)) {
+		pr_warn("xiofs: import fd %d has no kTLS ULP\n", im->sockfd);
+		sockfd_put(sock);
+		return -EPROTO;
+	}
 
 	mutex_lock(&xiofs_mounts_lock);
 	sbi = xiofs_find_sbi(im);

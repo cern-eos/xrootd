@@ -5,8 +5,8 @@
 /*
  * Userspace TLS handshake agent <-> xiofs.ko.
  *
- * After OpenSSL (or equivalent) finishes the handshake, install kTLS
- * with setsockopt(SOL_TLS, TLS_TX/TLS_RX) and pass the socket here.
+ * After OpenSSL finishes the handshake, install kTLS with
+ * SSL_OP_ENABLE_KTLS (see xiofsagent) and pass the socket here.
  * Do not extract keys and roll a private TLS record layer.
  */
 #include <linux/ioctl.h>

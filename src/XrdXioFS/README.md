@@ -26,8 +26,9 @@ VFS -> page cache / readahead / writeback
     -> xiofs.ko -> HTTP/1.1 -> kTLS -> TCP -> XrdHttp
 ```
 
-Userspace does TLS handshake / certificates only, then imports the
-socket via `/dev/xiofsctl`. See [kernel/README.md](kernel/README.md).
+`xiofsagent` (Linux) does the TLS handshake and certificate checks, installs
+kTLS, and imports the socket via `/dev/xiofsctl`. See
+[kernel/README.md](kernel/README.md).
 
 ## XrdHttp verb map
 
@@ -53,6 +54,8 @@ cmake .. -DENABLE_HTTP=ON -DENABLE_HTTP2=ON
 make xiofscli
 # libfuse (Linux) or macFUSE (/usr/local, /opt/homebrew, /opt/brew):
 make xiofsd
+# Linux only (kTLS handshake agent for xiofs.ko):
+make xiofsagent
 ```
 
 ## xiofscli
@@ -88,6 +91,23 @@ The HTTP/2 session keeps one TLS connection and multiplexes streams on
 an I/O thread, so concurrent FUSE reads and writes do not wait for each
 other to finish.
 
+## xiofsagent (Linux kernel mount)
+
+Needs `xiofs.ko` (`modprobe tls; insmod xiofs.ko`) and OpenSSL built with
+`enable-ktls`. The kernel path speaks HTTP/1.1; kTLS RX on Alma 9's OpenSSL
+3.0 needs TLS 1.2 AES-GCM or ChaCha20 (the agent retries TLS 1.2 if TLS 1.3
+only got TX).
+
+```bash
+xiofsagent --cacert ca.pem https://storage.example:1094/export /mnt/xiofs
+# or, after ln -s $(which xiofsagent) /sbin/mount.xiofs:
+mount -t xiofs -o host=storage.example,port=1094,path=/export,cacert=ca.pem \
+    none /mnt/xiofs
+```
+
+`--import-only` attaches a new kTLS socket to an existing mount (same
+host/port/path). RDMA and GPU-direct are not implemented.
+
 ## Layout
 
 ```
@@ -95,6 +115,7 @@ include/xiofs_ops.h   transport / memory-target vocabulary
 http/                    URL, DAV parser, HTTP/2 session, Client
 fuse/xiofscli.cc           command-line client
 fuse/xiofsd.cc             FUSE daemon
+agent/xiofsagent.cc        Linux TLS handshake + kTLS import
 kernel/                  Linux module for AlmaLinux 9 (5.14) and 10 (6.12):
                          page cache, readahead, writeback, HTTP/1.1 + kTLS
                          import (kbuild, not CMake)
