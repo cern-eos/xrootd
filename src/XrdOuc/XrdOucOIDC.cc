@@ -1,6 +1,6 @@
 /******************************************************************************/
 /*                                                                            */
-/*                 X r d S e c P r o t o c o l o i d c . c c                  */
+/*                         X r d O u c O I D C . c c                          */
 /*                                                                            */
 /* (c) 2026 by the Board of Trustees of the Leland Stanford, Jr., University  */
 /*                            All Rights Reserved                             */
@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <atomic>
@@ -33,14 +34,19 @@
 
 #include <curl/curl.h>
 #include <openssl/bn.h>
+#include <openssl/ec.h>
+#include <openssl/ecdsa.h>
 #include <openssl/evp.h>
+#include <openssl/obj_mac.h>
 #include <openssl/rsa.h>
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
+#include <openssl/core_names.h>
 #include <openssl/param_build.h>
 #include <openssl/params.h>
 #endif
 
 #include <fcntl.h>
+#include <strings.h>
 #include <sys/param.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -74,12 +80,14 @@ struct EvpMdCtxDeleter   {void operator()(EVP_MD_CTX *p)   const noexcept {EVP_M
 struct BignumDeleter     {void operator()(BIGNUM *p)       const noexcept {BN_free(p);}};
 struct EvpPkeyCtxDeleter {void operator()(EVP_PKEY_CTX *p) const noexcept {EVP_PKEY_CTX_free(p);}};
 struct CurlDeleter       {void operator()(CURL *p)         const noexcept {curl_easy_cleanup(p);}};
+struct EcdsaSigDeleter   {void operator()(ECDSA_SIG *p)    const noexcept {ECDSA_SIG_free(p);}};
 
 using EvpPkeyPtr    = std::unique_ptr<EVP_PKEY, EvpPkeyDeleter>;
 using EvpMdCtxPtr   = std::unique_ptr<EVP_MD_CTX, EvpMdCtxDeleter>;
 using BignumPtr     = std::unique_ptr<BIGNUM, BignumDeleter>;
 using EvpPkeyCtxPtr = std::unique_ptr<EVP_PKEY_CTX, EvpPkeyCtxDeleter>;
 using CurlPtr       = std::unique_ptr<CURL, CurlDeleter>;
+using EcdsaSigPtr   = std::unique_ptr<ECDSA_SIG, EcdsaSigDeleter>;
 
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
 struct OsslParamBldDeleter {void operator()(OSSL_PARAM_BLD *p) const noexcept {OSSL_PARAM_BLD_free(p);}};
@@ -87,8 +95,10 @@ struct OsslParamDeleter    {void operator()(OSSL_PARAM *p)     const noexcept {O
 using OsslParamBldPtr = std::unique_ptr<OSSL_PARAM_BLD, OsslParamBldDeleter>;
 using OsslParamPtr    = std::unique_ptr<OSSL_PARAM, OsslParamDeleter>;
 #else
-struct RsaDeleter {void operator()(RSA *p) const noexcept {RSA_free(p);}};
-using RsaPtr = std::unique_ptr<RSA, RsaDeleter>;
+struct RsaDeleter   {void operator()(RSA *p)    const noexcept {RSA_free(p);}};
+struct EcKeyDeleter {void operator()(EC_KEY *p) const noexcept {EC_KEY_free(p);}};
+using RsaPtr   = std::unique_ptr<RSA, RsaDeleter>;
+using EcKeyPtr = std::unique_ptr<EC_KEY, EcKeyDeleter>;
 #endif
 
 void Fatal(XrdOucErrInfo *erp, const char *eMsg, int rc, bool hdr=true)
@@ -179,12 +189,15 @@ std::string encodeBase64URL(const std::string &in)
    return out;
 }
 
+// Returns the lowercase hex SHA-256 of the input, or an empty string if the
+// digest fails. Callers must treat an empty result as an error; the raw token
+// is never used as a cache key.
 std::string sha256hex(const char *data, size_t len)
 {
    unsigned char md[EVP_MAX_MD_SIZE];
    unsigned int mdLen = 0;
-   if (!EVP_Digest(data, len, md, &mdLen, EVP_sha256(), nullptr))
-      return std::string(data, len);
+   if (!EVP_Digest(data, len, md, &mdLen, EVP_sha256(), nullptr) || !mdLen)
+      return std::string();
    static const char hex[] = "0123456789abcdef";
    std::string out;
    out.reserve(mdLen * 2);
@@ -410,8 +423,9 @@ const char *Strip(const char *bTok, int &sz, int maxLen = -1)
    while (sTok < endPtr && isspace(static_cast<unsigned char>(*sTok))) sTok++;
    if (sTok >= endPtr) return 0;
 
-   if ((endPtr - sTok) >= 9 && hasPrefix(sTok, "Bearer%20")) sTok += 9;
-   else if ((endPtr - sTok) >= 7 && hasPrefix(sTok, "Bearer ")) sTok += 7;
+   // RFC 6750: the "Bearer" scheme name is case-insensitive.
+   if ((endPtr - sTok) >= 9 && strncasecmp(sTok, "Bearer%20", 9) == 0) sTok += 9;
+   else if ((endPtr - sTok) >= 7 && strncasecmp(sTok, "Bearer ", 7) == 0) sTok += 7;
 
    while (sTok < endPtr && isspace(static_cast<unsigned char>(*sTok))) sTok++;
    if (sTok >= endPtr) return 0;
@@ -421,20 +435,37 @@ const char *Strip(const char *bTok, int &sz, int maxLen = -1)
    return (sz > 0 ? sTok : 0);
 }
 
-std::atomic<int> expiry{1}; // 1=require, 0=ignore, -1=optional
-std::atomic<int> MaxTokSize{8192};
-std::atomic<int> ClockSkew{60};
-std::atomic JwksRefresh{300};
+// Defaults for every tunable; initSecProtocol() resets to these so that a
+// second initialization in the same process (e.g. a fallback security service
+// instance) never accumulates state from the first.
+constexpr int  kDefaultExpiry          = 1;     // 1=require, 0=ignore, -1=optional
+constexpr int  kDefaultMaxTokSize      = 8192;
+constexpr int  kDefaultClockSkew       = 60;
+constexpr int  kDefaultJwksRefresh     = 300;
+constexpr int  kDefaultJwksRefreshMin  = 30;    // forced-refresh cooldown (s)
+constexpr int  kDefaultTokenCacheMax   = 10000;
+constexpr int  kDefaultTokenCacheNoExpTTL = 60;
+const std::vector<std::string> kDefaultIdentityClaims = {
+   "preferred_username", "upn", "username", "name", "sub"
+};
+
+std::atomic<int> expiry{kDefaultExpiry};
+std::atomic<int> MaxTokSize{kDefaultMaxTokSize};
+std::atomic<int> ClockSkew{kDefaultClockSkew};
+std::atomic<int> JwksRefresh{kDefaultJwksRefresh};
+// Minimum interval between *forced* JWKS refreshes for one issuer. A forced
+// refresh is triggered by a token whose signature does not verify with the
+// cached keys; without a cooldown, unauthenticated clients could make the
+// server hammer the issuer's JWKS endpoint with garbage tokens.
+std::atomic<int> JwksRefreshMin{kDefaultJwksRefreshMin};
 bool customIdentityClaims = false;
 std::atomic<bool> DebugToken{false};
 std::atomic<bool> DebugTokenClaims{false};
-std::atomic<int> TokenCacheMax{10000};
-std::atomic TokenCacheNoExpTTL{60};
+std::atomic<int> TokenCacheMax{kDefaultTokenCacheMax};
+std::atomic<int> TokenCacheNoExpTTL{kDefaultTokenCacheNoExpTTL};
 std::string JwksCacheFile;
 int JwksCacheTTL = 0;
-std::vector<std::string> IdentityClaims = {
-   "preferred_username", "upn", "username", "name", "sub"
-};
+std::vector<std::string> IdentityClaims = kDefaultIdentityClaims;
 
 void freeKeys(std::map<std::string, EvpPkeyPtr> &keys);
 
@@ -447,15 +478,14 @@ struct IssuerPolicy {
    std::string basePath;
    std::vector<std::string> restrictedPaths;
 
+   // keysMtx guards jwksKeys/lastJwksLoad/lastForcedAttempt and is only ever
+   // held for in-memory work. fetchMtx serializes the (slow) network fetch so
+   // that a burst of concurrent refresh requests results in a single fetch.
    std::mutex keysMtx;
    std::map<std::string, EvpPkeyPtr> jwksKeys;
    time_t lastJwksLoad = 0;
-
-   ~IssuerPolicy()
-      {
-       std::scoped_lock lock(keysMtx);
-       freeKeys(jwksKeys);
-      }
+   time_t lastForcedAttempt = 0;
+   std::mutex fetchMtx;
 };
 
 std::vector<std::shared_ptr<IssuerPolicy>> IssuerPolicies;
@@ -498,11 +528,17 @@ void populateEntityAttrs(const std::string &payloadJSON,
       addIssuerPolicyEntityAttrs(policy, out);
 }
 
-std::string OIDCConfigPath = "/etc/xrootd/oidc.cfg";
+const char *const kDefaultOIDCConfigPath = "/etc/xrootd/oidc.cfg";
+std::string OIDCConfigPath = kDefaultOIDCConfigPath;
 bool OIDCConfigWatch = false;
 bool OIDCConfigStatValid = false;
 ino_t OIDCConfigIno = 0;
 time_t OIDCConfigMTime = 0;
+time_t OIDCConfigCTime = 0;
+off_t OIDCConfigSize = 0;
+// Set while one thread performs a reload so concurrent authentications that
+// observe the same change do not each re-read the file and re-fetch JWKS.
+std::atomic<bool> OIDCReloadInProgress{false};
 
 XrdSysLogger OIDCLogger;
 XrdSysError  OIDCLog(0, "secoidc_");
@@ -684,6 +720,7 @@ bool addIniKV(const std::string &keyIn, const std::string &valIn, bool inIssuer,
    if (key == "maxsz")                {appendCliOpt(opts, "-maxsz", &val); return true;}
    if (key == "expiry")               {appendCliOpt(opts, "-expiry", &val); return true;}
    if (key == "jwks-refresh")         {appendCliOpt(opts, "-jwks-refresh", &val); return true;}
+   if (key == "jwks-refresh-min")     {appendCliOpt(opts, "-jwks-refresh-min", &val); return true;}
    if (key == "jwks-cache-file")      {appendCliOpt(opts, "-jwks-cache-file", &val); return true;}
    if (key == "jwks-cache-ttl")       {appendCliOpt(opts, "-jwks-cache-ttl", &val); return true;}
    if (key == "clock-skew")           {appendCliOpt(opts, "-clock-skew", &val); return true;}
@@ -740,6 +777,8 @@ struct SafeFileResult {
    std::string contents;
    ino_t ino;
    time_t mtime;
+   time_t ctime;
+   off_t size;
    bool found;
 };
 
@@ -749,6 +788,8 @@ bool safeReadConfigFile(const char *path, SafeFileResult &result, std::string &e
    result.contents.clear();
    result.ino = 0;
    result.mtime = 0;
+   result.ctime = 0;
+   result.size = 0;
 
    int flags = O_RDONLY;
 #ifdef O_NOFOLLOW
@@ -815,13 +856,14 @@ bool safeReadConfigFile(const char *path, SafeFileResult &result, std::string &e
    result.contents.resize(got);
    result.ino = st.st_ino;
    result.mtime = st.st_mtime;
+   result.ctime = st.st_ctime;
+   result.size = st.st_size;
    result.found = true;
    return true;
 }
 
 bool loadOIDCIniAsArgs(const char *path, std::string &opts, bool &found,
-                       std::string &emsg, ino_t *inoOut = nullptr,
-                       time_t *mtimeOut = nullptr)
+                       std::string &emsg, SafeFileResult *metaOut = nullptr)
 {
    opts.clear();
    emsg.clear();
@@ -831,8 +873,13 @@ bool loadOIDCIniAsArgs(const char *path, std::string &opts, bool &found,
    if (!safeReadConfigFile(path, sfr, emsg)) return false;
    if (!sfr.found) return true;
    found = true;
-   if (inoOut) *inoOut = sfr.ino;
-   if (mtimeOut) *mtimeOut = sfr.mtime;
+   if (metaOut)
+      {metaOut->ino = sfr.ino;
+       metaOut->mtime = sfr.mtime;
+       metaOut->ctime = sfr.ctime;
+       metaOut->size = sfr.size;
+       metaOut->found = true;
+      }
 
    std::istringstream in(sfr.contents);
 
@@ -1102,11 +1149,16 @@ void clearTokenCache()
 
 // Lightweight metadata probe used on the authentication hot path: it does not
 // read the file contents, so an unchanged config costs only open()+fstat().
-bool statConfigFileMeta(const char *path, ino_t &ino, time_t &mtime,
+// The change signature is (inode, mtime, ctime, size) so that two edits within
+// the same second, or an in-place rewrite of the same size, are still noticed.
+bool statConfigFileMeta(const char *path, SafeFileResult &meta,
                         bool &found, std::string &emsg)
 {
-   ino = 0;
-   mtime = 0;
+   meta.ino = 0;
+   meta.mtime = 0;
+   meta.ctime = 0;
+   meta.size = 0;
+   meta.found = false;
    found = false;
 
    int flags = O_RDONLY;
@@ -1130,10 +1182,33 @@ bool statConfigFileMeta(const char *path, ino_t &ino, time_t &mtime,
       {emsg = std::string(path) + ": config path must be a regular file";
        return false;
       }
-   ino = st.st_ino;
-   mtime = st.st_mtime;
+   meta.ino = st.st_ino;
+   meta.mtime = st.st_mtime;
+   meta.ctime = st.st_ctime;
+   meta.size = st.st_size;
+   meta.found = true;
    found = true;
    return true;
+}
+
+// Must be called with ConfigMtx held.
+bool configMetaUnchangedLocked(const SafeFileResult &meta)
+{
+   return OIDCConfigStatValid
+       && meta.ino   == OIDCConfigIno
+       && meta.mtime == OIDCConfigMTime
+       && meta.ctime == OIDCConfigCTime
+       && meta.size  == OIDCConfigSize;
+}
+
+// Must be called with ConfigMtx held.
+void recordConfigMetaLocked(const SafeFileResult &meta)
+{
+   OIDCConfigIno = meta.ino;
+   OIDCConfigMTime = meta.mtime;
+   OIDCConfigCTime = meta.ctime;
+   OIDCConfigSize = meta.size;
+   OIDCConfigStatValid = true;
 }
 
 void maybeReloadOIDCFileConfig()
@@ -1147,11 +1222,10 @@ void maybeReloadOIDCFileConfig()
    std::string emsg;
 
    // Fast path: stat only. Avoid reading the (potentially large) file on every
-   // authentication; the full read+parse happens only when ino/mtime changes.
-   ino_t curIno = 0;
-   time_t curMtime = 0;
+   // authentication; the full read+parse happens only when the signature changes.
+   SafeFileResult cur;
    bool curFound = false;
-   if (!statConfigFileMeta(cfgPath.c_str(), curIno, curMtime, curFound, emsg))
+   if (!statConfigFileMeta(cfgPath.c_str(), cur, curFound, emsg))
       {
        OIDCLog.Emsg("Auth", "oidc", ("config stat failed: " + emsg).c_str());
        return;
@@ -1163,7 +1237,18 @@ void maybeReloadOIDCFileConfig()
       }
    {
       std::scoped_lock lock(ConfigMtx);
-      if (OIDCConfigStatValid && curIno == OIDCConfigIno && curMtime == OIDCConfigMTime) return;
+      if (configMetaUnchangedLocked(cur)) return;
+   }
+
+   // Only one thread performs the reload; others that observed the same change
+   // simply continue with the currently installed configuration.
+   if (OIDCReloadInProgress.exchange(true)) return;
+   struct ReloadGuard {~ReloadGuard() {OIDCReloadInProgress = false;}} reloadGuard;
+
+   // Re-check under the flag: the previous reloader may have just finished.
+   {
+      std::scoped_lock lock(ConfigMtx);
+      if (configMetaUnchangedLocked(cur)) return;
    }
 
    // Config changed (or first observation): read and parse the full contents.
@@ -1197,9 +1282,7 @@ void maybeReloadOIDCFileConfig()
    IssuerPolicies.swap(newPolicies);
    IssuerPolicyByIssuer.swap(newByIssuer);
    EmailIdentityMap.swap(newEmailMap);
-   OIDCConfigIno = sfr.ino;
-   OIDCConfigMTime = sfr.mtime;
-   OIDCConfigStatValid = true;
+   recordConfigMetaLocked(sfr);
    clearTokenCache();
    OIDCLog.Emsg("Auth", "oidc", ("config reloaded from " + cfgPath).c_str());
 }
@@ -1227,9 +1310,18 @@ size_t curlWriteCB(char *ptr, size_t sz, size_t nmemb, void *ud)
    return incoming;
 }
 
+// curl_global_init() is not thread-safe and must run exactly once per process,
+// regardless of how many times the plugin is (re)initialized.
+void ensureCurlGlobalInit()
+{
+   static std::once_flag once;
+   std::call_once(once, [] {curl_global_init(CURL_GLOBAL_DEFAULT);});
+}
+
 bool fetchURL(const std::string &url, std::string &body, std::string &emsg)
 {
    body.clear();
+   ensureCurlGlobalInit();
    CurlPtr c(curl_easy_init());
    if (!c) {emsg = "curl init failed"; return false;}
    FetchSink sink;
@@ -1246,6 +1338,9 @@ bool fetchURL(const std::string &url, std::string &body, std::string &emsg)
 #endif
    curl_easy_setopt(c.get(), CURLOPT_TIMEOUT, 15L);
    curl_easy_setopt(c.get(), CURLOPT_CONNECTTIMEOUT, 5L);
+   // Never let libcurl install signal handlers (SIGALRM for resolver timeouts);
+   // that is unsafe in a multithreaded server.
+   curl_easy_setopt(c.get(), CURLOPT_NOSIGNAL, 1L);
    curl_easy_setopt(c.get(), CURLOPT_WRITEFUNCTION, curlWriteCB);
    curl_easy_setopt(c.get(), CURLOPT_WRITEDATA, &sink);
    curl_easy_setopt(c.get(), CURLOPT_SSL_VERIFYPEER, 1L);
@@ -1285,6 +1380,13 @@ bool getUintClaim(const nlohmann::json &obj, const char *claim, uint64_t &out)
        out = static_cast<uint64_t>(v);
        return true;
       }
+   // Some issuers emit NumericDate claims as floating point (e.g. 1.7e9).
+   if (it->is_number_float())
+      {double v = it->get<double>();
+       if (!std::isfinite(v) || v < 0 || v >= 18446744073709551615.0) return false;
+       out = static_cast<uint64_t>(v);
+       return true;
+      }
    return false;
 }
 
@@ -1301,15 +1403,148 @@ bool hasStringInArrayClaim(const nlohmann::json &obj, const char *claim,
    return false;
 }
 
-bool verifyRS256(EVP_PKEY *pkey, std::string_view signedData,
-                 std::string_view sig)
+/******************************************************************************/
+/*                     J W S   a l g o r i t h m   s u p p o r t              */
+/******************************************************************************/
+
+// Supported JWS algorithms. This is a strict allowlist: anything else
+// (including "none" and the HMAC family) is rejected before any key lookup.
+enum class JwsFamily { RSA_PKCS1, RSA_PSS, ECDSA };
+
+struct JwsAlg {
+   const char *name;
+   JwsFamily   family;
+   const EVP_MD *(*md)();
+   int         ecCurveNid;   // ECDSA only: required curve
+   int         ecCoordBytes; // ECDSA only: size of r and s in the raw signature
+};
+
+const JwsAlg *lookupJwsAlg(const std::string &alg)
 {
+   static const JwsAlg kAlgs[] = {
+      {"RS256", JwsFamily::RSA_PKCS1, EVP_sha256, 0, 0},
+      {"RS384", JwsFamily::RSA_PKCS1, EVP_sha384, 0, 0},
+      {"RS512", JwsFamily::RSA_PKCS1, EVP_sha512, 0, 0},
+      {"PS256", JwsFamily::RSA_PSS,   EVP_sha256, 0, 0},
+      {"PS384", JwsFamily::RSA_PSS,   EVP_sha384, 0, 0},
+      {"PS512", JwsFamily::RSA_PSS,   EVP_sha512, 0, 0},
+      {"ES256", JwsFamily::ECDSA,     EVP_sha256, NID_X9_62_prime256v1, 32},
+      {"ES384", JwsFamily::ECDSA,     EVP_sha384, NID_secp384r1,        48},
+      {"ES512", JwsFamily::ECDSA,     EVP_sha512, NID_secp521r1,        66},
+   };
+   for (const auto &a : kAlgs)
+      if (alg == a.name) return &a;
+   return nullptr;
+}
+
+int ecCurveNidOf(EVP_PKEY *pkey)
+{
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+   char name[80] = {0};
+   size_t len = 0;
+   if (EVP_PKEY_get_utf8_string_param(pkey, OSSL_PKEY_PARAM_GROUP_NAME,
+                                      name, sizeof(name), &len) != 1)
+      return NID_undef;
+   int nid = OBJ_sn2nid(name);
+   if (nid == NID_undef) nid = OBJ_ln2nid(name);
+   return nid;
+#else
+   const EC_KEY *ec = EVP_PKEY_get0_EC_KEY(pkey);
+   if (!ec) return NID_undef;
+   const EC_GROUP *grp = EC_KEY_get0_group(ec);
+   return grp ? EC_GROUP_get_curve_name(grp) : NID_undef;
+#endif
+}
+
+// Convert a JWS raw ECDSA signature (r || s, fixed width) into the DER
+// encoding that EVP_DigestVerifyFinal expects.
+bool rawEcdsaToDer(std::string_view raw, int coordBytes, std::vector<unsigned char> &der)
+{
+   if (coordBytes <= 0 || raw.size() != static_cast<size_t>(2 * coordBytes)) return false;
+   const unsigned char *p = reinterpret_cast<const unsigned char *>(raw.data());
+   BignumPtr r(BN_bin2bn(p, coordBytes, nullptr));
+   BignumPtr s(BN_bin2bn(p + coordBytes, coordBytes, nullptr));
+   if (!r || !s) return false;
+   EcdsaSigPtr sig(ECDSA_SIG_new());
+   if (!sig) return false;
+   if (ECDSA_SIG_set0(sig.get(), r.get(), s.get()) != 1) return false;
+   r.release(); s.release(); // owned by sig now
+   int len = i2d_ECDSA_SIG(sig.get(), nullptr);
+   if (len <= 0) return false;
+   der.resize(static_cast<size_t>(len));
+   unsigned char *out = der.data();
+   return i2d_ECDSA_SIG(sig.get(), &out) == len;
+}
+
+bool verifyJWS(const JwsAlg &alg, EVP_PKEY *pkey, std::string_view signedData,
+               std::string_view sig)
+{
+   if (!pkey) return false;
+   const int keyType = EVP_PKEY_base_id(pkey);
+
+   std::vector<unsigned char> derSig;
+   const unsigned char *sigPtr = reinterpret_cast<const unsigned char *>(sig.data());
+   size_t sigLen = sig.size();
+
+   switch (alg.family)
+      {case JwsFamily::RSA_PKCS1:
+       case JwsFamily::RSA_PSS:
+            if (keyType != EVP_PKEY_RSA && keyType != EVP_PKEY_RSA_PSS) return false;
+            break;
+       case JwsFamily::ECDSA:
+            if (keyType != EVP_PKEY_EC) return false;
+            if (ecCurveNidOf(pkey) != alg.ecCurveNid) return false;
+            if (!rawEcdsaToDer(sig, alg.ecCoordBytes, derSig)) return false;
+            sigPtr = derSig.data();
+            sigLen = derSig.size();
+            break;
+      }
+
    EvpMdCtxPtr ctx(EVP_MD_CTX_new());
    if (!ctx) return false;
-   return EVP_DigestVerifyInit(ctx.get(), nullptr, EVP_sha256(), nullptr, pkey) == 1
-       && EVP_DigestVerifyUpdate(ctx.get(), signedData.data(), signedData.size()) == 1
-       && EVP_DigestVerifyFinal(ctx.get(),
-            reinterpret_cast<const unsigned char *>(sig.data()), sig.size()) == 1;
+   EVP_PKEY_CTX *pctx = nullptr; // owned by ctx
+   if (EVP_DigestVerifyInit(ctx.get(), &pctx, alg.md(), nullptr, pkey) != 1) return false;
+   if (alg.family == JwsFamily::RSA_PSS)
+      {if (!pctx
+       ||  EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_PSS_PADDING) <= 0
+       ||  EVP_PKEY_CTX_set_rsa_pss_saltlen(pctx, RSA_PSS_SALTLEN_DIGEST) <= 0)
+          return false;
+      }
+   return EVP_DigestVerifyUpdate(ctx.get(), signedData.data(), signedData.size()) == 1
+       && EVP_DigestVerifyFinal(ctx.get(), sigPtr, sigLen) == 1;
+}
+
+// JWKS entries without a "kid" are stored under a synthetic name that starts
+// with a NUL byte so it can never collide with a real kid.
+inline bool isAnonymousKid(const std::string &name)
+{
+   return !name.empty() && name[0] == '\0';
+}
+
+// Try the token signature against a set of keys.
+//  - token has a kid we hold      : only that key is tried.
+//  - token has a kid we don't hold: only JWKS entries *without* a kid are
+//                                   tried (some issuers publish kid-less keys
+//                                   yet stamp a kid into the header); a token
+//                                   naming a kid that is neither known nor
+//                                   coverable by an anonymous key fails.
+//  - token has no kid             : every key is tried.
+// Each attempt is a single public-key operation.
+bool verifyAgainstKeys(const JwsAlg &alg, const std::string &kid,
+                       const std::map<std::string, EvpPkeyPtr> &keys,
+                       std::string_view signedData, std::string_view sig)
+{
+   if (!kid.empty())
+      {auto it = keys.find(kid);
+       if (it != keys.end()) return verifyJWS(alg, it->second.get(), signedData, sig);
+       for (const auto &k : keys)
+           if (isAnonymousKid(k.first)
+           &&  verifyJWS(alg, k.second.get(), signedData, sig)) return true;
+       return false;
+      }
+   for (const auto &it : keys)
+       if (verifyJWS(alg, it.second.get(), signedData, sig)) return true;
+   return false;
 }
 
 EvpPkeyPtr makeRSAPublicKey(std::string_view modulus,
@@ -1357,6 +1592,77 @@ EvpPkeyPtr makeRSAPublicKey(std::string_view modulus,
 #endif
 }
 
+int jwkCurveNid(const std::string &crv, size_t &coordBytes)
+{
+   if (crv == "P-256") {coordBytes = 32; return NID_X9_62_prime256v1;}
+   if (crv == "P-384") {coordBytes = 48; return NID_secp384r1;}
+   if (crv == "P-521") {coordBytes = 66; return NID_secp521r1;}
+   coordBytes = 0;
+   return NID_undef;
+}
+
+// RFC 7518 requires fixed-width coordinates, but be tolerant of issuers that
+// strip leading zeros: left-pad to the curve size. Oversized input is invalid.
+bool padCoordinate(std::string_view in, size_t width, std::string &out)
+{
+   if (in.empty() || in.size() > width) return false;
+   out.assign(width - in.size(), '\0');
+   out.append(in.data(), in.size());
+   return true;
+}
+
+EvpPkeyPtr makeECPublicKey(const std::string &crv, std::string_view xIn,
+                           std::string_view yIn)
+{
+   size_t coordBytes = 0;
+   const int nid = jwkCurveNid(crv, coordBytes);
+   if (nid == NID_undef) return nullptr;
+   std::string x, y;
+   if (!padCoordinate(xIn, coordBytes, x) || !padCoordinate(yIn, coordBytes, y))
+      return nullptr;
+
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+   // Uncompressed point encoding: 0x04 || X || Y
+   std::string pub;
+   pub.reserve(1 + x.size() + y.size());
+   pub.push_back('\x04');
+   pub.append(x);
+   pub.append(y);
+
+   OsslParamBldPtr bld(OSSL_PARAM_BLD_new());
+   if (!bld) return nullptr;
+   const char *groupName = OBJ_nid2sn(nid);
+   if (!groupName) return nullptr;
+   if (OSSL_PARAM_BLD_push_utf8_string(bld.get(), OSSL_PKEY_PARAM_GROUP_NAME,
+                                       groupName, 0) <= 0
+   ||  OSSL_PARAM_BLD_push_octet_string(bld.get(), OSSL_PKEY_PARAM_PUB_KEY,
+                                        pub.data(), pub.size()) <= 0)
+      return nullptr;
+   OsslParamPtr params(OSSL_PARAM_BLD_to_param(bld.get()));
+   if (!params) return nullptr;
+   EvpPkeyCtxPtr ctx(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr));
+   if (!ctx) return nullptr;
+   EVP_PKEY *raw = nullptr;
+   if (EVP_PKEY_fromdata_init(ctx.get()) <= 0
+   ||  EVP_PKEY_fromdata(ctx.get(), &raw, EVP_PKEY_PUBLIC_KEY, params.get()) <= 0)
+      return nullptr;
+   return EvpPkeyPtr(raw);
+#else
+   EcKeyPtr ec(EC_KEY_new_by_curve_name(nid));
+   if (!ec) return nullptr;
+   BignumPtr bx(BN_bin2bn(reinterpret_cast<const unsigned char *>(x.data()), x.size(), nullptr));
+   BignumPtr by(BN_bin2bn(reinterpret_cast<const unsigned char *>(y.data()), y.size(), nullptr));
+   if (!bx || !by) return nullptr;
+   if (EC_KEY_set_public_key_affine_coordinates(ec.get(), bx.get(), by.get()) != 1)
+      return nullptr;
+   EvpPkeyPtr pkey(EVP_PKEY_new());
+   if (!pkey) return nullptr;
+   if (EVP_PKEY_assign_EC_KEY(pkey.get(), ec.get()) != 1) return nullptr;
+   ec.release(); // owned by pkey
+   return pkey;
+#endif
+}
+
 bool loadJWKS(const std::string &json, std::map<std::string, EvpPkeyPtr> &keys,
               std::string &emsg)
 {
@@ -1373,27 +1679,42 @@ bool loadJWKS(const std::string &json, std::map<std::string, EvpPkeyPtr> &keys,
        emsg = "invalid JWKS JSON: missing keys array";
        return false;
       }
+   size_t anonIdx = 0;
    for (const auto &kobj : *kIt)
       {
-       std::string kty, kid, n, e;
-       if (!getStringClaim(kobj, "kty", kty)
-       ||  !getStringClaim(kobj, "kid", kid)
-       ||  !getStringClaim(kobj, "n", n)
-       ||  !getStringClaim(kobj, "e", e))
-          continue;
-       if (kty != "RSA") continue;
+       std::string kty;
+       if (!getStringClaim(kobj, "kty", kty)) continue;
        std::string use;
        if (getStringClaim(kobj, "use", use) && use != "sig") continue;
-       std::string nb, eb;
-       if (!decodeBase64URL(n, nb) || !decodeBase64URL(e, eb))
-          continue;
-       EvpPkeyPtr pkey = makeRSAPublicKey(nb, eb);
+
+       EvpPkeyPtr pkey;
+       if (kty == "RSA")
+          {std::string n, e, nb, eb;
+           if (!getStringClaim(kobj, "n", n) || !getStringClaim(kobj, "e", e)) continue;
+           if (!decodeBase64URL(n, nb) || !decodeBase64URL(e, eb)) continue;
+           pkey = makeRSAPublicKey(nb, eb);
+          }
+       else if (kty == "EC")
+          {std::string crv, x, y, xb, yb;
+           if (!getStringClaim(kobj, "crv", crv)
+           ||  !getStringClaim(kobj, "x", x)
+           ||  !getStringClaim(kobj, "y", y)) continue;
+           if (!decodeBase64URL(x, xb) || !decodeBase64URL(y, yb)) continue;
+           pkey = makeECPublicKey(crv, xb, yb);
+          }
+       else continue;
        if (!pkey) continue;
+
+       // A JWK without "kid" is still usable (see verifyAgainstKeys). Store it
+       // under a synthetic name that cannot collide with a real kid (leading NUL).
+       std::string kid;
+       if (!getStringClaim(kobj, "kid", kid))
+          kid = std::string("\0nokid#", 7) + std::to_string(anonIdx++);
        // Assigning into the owning map releases any previous key for this kid.
        keys[kid] = std::move(pkey);
       }
    if (keys.empty())
-      {emsg = "no usable RSA keys in JWKS";
+      {emsg = "no usable RSA/EC signing keys in JWKS";
        return false;
       }
    return true;
@@ -1584,6 +1905,59 @@ void storeJWKSInDiskCacheForPolicy(std::shared_ptr<IssuerPolicy> policy,
       OIDCLog.Emsg("Auth", "oidc", ("jwks cache write failed: " + emsg).c_str());
 }
 
+// Install a freshly loaded key set. Only in-memory work happens under keysMtx.
+void installKeysLocked(IssuerPolicy &policy, std::map<std::string, EvpPkeyPtr> &keys,
+                       time_t now)
+{
+   freeKeys(policy.jwksKeys);
+   policy.jwksKeys.swap(keys);
+   policy.lastJwksLoad = now;
+}
+
+// Fetch the JWKS for a policy from the network (via discovery if needed).
+// Runs without any policy lock held. On success jwksUrl/jwksJson are set.
+bool fetchJWKSDocument(const IssuerPolicy &policy, std::string &jwksUrl,
+                       std::string &jwksJson, std::string &emsg)
+{
+   jwksUrl = policy.jwksURL;
+   if (jwksUrl.empty())
+      {if (policy.oidcConfigURL.empty())
+          {emsg = "OIDC config URL not set";
+           return false;
+          }
+       std::string cfg;
+       if (!fetchURL(policy.oidcConfigURL, cfg, emsg))
+          {emsg = "failed OIDC discovery fetch: " + emsg;
+           return false;
+          }
+       if (!getStringClaim(cfg, "jwks_uri", jwksUrl))
+          {emsg = "jwks_uri missing or empty in OIDC discovery";
+           return false;
+          }
+       if (!hasPrefix(jwksUrl.c_str(), "https://"))
+          {emsg = "jwks_uri in discovery must use https://";
+           return false;
+          }
+      }
+   if (!fetchURL(jwksUrl, jwksJson, emsg))
+      {emsg = "failed JWKS fetch: " + emsg;
+       return false;
+      }
+   return true;
+}
+
+// Refresh the key set of an issuer.
+//
+//  force == false : periodic refresh; a no-op while the cached keys are younger
+//                   than -jwks-refresh.
+//  force == true  : the caller saw a signature that did not verify and suspects
+//                   key rotation. To keep unauthenticated clients from turning
+//                   this into a fetch storm against the issuer, forced refreshes
+//                   are rate-limited to one per -jwks-refresh-min seconds per
+//                   issuer (the limit is waived while no keys are held at all).
+//
+// The network fetch never runs while keysMtx is held, so token verification
+// for this issuer is never blocked behind a slow or unreachable JWKS endpoint.
 bool refreshJWKSForPolicy(std::shared_ptr<IssuerPolicy> policy, bool force,
                           std::string &emsg)
 {
@@ -1591,57 +1965,59 @@ bool refreshJWKSForPolicy(std::shared_ptr<IssuerPolicy> policy, bool force,
       {emsg = "missing issuer policy";
        return false;
       }
-   std::scoped_lock lock(policy->keysMtx);
-   time_t now = time(nullptr);
-   if (!force && !policy->jwksKeys.empty()
-   && (now - policy->lastJwksLoad) < JwksRefresh) return true;
+   const time_t entered = time(nullptr);
 
+   {
+      std::scoped_lock lock(policy->keysMtx);
+      const bool haveKeys = !policy->jwksKeys.empty();
+      if (!force && haveKeys && (entered - policy->lastJwksLoad) < JwksRefresh)
+         return true;
+      if (force && haveKeys
+      &&  policy->lastForcedAttempt
+      &&  (entered - policy->lastForcedAttempt) < JwksRefreshMin)
+         {emsg = "JWKS refresh rate-limited";
+          return false;
+         }
+      // Claim the forced-refresh slot before fetching so that concurrent callers
+      // within the cooldown fail fast instead of queueing behind this fetch.
+      if (force) policy->lastForcedAttempt = entered;
+   }
+
+   // Serialize the slow path per issuer: one fetch serves a whole burst.
+   std::scoped_lock fetchLock(policy->fetchMtx);
+   {
+      std::scoped_lock lock(policy->keysMtx);
+      // Another thread completed a refresh while we waited for fetchMtx.
+      if (!policy->jwksKeys.empty() && policy->lastJwksLoad >= entered) return true;
+   }
+
+   const time_t now = time(nullptr);
+
+   // Periodic refresh may be served from the on-disk cache when still fresh.
    if (!force && JwksCacheFile.size())
       {
        std::map<std::string, EvpPkeyPtr> cachedKeys;
        std::string cmsg;
        if (loadJWKSFromDiskCacheForPolicy(policy, now, cachedKeys, cmsg))
           {
-           freeKeys(policy->jwksKeys);
-           policy->jwksKeys.swap(cachedKeys);
-           policy->lastJwksLoad = now;
+           std::scoped_lock lock(policy->keysMtx);
+           installKeysLocked(*policy, cachedKeys, now);
            return true;
           }
       }
 
-   std::string useJwks = policy->jwksURL;
-   if (useJwks.empty())
-      {if (policy->oidcConfigURL.empty())
-          {emsg = "OIDC config URL not set";
-           return false;
-          }
-       std::string cfg;
-       if (!fetchURL(policy->oidcConfigURL, cfg, emsg))
-          {emsg = "failed OIDC discovery fetch: " + emsg;
-           return false;
-          }
-       if (!getStringClaim(cfg, "jwks_uri", useJwks))
-          {emsg = "jwks_uri missing or empty in OIDC discovery";
-           return false;
-          }
-       if (!hasPrefix(useJwks.c_str(), "https://"))
-          {emsg = "jwks_uri in discovery must use https://";
-           return false;
-          }
-      }
-
-   std::string jwks;
-   if (!fetchURL(useJwks, jwks, emsg))
+   std::string useJwks, jwks;
+   if (!fetchJWKSDocument(*policy, useJwks, jwks, emsg))
       {
-       std::string fetchErr = "failed JWKS fetch: " + emsg;
+       // Network failure: fall back to the disk cache if we have one.
+       std::string fetchErr = emsg;
        std::map<std::string, EvpPkeyPtr> cachedKeys;
        std::string cmsg;
        if (JwksCacheFile.size()
        &&  loadJWKSFromDiskCacheForPolicy(policy, now, cachedKeys, cmsg))
           {
-           freeKeys(policy->jwksKeys);
-           policy->jwksKeys.swap(cachedKeys);
-           policy->lastJwksLoad = now;
+           std::scoped_lock lock(policy->keysMtx);
+           installKeysLocked(*policy, cachedKeys, now);
            emsg.clear();
            return true;
           }
@@ -1651,9 +2027,10 @@ bool refreshJWKSForPolicy(std::shared_ptr<IssuerPolicy> policy, bool force,
 
    std::map<std::string, EvpPkeyPtr> newKeys;
    if (!loadJWKS(jwks, newKeys, emsg)) return false;
-   freeKeys(policy->jwksKeys);
-   policy->jwksKeys.swap(newKeys);
-   policy->lastJwksLoad = now;
+   {
+      std::scoped_lock lock(policy->keysMtx);
+      installKeysLocked(*policy, newKeys, now);
+   }
    storeJWKSInDiskCacheForPolicy(policy, useJwks, jwks, now);
    return true;
 }
@@ -1709,7 +2086,8 @@ bool parseAndValidateJWT(const char *rawTok, std::string &payloadJSON,
    std::string alg;
    std::string kid;
    if (!getStringClaim(hdrObj, "alg", alg)) {emsg = "JWT alg missing"; return false;}
-   if (alg != "RS256") {emsg = "unsupported JWT alg"; return false;}
+   const JwsAlg *jwsAlg = lookupJwsAlg(alg);
+   if (!jwsAlg) {emsg = "unsupported JWT alg"; return false;}
    getStringClaim(hdrObj, "kid", kid);
 
    std::string tokIss;
@@ -1749,18 +2127,7 @@ bool parseAndValidateJWT(const char *rawTok, std::string &payloadJSON,
    bool verified = false;
    {
       std::scoped_lock lock(policy->keysMtx);
-      if (!kid.empty())
-         {auto it = policy->jwksKeys.find(kid);
-          if (it != policy->jwksKeys.end())
-             verified = verifyRS256(it->second.get(), signedData, sig);
-         } else {
-          for (auto &it : policy->jwksKeys)
-              {if (verifyRS256(it.second.get(), signedData, sig))
-                  {verified = true;
-                   break;
-                  }
-              }
-         }
+      verified = verifyAgainstKeys(*jwsAlg, kid, policy->jwksKeys, signedData, sig);
    }
    if (!verified)
       {
@@ -1770,21 +2137,17 @@ bool parseAndValidateJWT(const char *rawTok, std::string &payloadJSON,
           {emsg = "JWT signature validation failed";
            return false;
           }
-       if (!refreshJWKSForPolicy(policy, true, emsg))
-          return false;
-       std::scoped_lock lock(policy->keysMtx);
-       if (!kid.empty())
-          {auto it = policy->jwksKeys.find(kid);
-           if (it != policy->jwksKeys.end())
-              verified = verifyRS256(it->second.get(), signedData, sig);
-          } else {
-           for (auto &it : policy->jwksKeys)
-               {if (verifyRS256(it.second.get(), signedData, sig))
-                   {verified = true;
-                    break;
-                   }
-               }
+       // The signature may have been produced with a freshly rotated key; try
+       // once more after a (rate-limited) forced refresh. A refused or failed
+       // refresh is reported as a signature failure, which is what the caller
+       // actually observed.
+       std::string rmsg;
+       if (!refreshJWKSForPolicy(policy, true, rmsg))
+          {emsg = "JWT signature validation failed (" + rmsg + ")";
+           return false;
           }
+       std::scoped_lock lock(policy->keysMtx);
+       verified = verifyAgainstKeys(*jwsAlg, kid, policy->jwksKeys, signedData, sig);
        if (!verified) {emsg = "JWT signature validation failed"; return false;}
       }
 
@@ -2008,8 +2371,12 @@ OptResult applyNumericInitOpt(const char *val, XrdOucTokenizer &cfg,
        MaxTokSize = static_cast<int>(v); return OptResult::Ok;
       }
    if (!strcmp(val, "-jwks-refresh"))
-      {if (!nextIntArg(cfg, erp, "-jwks-refresh", 1, LONG_MAX, false, v)) return OptResult::Error;
+      {if (!nextIntArg(cfg, erp, "-jwks-refresh", 1, INT_MAX, false, v)) return OptResult::Error;
        JwksRefresh = static_cast<int>(v); return OptResult::Ok;
+      }
+   if (!strcmp(val, "-jwks-refresh-min"))
+      {if (!nextIntArg(cfg, erp, "-jwks-refresh-min", 0, INT_MAX, false, v)) return OptResult::Error;
+       JwksRefreshMin = static_cast<int>(v); return OptResult::Ok;
       }
    if (!strcmp(val, "-jwks-cache-ttl"))
       {if (!nextIntArg(cfg, erp, "-jwks-cache-ttl", 0, LONG_MAX, false, v)) return OptResult::Error;
@@ -2258,6 +2625,10 @@ bool validateToken(const char *rawTok, std::string &identity, std::string &emsg,
 
    std::string payloadJSON, headerJSON, msgRC, identityMethod;
    std::string tokKey = sha256hex(tok, static_cast<size_t>(tlen));
+   if (tokKey.empty())
+      {emsg = "token fingerprint failed";
+       return false;
+      }
    uint64_t now = static_cast<uint64_t>(time(nullptr));
    CachedTokenEntry cached;
    if (tokenCacheLookup(tokKey, now, cached))
@@ -2287,45 +2658,78 @@ bool validateToken(const char *rawTok, std::string &identity, std::string &emsg,
    ins.identityMethod = identityMethod;
    ins.headerJSON = headerJSON;
    ins.payloadJSON = payloadJSON;
-   ins.expiresAt = (expOut ? expOut : now + static_cast<uint64_t>(TokenCacheNoExpTTL));
+   // Cache lifetime: when exp is enforced, the entry lives exactly as long as
+   // validation would keep accepting the token (exp + clock skew). When exp is
+   // ignored, or absent, fall back to the no-exp TTL; otherwise an already
+   // expired-but-accepted token would be inserted dead and never hit.
+   if (expOut && expiry != 0)
+      ins.expiresAt = expOut + static_cast<uint64_t>(ClockSkew.load());
+   else
+      ins.expiresAt = now + static_cast<uint64_t>(TokenCacheNoExpTTL.load());
    tokenCacheStore(tokKey, ins, now);
    if (expTime) *expTime = ins.expiresAt;
    if (entityAttrs) populateEntityAttrs(payloadJSON, *entityAttrs);
    return true;
 }
 
-char *initSecProtocol(const char *parms, XrdOucErrInfo *erp)
+// Return every tunable to its built-in default. initSecProtocol() may run more
+// than once in a process (e.g. when a second XrdSecService instance is created);
+// each run must start from a clean slate rather than layering onto the last.
+void resetGlobalsToDefaults()
 {
-   OIDCLog.logger(&OIDCLogger);
-
    {
       std::scoped_lock lock(ConfigMtx);
       clearIssuerPolicies();
       EmailIdentityMap.clear();
+      OIDCConfigPath = kDefaultOIDCConfigPath;
+      OIDCConfigWatch = false;
+      OIDCConfigStatValid = false;
+      OIDCConfigIno = 0;
+      OIDCConfigMTime = 0;
+      OIDCConfigCTime = 0;
+      OIDCConfigSize = 0;
    }
    EntityClaimMappings.clear();
    JwksCacheFile.clear();
    JwksCacheTTL = 0;
+   expiry = kDefaultExpiry;
+   MaxTokSize = kDefaultMaxTokSize;
+   ClockSkew = kDefaultClockSkew;
+   JwksRefresh = kDefaultJwksRefresh;
+   JwksRefreshMin = kDefaultJwksRefreshMin;
+   TokenCacheMax = kDefaultTokenCacheMax;
+   TokenCacheNoExpTTL = kDefaultTokenCacheNoExpTTL;
+   DebugToken = false;
+   DebugTokenClaims = false;
+   customIdentityClaims = false;
+   IdentityClaims = kDefaultIdentityClaims;
+   clearTokenCache();
+   TokenCacheHits = 0;
+   TokenCacheMisses = 0;
+}
+
+char *initSecProtocol(const char *parms, XrdOucErrInfo *erp)
+{
+   OIDCLog.logger(&OIDCLogger);
+
+   resetGlobalsToDefaults();
    std::shared_ptr<IssuerPolicy> curPolicy;
    std::string fileBackedParms;
    std::string inlineParms;
-   std::string selectedCfgPath = "/etc/xrootd/oidc.cfg";
+   std::string selectedCfgPath = kDefaultOIDCConfigPath;
    bool requestedCfgOverride = false;
    bool loadedCfgFile = false;
-   OIDCConfigWatch = false;
-   OIDCConfigStatValid = false;
 
    if (!prescanInitParms(parms, selectedCfgPath, requestedCfgOverride, inlineParms, erp))
       return nullptr;
 
-   ino_t cfgIno = 0;
-   time_t cfgMtime = 0;
+   SafeFileResult cfgMeta{};
    if (!parms || !*parms || requestedCfgOverride)
       {
        bool cfgFound = false;
        std::string cfgErr;
        if (!loadOIDCIniAsArgs(selectedCfgPath.c_str(), fileBackedParms, cfgFound, cfgErr,
-                              &cfgIno, &cfgMtime))
+                              &cfgMeta))
           {Fatal(erp, cfgErr.c_str(), EINVAL);
            return nullptr;
           }
@@ -2359,16 +2763,15 @@ char *initSecProtocol(const char *parms, XrdOucErrInfo *erp)
        return nullptr;
       }
 
-   curl_global_init(CURL_GLOBAL_DEFAULT);
+   ensureCurlGlobalInit();
 
    if (!validateAndWarmInitIssuers(erp)) return nullptr;
 
    if (loadedCfgFile)
       {
+       std::scoped_lock lock(ConfigMtx);
        OIDCConfigPath = selectedCfgPath;
-       OIDCConfigIno = cfgIno;
-       OIDCConfigMTime = cfgMtime;
-       OIDCConfigStatValid = true;
+       recordConfigMetaLocked(cfgMeta);
        OIDCConfigWatch = true;
       }
 
@@ -2382,6 +2785,11 @@ char *initSecProtocol(const char *parms, XrdOucErrInfo *erp)
 bool IsConfigured()
 {
    return detail::isConfigured();
+}
+
+int MaxTokenSize()
+{
+   return detail::MaxTokSize.load();
 }
 
 const char *StripToken(const char *bTok, int &sz, int maxLen)

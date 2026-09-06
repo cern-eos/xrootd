@@ -29,7 +29,8 @@ When a token file is used (`*_TOKEN_FILE`, `XDG_RUNTIME_DIR/bt_u<uid>`,
 
 `XrdSecProtocoloidcInit()` supports:
 
-- `-maxsz <num>`: maximum token size (default 8192, max 524288)
+- `-maxsz <num>`: maximum token size (default 8192, max 524288); enforced on
+both the client and the server side
 - `-expiry {ignore|optional|required}`:
   - `ignore` = do not enforce the expiry claim (a present `exp` is not checked)
   - `optional` = enforce only if expiry present
@@ -41,6 +42,13 @@ may be repeated for the current issuer
 - `-oidc-config-url <https-url>`: OpenID discovery URL (used to locate JWKS URI)
 - `-jwks-url <https-url>`: explicit JWKS endpoint (overrides discovery lookup)
 - `-jwks-refresh <seconds>`: JWKS refresh cache interval (default 300)
+- `-jwks-refresh-min <seconds>`: minimum interval between *forced* JWKS
+refreshes per issuer (default 30; `0` disables the cooldown). A forced refresh
+is triggered when a token's signature does not verify with the cached keys
+(suspected key rotation). The cooldown stops unauthenticated clients from
+turning garbage tokens into a fetch storm against the issuer; while it is in
+effect such tokens fail immediately with a signature error. The cooldown is
+waived while no keys are held at all.
 - `-jwks-cache-file <path>`: optional on-disk JWKS cache file shared across
 issuers (disabled by default)
 - `-jwks-cache-ttl <seconds>`: TTL for on-disk cached issuer keys
@@ -128,10 +136,22 @@ configuration; `http.oidc` only enables bearer-token handling over HTTPS.
 Bearer tokens may be sent via the `Authorization` header (with `http.header2cgi`)
 or as an `authz` CGI parameter.
 
-On HTTP keep-alive connections, a changed `Authorization` bearer token is
-detected and triggers re-validation, a new `XrdSecEntity`, and a fresh xrootd
-`Bridge` login. Repeating the same token skips re-validation. Client-certificate
-identities still take precedence and are not replaced by bearer tokens.
+Bearer identity is a per-request property, also on HTTP keep-alive connections:
+every request that carries a token is validated (the plugin's validated-token
+cache makes a repeat of the same token cost a SHA-256 and a map lookup), so an
+expired token stops working at expiry even on a long-lived connection. A
+changed token replaces the previous identity with a fresh `XrdSecEntity` (no
+attributes of the old token survive) and a new xrootd `Bridge` login; an
+unchanged, still-valid token keeps the existing login. In `on`/`optional` mode a
+request without a token on a previously bearer-authenticated connection reverts
+to the anonymous identity; in `require` mode it is rejected with 401.
+Client-certificate identities still take precedence and are not replaced by
+bearer tokens.
+
+When `xrootd.seclib` is configured, XrdHttp reuses the xrootd protocol's
+security framework instance (published in the shared xrd environment as
+`XrdSecService*`), so `sec.protocol oidc` is initialized exactly once per
+process. Only if none is available does XrdHttp load its own instance.
 
 ## Server-side identity mapping
 
@@ -331,6 +351,7 @@ base_path/restricted_path)
 maxsz = 8192
 expiry = required
 jwks-refresh = 300
+jwks-refresh-min = 30
 jwks-cache-file = /var/lib/xrootd/oidc-jwks-cache.ini
 jwks-cache-ttl = 600
 clock-skew = 60
@@ -386,11 +407,25 @@ member) matches one of them, and a token lacking an `aud` claim is rejected.
 ## Notes
 
 - Protocol id on the wire is `oidc`.
-- Accepted JWT signature algorithm is currently `RS256`; tokens using any other
-`alg` (including `none` or HMAC variants) or with no `alg` are rejected.
+- Accepted JWT signature algorithms are `RS256/RS384/RS512` (RSASSA-PKCS1-v1_5),
+`PS256/PS384/PS512` (RSASSA-PSS) and `ES256/ES384/ES512` (ECDSA on P-256/P-384/
+P-521). The key type and, for ECDSA, the curve must match the algorithm. Tokens
+using any other `alg` (including `none` and the HMAC family) or with no `alg`
+are rejected. JWKS entries of type `RSA` and `EC` are loaded; entries without a
+`kid` are accepted and used for kid-less tokens and for tokens whose `kid` is
+not otherwise known.
+- The `Bearer` scheme prefix is matched case-insensitively (RFC 6750).
+- `exp`/`nbf` may be integers or floating-point NumericDate values.
 - OIDC discovery and JWKS endpoints must use `https://`.
+- JWKS fetches never run while the per-issuer key lock is held, so a slow or
+unreachable JWKS endpoint does not block token verification for that issuer;
+concurrent refresh requests for one issuer result in a single fetch.
 - Server-side token cache is enabled by default and keyed by the SHA-256 hash
-of the token (the raw token value is never used as a map key).
+of the token (the raw token value is never used as a map key; if the digest
+fails, validation fails). Entries live until `exp + clock-skew`, or for
+`-token-cache-noexp-ttl` when `exp` is absent or ignored.
+- Config-file reload detection uses inode, mtime, ctime and size; only one
+thread performs a reload at a time.
 - Client-side debug logging can be enabled by setting the `XrdSecDEBUG`
 environment variable to a truthy value (e.g. `1`, `on`, `true`, `yes`); it
 logs which token source/file the client selected.

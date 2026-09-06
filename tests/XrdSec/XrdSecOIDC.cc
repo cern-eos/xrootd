@@ -222,6 +222,10 @@ void ResetGlobalsForTest()
   TokenCache.clear();
   TokenCacheHits = 0;
   TokenCacheMisses = 0;
+  DebugToken = false;
+  DebugTokenClaims = false;
+  JwksRefreshMin = kDefaultJwksRefreshMin;
+  OIDCLog.logger(&OIDCLogger); // initSecProtocol() normally binds this
 }
 
 } // namespace
@@ -1425,4 +1429,581 @@ TEST(XrdSecOIDCTest, AuthenticateRejectsMalformedFraming)
     XrdSecCredentials c(b, 7);
     EXPECT_EQ(prot.Authenticate(&c, nullptr, nullptr), -1);
   }
+}
+
+// =============================================================================
+// Hardening review follow-ups
+// =============================================================================
+
+namespace {
+
+// Left-pad a BIGNUM to a fixed width and base64url-encode it (JWK EC coords
+// and JWS ECDSA signature halves are fixed width).
+std::string BigNumToBase64URLPadded(const BIGNUM *bn, int width)
+{
+  std::vector<unsigned char> buf(width);
+  if (BN_bn2binpad(bn, buf.data(), width) != width) {
+    ADD_FAILURE() << "BN_bn2binpad failed";
+    return std::string();
+  }
+  return Base64URLEncode(buf.data(), buf.size());
+}
+
+struct EcKeyMaterial {
+  EVP_PKEY *pkey{nullptr};
+  std::string jwks;
+};
+
+// Generate a P-256 key pair and the matching JWKS document (kid "e1").
+EcKeyMaterial MakeEcKeyAndJWKS(const char *kid = "e1")
+{
+  EcKeyMaterial km;
+  EvpPkeyCtxPtr ctx(EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr));
+  if (!ctx || EVP_PKEY_keygen_init(ctx.get()) != 1 ||
+      EVP_PKEY_CTX_set_ec_paramgen_curve_nid(ctx.get(), NID_X9_62_prime256v1) != 1) {
+    ADD_FAILURE() << "EC keygen setup failed";
+    return km;
+  }
+  if (EVP_PKEY_keygen(ctx.get(), &km.pkey) != 1 || !km.pkey) {
+    ADD_FAILURE() << "EC keygen failed";
+    km.pkey = nullptr;
+    return km;
+  }
+
+  BIGNUM *x = nullptr;
+  BIGNUM *y = nullptr;
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+  if (EVP_PKEY_get_bn_param(km.pkey, OSSL_PKEY_PARAM_EC_PUB_X, &x) != 1 ||
+      EVP_PKEY_get_bn_param(km.pkey, OSSL_PKEY_PARAM_EC_PUB_Y, &y) != 1) {
+    ADD_FAILURE() << "failed to extract EC x/y";
+    if (x) BN_free(x);
+    if (y) BN_free(y);
+    EVP_PKEY_free(km.pkey);
+    km.pkey = nullptr;
+    return km;
+  }
+#else
+  const EC_KEY *ec = EVP_PKEY_get0_EC_KEY(km.pkey);
+  x = BN_new();
+  y = BN_new();
+  if (!ec || !x || !y ||
+      EC_POINT_get_affine_coordinates(EC_KEY_get0_group(ec),
+                                      EC_KEY_get0_public_key(ec), x, y, nullptr) != 1) {
+    ADD_FAILURE() << "failed to extract EC x/y";
+    if (x) BN_free(x);
+    if (y) BN_free(y);
+    EVP_PKEY_free(km.pkey);
+    km.pkey = nullptr;
+    return km;
+  }
+#endif
+  std::string kidJson = kid ? std::string("\"kid\":\"") + kid + "\"," : std::string();
+  km.jwks = "{\"keys\":[{\"kty\":\"EC\"," + kidJson + "\"crv\":\"P-256\",\"x\":\"" +
+            BigNumToBase64URLPadded(x, 32) + "\",\"y\":\"" +
+            BigNumToBase64URLPadded(y, 32) + "\"}]}";
+  BN_free(x);
+  BN_free(y);
+  return km;
+}
+
+// ES256: EVP_DigestSign yields a DER ECDSA-Sig-Value; JWS wants raw r||s.
+std::string SignES256(EVP_PKEY *pkey, const std::string &data)
+{
+  EvpMdCtxPtr mctx(EVP_MD_CTX_new());
+  if (!mctx ||
+      EVP_DigestSignInit(mctx.get(), nullptr, EVP_sha256(), nullptr, pkey) != 1 ||
+      EVP_DigestSignUpdate(mctx.get(), data.data(), data.size()) != 1) {
+    ADD_FAILURE() << "ES256 sign init failed";
+    return std::string();
+  }
+  size_t siglen = 0;
+  if (EVP_DigestSignFinal(mctx.get(), nullptr, &siglen) != 1) return std::string();
+  std::vector<unsigned char> der(siglen);
+  if (EVP_DigestSignFinal(mctx.get(), der.data(), &siglen) != 1) return std::string();
+  const unsigned char *p = der.data();
+  EcdsaSigPtr sig(d2i_ECDSA_SIG(nullptr, &p, static_cast<long>(siglen)));
+  if (!sig) {
+    ADD_FAILURE() << "d2i_ECDSA_SIG failed";
+    return std::string();
+  }
+  const BIGNUM *r = nullptr;
+  const BIGNUM *s = nullptr;
+  ECDSA_SIG_get0(sig.get(), &r, &s);
+  std::vector<unsigned char> raw(64);
+  BN_bn2binpad(r, raw.data(), 32);
+  BN_bn2binpad(s, raw.data() + 32, 32);
+  return Base64URLEncode(raw.data(), raw.size());
+}
+
+// PS256: RSASSA-PSS with SHA-256 and salt length == digest length.
+std::string SignPS256(EVP_PKEY *pkey, const std::string &data)
+{
+  EvpMdCtxPtr mctx(EVP_MD_CTX_new());
+  EVP_PKEY_CTX *pctx = nullptr;
+  if (!mctx ||
+      EVP_DigestSignInit(mctx.get(), &pctx, EVP_sha256(), nullptr, pkey) != 1 ||
+      EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_PSS_PADDING) <= 0 ||
+      EVP_PKEY_CTX_set_rsa_pss_saltlen(pctx, RSA_PSS_SALTLEN_DIGEST) <= 0 ||
+      EVP_DigestSignUpdate(mctx.get(), data.data(), data.size()) != 1) {
+    ADD_FAILURE() << "PS256 sign init failed";
+    return std::string();
+  }
+  size_t siglen = 0;
+  if (EVP_DigestSignFinal(mctx.get(), nullptr, &siglen) != 1) return std::string();
+  std::vector<unsigned char> sig(siglen);
+  if (EVP_DigestSignFinal(mctx.get(), sig.data(), &siglen) != 1) return std::string();
+  return Base64URLEncode(sig.data(), siglen);
+}
+
+std::string StandardPayload(const char *sub = "alice")
+{
+  return "{" + IssuerClaim() + R"(,"aud":"xrootd","exp":)" +
+         std::to_string(static_cast<long long>(NowSeconds() + 600)) +
+         ",\"sub\":\"" + sub + "\"}";
+}
+
+bool Validate(const std::string &token, std::string &identity, std::string &emsg)
+{
+  std::string outHdr, outPayload;
+  uint64_t expOut = 0;
+  return parseAndValidateJWT(token.c_str(), outPayload, outHdr, identity, expOut, emsg);
+}
+
+} // namespace
+
+// --- Additional JWS algorithms ------------------------------------------------
+
+TEST(XrdSecOIDCTest, Es256TokenVerifiesAgainstEcJwk)
+{
+  ResetGlobalsForTest();
+  EcKeyMaterial km = MakeEcKeyAndJWKS();
+  ASSERT_NE(km.pkey, nullptr);
+
+  std::string emsg;
+  ASSERT_TRUE(loadJWKS(km.jwks, IssuerPolicies[0]->jwksKeys, emsg)) << emsg;
+  IssuerPolicies[0]->lastJwksLoad = NowSeconds();
+  ASSERT_NE(IssuerPolicies[0]->jwksKeys.find("e1"), IssuerPolicies[0]->jwksKeys.end());
+
+  const std::string hdr = R"({"alg":"ES256","kid":"e1","typ":"JWT"})";
+  const std::string signedData = Base64URLEncode(hdr) + "." + Base64URLEncode(StandardPayload());
+  const std::string token = signedData + "." + SignES256(km.pkey, signedData);
+
+  std::string identity;
+  ASSERT_TRUE(Validate(token, identity, emsg)) << emsg;
+  EXPECT_EQ(identity, "alice");
+
+  // Tampering with the payload must break the signature.
+  const std::string bad = Base64URLEncode(hdr) + "." + Base64URLEncode(StandardPayload("mallory")) +
+                          "." + token.substr(token.rfind('.') + 1);
+  EXPECT_FALSE(Validate(bad, identity, emsg));
+  EXPECT_NE(emsg.find("signature"), std::string::npos);
+
+  // A raw ECDSA signature of the wrong width is rejected before verification.
+  const std::string shortSig = signedData + "." + Base64URLEncode(std::string(63, 'A'));
+  EXPECT_FALSE(Validate(shortSig, identity, emsg));
+
+  EVP_PKEY_free(km.pkey);
+  freeKeys(IssuerPolicies[0]->jwksKeys);
+}
+
+TEST(XrdSecOIDCTest, Es256RejectsRsaKeyAndRs256RejectsEcKey)
+{
+  ResetGlobalsForTest();
+  KeyMaterial rsa = MakeKeyAndJWKS();
+  EcKeyMaterial ec = MakeEcKeyAndJWKS();
+  ASSERT_NE(rsa.pkey, nullptr);
+  ASSERT_NE(ec.pkey, nullptr);
+
+  // Only the RSA key is installed under kid "k1".
+  InstallTestKey(rsa, "k1");
+
+  // Header claims ES256 with kid k1 (an RSA key): key-type confusion must fail.
+  {
+    const std::string hdr = R"({"alg":"ES256","kid":"k1","typ":"JWT"})";
+    const std::string signedData = Base64URLEncode(hdr) + "." + Base64URLEncode(StandardPayload());
+    const std::string token = signedData + "." + SignES256(ec.pkey, signedData);
+    std::string identity, emsg;
+    EXPECT_FALSE(Validate(token, identity, emsg));
+  }
+  // Header claims RS256 but only an EC key is present under that kid.
+  {
+    freeKeys(IssuerPolicies[0]->jwksKeys);
+    std::string emsg;
+    ASSERT_TRUE(loadJWKS(ec.jwks, IssuerPolicies[0]->jwksKeys, emsg)) << emsg;
+    IssuerPolicies[0]->lastJwksLoad = NowSeconds();
+    const std::string hdr = R"({"alg":"RS256","kid":"e1","typ":"JWT"})";
+    const std::string token = MakeJWT(rsa.pkey, hdr, StandardPayload());
+    std::string identity;
+    EXPECT_FALSE(Validate(token, identity, emsg));
+  }
+
+  EVP_PKEY_free(rsa.pkey);
+  EVP_PKEY_free(ec.pkey);
+  freeKeys(IssuerPolicies[0]->jwksKeys);
+}
+
+TEST(XrdSecOIDCTest, Ps256TokenVerifiesAndIsNotInterchangeableWithRs256)
+{
+  ResetGlobalsForTest();
+  KeyMaterial km = MakeKeyAndJWKS();
+  ASSERT_NE(km.pkey, nullptr);
+  InstallTestKey(km, "k1");
+
+  const std::string payload = StandardPayload();
+  const std::string psHdr = R"({"alg":"PS256","kid":"k1","typ":"JWT"})";
+  const std::string psSigned = Base64URLEncode(psHdr) + "." + Base64URLEncode(payload);
+  const std::string psToken = psSigned + "." + SignPS256(km.pkey, psSigned);
+
+  std::string identity, emsg;
+  ASSERT_TRUE(Validate(psToken, identity, emsg)) << emsg;
+  EXPECT_EQ(identity, "alice");
+
+  // A PKCS#1 v1.5 signature presented as PS256 must not verify, and vice versa.
+  const std::string psHdrPkcs1 = psSigned + "." + SignRS256(km.pkey, psSigned);
+  EXPECT_FALSE(Validate(psHdrPkcs1, identity, emsg));
+
+  const std::string rsHdr = R"({"alg":"RS256","kid":"k1","typ":"JWT"})";
+  const std::string rsSigned = Base64URLEncode(rsHdr) + "." + Base64URLEncode(payload);
+  const std::string rsHdrPss = rsSigned + "." + SignPS256(km.pkey, rsSigned);
+  EXPECT_FALSE(Validate(rsHdrPss, identity, emsg));
+
+  EVP_PKEY_free(km.pkey);
+  freeKeys(IssuerPolicies[0]->jwksKeys);
+}
+
+TEST(XrdSecOIDCTest, UnsupportedAlgsStillRejected)
+{
+  ResetGlobalsForTest();
+  KeyMaterial km = MakeKeyAndJWKS();
+  ASSERT_NE(km.pkey, nullptr);
+  InstallTestKey(km, "k1");
+
+  for (const char *alg : {"none", "HS256", "HS512", "EdDSA", "RS255", "rs256", ""}) {
+    const std::string hdr = std::string(R"({"alg":")") + alg + R"(","kid":"k1"})";
+    const std::string token = MakeJWT(km.pkey, hdr, StandardPayload());
+    std::string identity, emsg;
+    EXPECT_FALSE(Validate(token, identity, emsg)) << "alg=" << alg;
+    EXPECT_TRUE(emsg.find("alg") != std::string::npos) << "alg=" << alg << " emsg=" << emsg;
+  }
+
+  EVP_PKEY_free(km.pkey);
+  freeKeys(IssuerPolicies[0]->jwksKeys);
+}
+
+// --- kid-less JWKS entries ----------------------------------------------------
+
+TEST(XrdSecOIDCTest, LoadJWKSAcceptsKeysWithoutKid)
+{
+  KeyMaterial km = MakeKeyAndJWKS();
+  ASSERT_NE(km.pkey, nullptr);
+  // Strip the kid from the generated JWKS.
+  std::string jwks = km.jwks;
+  const size_t p = jwks.find("\"kid\":\"k1\",");
+  ASSERT_NE(p, std::string::npos);
+  jwks.erase(p, strlen("\"kid\":\"k1\","));
+
+  std::map<std::string, EvpPkeyPtr> keys;
+  std::string emsg;
+  ASSERT_TRUE(loadJWKS(jwks, keys, emsg)) << emsg;
+  ASSERT_EQ(keys.size(), 1u);
+  EXPECT_TRUE(isAnonymousKid(keys.begin()->first));
+
+  freeKeys(keys);
+  EVP_PKEY_free(km.pkey);
+}
+
+TEST(XrdSecOIDCTest, TokenWithKidVerifiesAgainstKidlessJwkOnly)
+{
+  ResetGlobalsForTest();
+  KeyMaterial km = MakeKeyAndJWKS();
+  ASSERT_NE(km.pkey, nullptr);
+
+  std::string jwks = km.jwks;
+  jwks.erase(jwks.find("\"kid\":\"k1\","), strlen("\"kid\":\"k1\","));
+  std::string emsg;
+  ASSERT_TRUE(loadJWKS(jwks, IssuerPolicies[0]->jwksKeys, emsg)) << emsg;
+  IssuerPolicies[0]->lastJwksLoad = NowSeconds();
+
+  // Token names a kid the JWKS does not have; the only key is anonymous → OK.
+  const std::string hdr = R"({"alg":"RS256","kid":"whatever","typ":"JWT"})";
+  std::string identity;
+  ASSERT_TRUE(Validate(MakeJWT(km.pkey, hdr, StandardPayload()), identity, emsg)) << emsg;
+  EXPECT_EQ(identity, "alice");
+
+  // With a *named* key that doesn't match, an unknown kid still fails
+  // (KidMismatchFails covers the named-only case). Here: named + anonymous,
+  // token signed by a key we do not hold at all → fail.
+  EcKeyMaterial ec = MakeEcKeyAndJWKS("named");
+  ASSERT_NE(ec.pkey, nullptr);
+  std::map<std::string, EvpPkeyPtr> ecKeys;
+  ASSERT_TRUE(loadJWKS(ec.jwks, ecKeys, emsg)) << emsg;
+  IssuerPolicies[0]->jwksKeys["named"] = std::move(ecKeys["named"]);
+  const std::string hdrEs = R"({"alg":"ES256","kid":"unknown","typ":"JWT"})";
+  const std::string signedData = Base64URLEncode(hdrEs) + "." + Base64URLEncode(StandardPayload());
+  // Signed with a fresh EC key we never published.
+  EcKeyMaterial rogue = MakeEcKeyAndJWKS("rogue");
+  ASSERT_NE(rogue.pkey, nullptr);
+  const std::string rogueTok = signedData + "." + SignES256(rogue.pkey, signedData);
+  EXPECT_FALSE(Validate(rogueTok, identity, emsg));
+
+  EVP_PKEY_free(km.pkey);
+  EVP_PKEY_free(ec.pkey);
+  EVP_PKEY_free(rogue.pkey);
+  freeKeys(IssuerPolicies[0]->jwksKeys);
+}
+
+// --- Forced JWKS refresh rate limiting ---------------------------------------
+
+TEST(XrdSecOIDCTest, ForcedRefreshIsRateLimitedPerIssuer)
+{
+  ResetGlobalsForTest();
+  KeyMaterial km = MakeKeyAndJWKS();
+  ASSERT_NE(km.pkey, nullptr);
+  InstallTestKey(km, "k1");
+  auto policy = IssuerPolicies[0];
+  policy->jwksURL = "https://jwks.invalid/keys"; // would be fetched if not limited
+  JwksRefreshMin = 30;
+
+  // A forced refresh attempted a moment ago blocks a new one without any I/O.
+  policy->lastForcedAttempt = NowSeconds();
+  std::string emsg;
+  EXPECT_FALSE(refreshJWKSForPolicy(policy, true, emsg));
+  EXPECT_NE(emsg.find("rate-limited"), std::string::npos);
+
+  // The periodic (non-forced) path is unaffected while keys are fresh.
+  emsg.clear();
+  EXPECT_TRUE(refreshJWKSForPolicy(policy, false, emsg)) << emsg;
+
+  // A token with an unknown kid therefore fails fast with a signature error
+  // instead of triggering a network fetch.
+  const std::string hdr = R"({"alg":"RS256","kid":"rotated","typ":"JWT"})";
+  std::string identity;
+  EXPECT_FALSE(Validate(MakeJWT(km.pkey, hdr, StandardPayload()), identity, emsg));
+  EXPECT_NE(emsg.find("signature validation failed"), std::string::npos);
+  EXPECT_NE(emsg.find("rate-limited"), std::string::npos);
+
+  // The cooldown never applies while no keys are held at all (bootstrap).
+  freeKeys(policy->jwksKeys);
+  policy->lastForcedAttempt = NowSeconds();
+  policy->jwksURL.clear();
+  policy->oidcConfigURL.clear();
+  emsg.clear();
+  EXPECT_FALSE(refreshJWKSForPolicy(policy, true, emsg));
+  EXPECT_EQ(emsg.find("rate-limited"), std::string::npos) << emsg; // failed for lack of URL, not cooldown
+
+  EVP_PKEY_free(km.pkey);
+}
+
+// --- Bearer prefix, NumericDate floats, fingerprint --------------------------
+
+TEST(XrdSecOIDCTest, StripBearerPrefixIsCaseInsensitive)
+{
+  int sz = 0;
+  const char *t = Strip("bearer abc.def.ghi", sz);
+  ASSERT_NE(t, nullptr);
+  EXPECT_EQ(std::string(t, sz), "abc.def.ghi");
+
+  t = Strip("BEARER%20abc.def.ghi", sz);
+  ASSERT_NE(t, nullptr);
+  EXPECT_EQ(std::string(t, sz), "abc.def.ghi");
+
+  // Something that merely starts with "bearer" is not a scheme prefix.
+  t = Strip("bearerabc", sz);
+  ASSERT_NE(t, nullptr);
+  EXPECT_EQ(std::string(t, sz), "bearerabc");
+}
+
+TEST(XrdSecOIDCTest, NumericDateClaimsAcceptFloats)
+{
+  nlohmann::json obj;
+  ASSERT_TRUE(parseJsonObject(R"({"exp":1.7e9,"nbf":1700000000.0,"neg":-1.0,"nan":"x"})", obj));
+  uint64_t v = 0;
+  ASSERT_TRUE(getUintClaim(obj, "exp", v));
+  EXPECT_EQ(v, 1700000000u);
+  ASSERT_TRUE(getUintClaim(obj, "nbf", v));
+  EXPECT_EQ(v, 1700000000u);
+  EXPECT_FALSE(getUintClaim(obj, "neg", v));
+  EXPECT_FALSE(getUintClaim(obj, "nan", v));
+}
+
+TEST(XrdSecOIDCTest, Sha256HexIsFixedWidthHex)
+{
+  const std::string h = sha256hex("token", 5);
+  ASSERT_EQ(h.size(), 64u);
+  for (char c : h) EXPECT_TRUE(isxdigit(static_cast<unsigned char>(c)));
+  EXPECT_EQ(h, "3c469e9d6c5875d37a43f353d4f88e61fcf812c66eee3457465a40b0da4153e0");
+}
+
+// --- Token cache lifetime semantics -----------------------------------------
+
+TEST(XrdSecOIDCTest, ValidateTokenCachesExpiredTokenWhenExpiryIgnored)
+{
+  ResetGlobalsForTest();
+  expiry = 0; // ignore
+  TokenCacheMax = 10;
+  TokenCacheNoExpTTL = 60;
+  KeyMaterial km = MakeKeyAndJWKS();
+  ASSERT_NE(km.pkey, nullptr);
+  InstallTestKey(km, "k1");
+
+  const std::string token = MakeToken(km.pkey, "https://issuer.example", "xrootd",
+                                      NowSeconds() - 600, "alice");
+  std::string identity, emsg;
+  ASSERT_TRUE(validateToken(token.c_str(), identity, emsg, nullptr, nullptr)) << emsg;
+  EXPECT_EQ(identity, "alice");
+  EXPECT_EQ(TokenCacheMisses.load(), 1u);
+
+  // The entry must be alive (previously it was inserted already expired).
+  ASSERT_TRUE(validateToken(token.c_str(), identity, emsg, nullptr, nullptr)) << emsg;
+  EXPECT_EQ(TokenCacheHits.load(), 1u);
+
+  EVP_PKEY_free(km.pkey);
+  freeKeys(IssuerPolicies[0]->jwksKeys);
+  TokenCache.clear();
+}
+
+TEST(XrdSecOIDCTest, ValidateTokenCacheLifetimeIncludesClockSkew)
+{
+  ResetGlobalsForTest();
+  expiry = 1;
+  ClockSkew = 120;
+  TokenCacheMax = 10;
+  KeyMaterial km = MakeKeyAndJWKS();
+  ASSERT_NE(km.pkey, nullptr);
+  InstallTestKey(km, "k1");
+
+  const time_t exp = NowSeconds() + 300;
+  const std::string token = MakeToken(km.pkey, "https://issuer.example", "xrootd", exp, "alice");
+  std::string identity, emsg;
+  uint64_t expTime = 0;
+  ASSERT_TRUE(validateToken(token.c_str(), identity, emsg, &expTime, nullptr)) << emsg;
+  EXPECT_EQ(expTime, static_cast<uint64_t>(exp) + 120u);
+
+  EVP_PKEY_free(km.pkey);
+  freeKeys(IssuerPolicies[0]->jwksKeys);
+  TokenCache.clear();
+}
+
+// --- Idempotent (re)initialization -------------------------------------------
+
+TEST(XrdSecOIDCTest, ResetGlobalsToDefaultsRestoresEveryTunable)
+{
+  ResetGlobalsForTest();
+  expiry = -1;
+  MaxTokSize = 123;
+  ClockSkew = 7;
+  JwksRefresh = 9;
+  JwksRefreshMin = 1;
+  TokenCacheMax = 3;
+  TokenCacheNoExpTTL = 4;
+  DebugToken = true;
+  DebugTokenClaims = true;
+  customIdentityClaims = true;
+  IdentityClaims = {"sub", "sub"};
+  JwksCacheFile = "/tmp/x";
+  JwksCacheTTL = 5;
+  EntityClaimMappings.push_back({"scope", "token.scope"});
+  EmailIdentityMap["a@b"] = "a";
+  CachedTokenEntry e; e.expiresAt = static_cast<uint64_t>(NowSeconds()) + 100;
+  tokenCacheStore("k", e, static_cast<uint64_t>(NowSeconds()));
+
+  resetGlobalsToDefaults();
+
+  EXPECT_EQ(expiry.load(), kDefaultExpiry);
+  EXPECT_EQ(MaxTokSize.load(), kDefaultMaxTokSize);
+  EXPECT_EQ(ClockSkew.load(), kDefaultClockSkew);
+  EXPECT_EQ(JwksRefresh.load(), kDefaultJwksRefresh);
+  EXPECT_EQ(JwksRefreshMin.load(), kDefaultJwksRefreshMin);
+  EXPECT_EQ(TokenCacheMax.load(), kDefaultTokenCacheMax);
+  EXPECT_EQ(TokenCacheNoExpTTL.load(), kDefaultTokenCacheNoExpTTL);
+  EXPECT_FALSE(DebugToken.load());
+  EXPECT_FALSE(DebugTokenClaims.load());
+  EXPECT_FALSE(customIdentityClaims);
+  EXPECT_EQ(IdentityClaims, kDefaultIdentityClaims);
+  EXPECT_TRUE(JwksCacheFile.empty());
+  EXPECT_EQ(JwksCacheTTL, 0);
+  EXPECT_TRUE(EntityClaimMappings.empty());
+  EXPECT_TRUE(EmailIdentityMap.empty());
+  EXPECT_TRUE(IssuerPolicies.empty());
+  EXPECT_EQ(tokenCacheSize(), 0u);
+
+  // Re-applying the same -identity-claim list twice must not duplicate entries.
+  std::shared_ptr<IssuerPolicy> cur;
+  ASSERT_TRUE(parseInitParms("-identity-claim sub -identity-claim email", cur, nullptr));
+  resetGlobalsToDefaults();
+  ASSERT_TRUE(parseInitParms("-identity-claim sub -identity-claim email", cur, nullptr));
+  EXPECT_EQ(IdentityClaims, (std::vector<std::string>{"sub", "email"}));
+}
+
+TEST(XrdSecOIDCTest, ParseInitParmsAcceptsJwksRefreshMin)
+{
+  ResetGlobalsForTest();
+  std::shared_ptr<IssuerPolicy> cur;
+  ASSERT_TRUE(parseInitParms("-jwks-refresh-min 45", cur, nullptr));
+  EXPECT_EQ(JwksRefreshMin.load(), 45);
+  ASSERT_TRUE(parseInitParms("-jwks-refresh-min 0", cur, nullptr)); // disables cooldown
+  EXPECT_EQ(JwksRefreshMin.load(), 0);
+  EXPECT_FALSE(parseInitParms("-jwks-refresh-min -1", cur, nullptr));
+  EXPECT_FALSE(parseInitParms("-jwks-refresh-min abc", cur, nullptr));
+
+  std::string opts, emsg;
+  EXPECT_TRUE(addIniKV("jwks-refresh-min", "12", false, opts, emsg)) << emsg;
+  EXPECT_NE(opts.find("-jwks-refresh-min 12"), std::string::npos);
+}
+
+// --- Config change signature --------------------------------------------------
+
+TEST(XrdSecOIDCTest, ConfigChangeSignatureIncludesSizeAndCtime)
+{
+  std::scoped_lock lock(ConfigMtx);
+  SafeFileResult a{};
+  a.ino = 10; a.mtime = 100; a.ctime = 100; a.size = 42; a.found = true;
+  recordConfigMetaLocked(a);
+  EXPECT_TRUE(configMetaUnchangedLocked(a));
+
+  SafeFileResult b = a; b.size = 43;
+  EXPECT_FALSE(configMetaUnchangedLocked(b));
+  SafeFileResult c = a; c.ctime = 101;
+  EXPECT_FALSE(configMetaUnchangedLocked(c));
+  SafeFileResult d = a; d.ino = 11;
+  EXPECT_FALSE(configMetaUnchangedLocked(d));
+  SafeFileResult e = a; e.mtime = 101;
+  EXPECT_FALSE(configMetaUnchangedLocked(e));
+
+  OIDCConfigStatValid = false;
+}
+
+// --- Server-side -maxsz is honoured ------------------------------------------
+
+TEST(XrdSecOIDCTest, AuthenticateHonoursConfiguredMaxTokenSize)
+{
+  ResetGlobalsForTest();
+  MaxTokSize = 65536;
+  XrdNetAddrInfo addr;
+  XrdSecProtocoloidc prot("host.example", addr);
+
+  // A 20000-byte token exceeds the old hard-coded 8192 limit but is within
+  // -maxsz; it must reach the validator (and fail there for not being a JWT),
+  // not be rejected up front as "Credential too large".
+  const int tlen = 20000;
+  const int bsz = 5 + tlen + 1;
+  char *b = static_cast<char *>(malloc(bsz));
+  memcpy(b, "oidc", 5);
+  memset(b + 5, 'x', tlen);
+  b[5 + tlen] = '\0';
+  XrdSecCredentials c(b, bsz);
+  XrdOucErrInfo erp;
+  EXPECT_EQ(prot.Authenticate(&c, nullptr, &erp), -1);
+  int ec = 0;
+  const std::string et = erp.getErrText(ec);
+  EXPECT_EQ(et.find("too large"), std::string::npos) << et;
+  EXPECT_NE(et.find("not JWT"), std::string::npos) << et;
+
+  // And the limit still applies once -maxsz is lowered below the token size.
+  MaxTokSize = 8192;
+  XrdSecProtocoloidc prot2("host.example", addr);
+  XrdOucErrInfo erp2;
+  EXPECT_EQ(prot2.Authenticate(&c, nullptr, &erp2), -1);
+  const std::string et2 = erp2.getErrText(ec);
+  EXPECT_NE(et2.find("too large"), std::string::npos) << et2;
 }

@@ -174,6 +174,11 @@ private:
   /// @return 0 if successful or not applicable, otherwise error
   int HandleOidcAuthentication();
 
+  /// Tear down any bearer-derived identity on this connection (Bridge login
+  /// and SecEntity name/attributes) so a new identity can be installed.
+  /// @return true if the identity was dropped, false if the Bridge is busy.
+  bool DropOidcIdentity();
+
   /// After the SSL handshake, retrieve the VOMS info and the various stuff
   /// that is needed for autorization
   int GetVOMSData(XrdLink *lp);
@@ -241,6 +246,10 @@ private:
 
   /// Config file path used to load the security framework for http.oidc.
   static const char *oidcConfigFN;
+
+  /// Shared xrd environment; used to pick up the xrootd protocol's security
+  /// service ("XrdSecService*") instead of instantiating a second one.
+  static XrdOucEnv *oidcSharedEnv;
 
   static bool isRequiredXtractor; // If true treat secxtractor errors as fatal
   static XrdHttpSecXtractor *secxtractor;

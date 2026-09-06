@@ -86,8 +86,11 @@ public:
        bool               needTLS() {return true;}
 
        XrdSecProtocoloidc(const char *parms, XrdOucErrInfo *erp, bool &aOK);
+       // Server side: the size limit is the configured -maxsz, not a constant,
+       // so that the framing check below agrees with the validator.
        XrdSecProtocoloidc(const char *hname, XrdNetAddrInfo &endPoint)
-                        : XrdSecProtocol("oidc"), maxTSize(8192)
+                        : XrdSecProtocol("oidc"),
+                          maxTSize(XrdOucOIDC::MaxTokenSize())
                         {Entity.host = strdup(hname);
                          Entity.name = strdup("anon");
                          Entity.addrInfo = &endPoint;
