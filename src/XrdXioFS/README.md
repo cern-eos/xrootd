@@ -106,7 +106,8 @@ mount -t xiofs -o host=storage.example,port=1094,path=/export,cacert=ca.pem \
 ```
 
 `--import-only` attaches a new kTLS socket to an existing mount (same
-host/port/path). RDMA and GPU-direct are not implemented.
+host/port/path) after a drop. `--actimeo` / `--timeo` set metadata TTL and
+socket wait (seconds). RDMA and GPU-direct are not implemented.
 
 ## Layout
 

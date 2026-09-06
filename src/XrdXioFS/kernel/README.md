@@ -95,7 +95,13 @@ ioctl(ctlfd, XIOFS_IOC_IMPORT_SOCK, &im);
 ```
 
 One socket is used with a mutex (HTTP/1.1 cannot multiplex). No chunked
-encoding; XrdHttp sends `Content-Length`.
+encoding; XrdHttp sends `Content-Length`. Send/recv use `sk_rcvtimeo` /
+`sk_sndtimeo` (`timeo=`, default 30s). On connection errors the socket is
+dropped and the request waits once for `xiofsagent --import-only`. Dirty
+pages are redirtied so writeback can retry after a new kTLS socket.
+
+Metadata uses a dentry/inode TTL (`actimeo=`, default 30s, `0` always
+revalidates). `d_revalidate` issues PROPFIND/HEAD when the cache expires.
 
 ## Verb map
 
@@ -113,10 +119,10 @@ encoding; XrdHttp sends `Content-Length`.
 ## Explicitly not done
 
 - HTTP/2 in-kernel (HPACK / streams / flow control)
-- Connection recovery / reconnect after drop (use `--import-only` by hand)
+- Automatic handshake upcall (re-import is still `xiofsagent --import-only`)
 - Chunked responses
 - Byte-range locks, hard links
-- `writeback_iter` error retry / congestion
+- Writeback congestion / batching PATCH across folios
 - RDMA / GPU-direct (`XIOFS_IOC_GPU_READ` returns `-EOPNOTSUPP`)
 
 ## License

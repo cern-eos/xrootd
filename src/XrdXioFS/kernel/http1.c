@@ -145,24 +145,26 @@ struct xiofs_http_resp {
 	size_t		body_len;
 };
 
-static int xiofs_transact(struct xiofs_sb_info *sbi, const char *req,
-			size_t reqlen, const void *body, size_t bodylen,
-			void *out, size_t outcap, size_t *outlen,
-			struct xiofs_http_resp *meta)
+static int xiofs_transact_once(struct xiofs_sb_info *sbi, const char *req,
+			     size_t reqlen, const void *body, size_t bodylen,
+			     void *out, size_t outcap, size_t *outlen,
+			     struct xiofs_http_resp *meta)
 {
 	char *hdrbuf;
 	size_t filled = 0;
-	char *sep;
+	char *sep, *extra;
 	int err, status;
-	long long clen = -1;
+	long long clen = -1, reported;
+	size_t extra_len, want, got;
 	char etag[128] = {};
 	char clbuf[32] = {};
 
-	if (!sbi->sock)
-		return -ENOTCONN;
-
 	memset(meta, 0, sizeof(*meta));
 	meta->content_length = -1;
+
+	err = xiofs_session_wait(sbi);
+	if (err)
+		return err;
 
 	err = xiofs_sock_send(sbi->sock, req, reqlen);
 	if (err)
@@ -205,56 +207,35 @@ static int xiofs_transact(struct xiofs_sb_info *sbi, const char *req,
 		if (kstrtoll(clbuf, 10, &clen))
 			clen = -1;
 
-	{
-		long long reported = clen;
-		char *extra = sep + 4;
-		size_t extra_len = filled - (extra - hdrbuf);
-		size_t want, got = 0;
+	reported = clen;
+	extra = sep + 4;
+	extra_len = filled - (extra - hdrbuf);
+	got = 0;
 
-		/* HEAD / 204 / 304 never carry an entity. Content-Length on
-		 * HEAD is the resource size, not a body to drain. */
-		if (status == 204 || status == 304 || !strncmp(req, "HEAD ", 5))
-			clen = 0;
-		size_t extra_len = filled - (extra - hdrbuf);
-		size_t want, got = 0;
+	/* HEAD / 204 / 304 never carry an entity. Content-Length on
+	 * HEAD is the resource size, not a body to drain. */
+	if (status == 204 || status == 304 || !strncmp(req, "HEAD ", 5))
+		clen = 0;
 
-		if (out && outcap && clen > 0) {
-			want = min_t(size_t, (size_t)clen, outcap);
-			if (extra_len) {
-				size_t take = min(extra_len, want);
+	if (out && outcap && clen > 0) {
+		want = min_t(size_t, (size_t)clen, outcap);
+		if (extra_len) {
+			size_t take = min(extra_len, want);
 
-				memcpy(out, extra, take);
-				got = take;
-			}
-			if (got < want) {
-				err = xiofs_sock_recv(sbi->sock, (char *)out + got,
-						    want - got);
-				if (err < 0)
-					goto out_hdr;
-				got += err;
-			}
-			if (clen > (long long)want) {
-				size_t skip = (size_t)clen - want;
-				char dump[256];
-
-				while (skip) {
-					size_t n = min(skip, sizeof(dump));
-					int r = xiofs_sock_recv(sbi->sock, dump, n);
-
-					if (r < 0) {
-						err = r;
-						goto out_hdr;
-					}
-					skip -= r;
-				}
-			}
-			*outlen = got;
-		} else if (clen > 0) {
+			memcpy(out, extra, take);
+			got = take;
+		}
+		if (got < want) {
+			err = xiofs_sock_recv(sbi->sock, (char *)out + got,
+					    want - got);
+			if (err < 0)
+				goto out_hdr;
+			got += err;
+		}
+		if (clen > (long long)want) {
+			size_t skip = (size_t)clen - want;
 			char dump[256];
-			size_t skip = (size_t)clen;
 
-			if (extra_len)
-				skip = skip > extra_len ? skip - extra_len : 0;
 			while (skip) {
 				size_t n = min(skip, sizeof(dump));
 				int r = xiofs_sock_recv(sbi->sock, dump, n);
@@ -265,20 +246,54 @@ static int xiofs_transact(struct xiofs_sb_info *sbi, const char *req,
 				}
 				skip -= r;
 			}
-		} else if (out && extra_len) {
-			size_t take = min(extra_len, outcap);
-
-			memcpy(out, extra, take);
-			*outlen = take;
 		}
-		meta->content_length = reported;
+		*outlen = got;
+	} else if (clen > 0) {
+		char dump[256];
+		size_t skip = (size_t)clen;
+
+		if (extra_len)
+			skip = skip > extra_len ? skip - extra_len : 0;
+		while (skip) {
+			size_t n = min(skip, sizeof(dump));
+			int r = xiofs_sock_recv(sbi->sock, dump, n);
+
+			if (r < 0) {
+				err = r;
+				goto out_hdr;
+			}
+			skip -= r;
+		}
+	} else if (out && extra_len) {
+		size_t take = min(extra_len, outcap);
+
+		memcpy(out, extra, take);
+		*outlen = take;
 	}
 
+	meta->content_length = reported;
 	meta->status = status;
 	strscpy(meta->etag, etag, sizeof(meta->etag));
 	err = 0;
 out_hdr:
 	kfree(hdrbuf);
+	return err;
+}
+
+static int xiofs_transact(struct xiofs_sb_info *sbi, const char *req,
+			size_t reqlen, const void *body, size_t bodylen,
+			void *out, size_t outcap, size_t *outlen,
+			struct xiofs_http_resp *meta)
+{
+	int err, attempt;
+
+	for (attempt = 0; attempt < 2; attempt++) {
+		err = xiofs_transact_once(sbi, req, reqlen, body, bodylen,
+					out, outcap, outlen, meta);
+		if (!xiofs_connerr(err))
+			return err;
+		xiofs_session_drop(sbi);
+	}
 	return err;
 }
 

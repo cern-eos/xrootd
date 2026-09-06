@@ -2,10 +2,12 @@
 #ifndef XIOFS_LINUX_H
 #define XIOFS_LINUX_H
 
+#include <linux/errno.h>
 #include <linux/fs.h>
 #include <linux/mutex.h>
 #include <linux/net.h>
 #include <linux/types.h>
+#include <linux/wait.h>
 
 #include "xiofs_uapi.h"
 
@@ -16,6 +18,8 @@ struct fs_context;
 #define XIOFS_MAX_HDR	8192
 #define XIOFS_MAX_DAV	(1u * 1024u * 1024u)
 #define XIOFS_PATH_MAX	1024
+#define XIOFS_DEF_ACTIMEO_SEC	30u
+#define XIOFS_DEF_TIMEO_SEC	30u
 
 struct xiofs_attr {
 	loff_t		size;
@@ -35,8 +39,12 @@ struct xiofs_sb_info {
 	struct super_block	*sb;
 	struct list_head	list;
 	struct mutex		io_lock;
+	wait_queue_head_t	sock_wait;
 	struct socket		*sock;
 	bool			tls;
+	bool			shutting_down;
+	unsigned int		actimeo_sec;
+	unsigned int		timeo_sec;
 	char			host[256];
 	unsigned int		port;
 	char			export_path[256];
@@ -48,7 +56,24 @@ struct xiofs_inode_info {
 	struct inode		vfs_inode;
 	char			remote_path[XIOFS_PATH_MAX];
 	char			etag[128];
+	unsigned long		attr_jiffies;
 };
+
+static inline bool xiofs_connerr(int err)
+{
+	switch (err) {
+	case -ECONNRESET:
+	case -ECONNABORTED:
+	case -ENOTCONN:
+	case -EPIPE:
+	case -ETIMEDOUT:
+	case -ESHUTDOWN:
+	case -EAGAIN:
+		return true;
+	default:
+		return false;
+	}
+}
 
 static inline struct xiofs_sb_info *XIOFS_SB(struct super_block *sb)
 {
@@ -71,12 +96,15 @@ extern const struct inode_operations xiofs_file_inode_ops;
 extern const struct file_operations xiofs_file_ops;
 extern const struct file_operations xiofs_dir_ops;
 extern const struct address_space_operations xiofs_aops;
+extern const struct dentry_operations xiofs_dops;
 
 int xiofs_session_init(void);
 void xiofs_session_exit(void);
 void xiofs_session_register(struct xiofs_sb_info *sbi);
 void xiofs_session_unregister(struct xiofs_sb_info *sbi);
 void xiofs_session_close(struct xiofs_sb_info *sbi);
+int xiofs_session_wait(struct xiofs_sb_info *sbi);
+void xiofs_session_drop(struct xiofs_sb_info *sbi);
 
 int xiofs_http_status_to_errno(int status);
 int xiofs_http_getattr_path(struct xiofs_sb_info *sbi, const char *path,

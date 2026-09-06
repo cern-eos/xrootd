@@ -74,6 +74,15 @@ static inline void xiofs_set_times(struct inode *inode, time64_t sec)
 #endif
 }
 
+static inline time64_t xiofs_mtime_sec(struct inode *inode)
+{
+#ifdef XIOFS_HAS_INODE_SET_MTIME_TO_TS
+	return inode_get_mtime(inode).tv_sec;
+#else
+	return inode->i_mtime.tv_sec;
+#endif
+}
+
 static inline void xiofs_copy_to_page(struct page *page, const void *src)
 {
 #ifdef XIOFS_HAS_WRITE_BEGIN_NOFLAGS

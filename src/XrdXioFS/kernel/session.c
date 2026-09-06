@@ -3,6 +3,7 @@
  * Userspace TLS handshake agent imports a connected socket after
  * installing kTLS TX/RX. Steady-state HTTP then stays in-kernel.
  */
+#include <linux/jiffies.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -11,7 +12,9 @@
 #include <linux/socket.h>
 #include <linux/string.h>
 #include <linux/uaccess.h>
+#include <linux/wait.h>
 #include <net/inet_connection_sock.h>
+#include <net/sock.h>
 #include <net/tcp.h>
 
 #include "xiofs.h"
@@ -27,6 +30,22 @@ static bool xiofs_sock_has_tls_ulp(struct socket *sock)
 	icsk = inet_csk(sock->sk);
 	return icsk->icsk_ulp_ops &&
 	       !strcmp(icsk->icsk_ulp_ops->name, "tls");
+}
+
+static void xiofs_sock_set_timeo(struct socket *sock, unsigned int sec)
+{
+	struct sock *sk = sock->sk;
+	long t;
+
+	if (!sk)
+		return;
+	if (!sec)
+		sec = XIOFS_DEF_TIMEO_SEC;
+	t = msecs_to_jiffies(sec * 1000u);
+	lock_sock(sk);
+	sk->sk_rcvtimeo = t;
+	sk->sk_sndtimeo = t;
+	release_sock(sk);
 }
 
 static LIST_HEAD(xiofs_mounts);
@@ -46,15 +65,49 @@ void xiofs_session_unregister(struct xiofs_sb_info *sbi)
 	mutex_unlock(&xiofs_mounts_lock);
 }
 
-void xiofs_session_close(struct xiofs_sb_info *sbi)
+void xiofs_session_drop(struct xiofs_sb_info *sbi)
 {
-	mutex_lock(&sbi->io_lock);
 	if (sbi->sock) {
+		kernel_sock_shutdown(sbi->sock, SHUT_RDWR);
 		sockfd_put(sbi->sock);
 		sbi->sock = NULL;
 	}
-	sbi->tls = false;
+}
+
+int xiofs_session_wait(struct xiofs_sb_info *sbi)
+{
+	unsigned int sec = sbi->timeo_sec ? sbi->timeo_sec : XIOFS_DEF_TIMEO_SEC;
+	long timeout = msecs_to_jiffies(sec * 1000u);
+	int ret;
+
+	if (sbi->sock)
+		return 0;
+	if (sbi->shutting_down)
+		return -ENOTCONN;
+
 	mutex_unlock(&sbi->io_lock);
+	ret = wait_event_interruptible_timeout(sbi->sock_wait,
+			sbi->shutting_down || sbi->sock, timeout);
+	mutex_lock(&sbi->io_lock);
+
+	if (sbi->shutting_down)
+		return -ENOTCONN;
+	if (ret == 0)
+		return -ETIMEDOUT;
+	if (ret < 0)
+		return ret;
+	if (!sbi->sock)
+		return -ENOTCONN;
+	return 0;
+}
+
+void xiofs_session_close(struct xiofs_sb_info *sbi)
+{
+	mutex_lock(&sbi->io_lock);
+	sbi->shutting_down = true;
+	xiofs_session_drop(sbi);
+	mutex_unlock(&sbi->io_lock);
+	wake_up_all(&sbi->sock_wait);
 }
 
 static struct xiofs_sb_info *xiofs_find_sbi(const struct xiofs_import_sock *im)
@@ -94,6 +147,11 @@ static int xiofs_import_sock(struct xiofs_import_sock *im)
 		goto out;
 	}
 	mutex_lock(&sbi->io_lock);
+	if (sbi->shutting_down) {
+		err = -ESHUTDOWN;
+		mutex_unlock(&sbi->io_lock);
+		goto out;
+	}
 	if (sbi->sock)
 		sockfd_put(sbi->sock);
 	sbi->sock = sock;
@@ -101,7 +159,9 @@ static int xiofs_import_sock(struct xiofs_import_sock *im)
 	sbi->tls = !!(im->flags & XIOFS_IMPORT_TLS);
 	if (im->flags & XIOFS_IMPORT_BEARER)
 		strscpy(sbi->bearer, im->bearer, sizeof(sbi->bearer));
+	xiofs_sock_set_timeo(sbi->sock, sbi->timeo_sec);
 	mutex_unlock(&sbi->io_lock);
+	wake_up_all(&sbi->sock_wait);
 out:
 	mutex_unlock(&xiofs_mounts_lock);
 	if (sock)

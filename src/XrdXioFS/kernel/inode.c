@@ -4,6 +4,7 @@
  * holds the result until it is invalidated.
  */
 #include <linux/fs.h>
+#include <linux/jiffies.h>
 #include <linux/module.h>
 #include <linux/namei.h>
 #include <linux/slab.h>
@@ -11,6 +12,56 @@
 
 #include "xiofs.h"
 #include "xiofs_compat.h"
+
+static unsigned long xiofs_actimeo_jiffies(struct xiofs_sb_info *sbi)
+{
+	if (!sbi->actimeo_sec)
+		return 0;
+	return msecs_to_jiffies(sbi->actimeo_sec * 1000u);
+}
+
+static int xiofs_d_revalidate(struct dentry *dentry, unsigned int flags)
+{
+	struct inode *inode = d_inode(dentry);
+	struct xiofs_sb_info *sbi;
+	struct xiofs_attr attr = {};
+	unsigned long timeout;
+	int err;
+
+	if (flags & LOOKUP_RCU)
+		return -ECHILD;
+
+	sbi = XIOFS_SB(dentry->d_sb);
+	timeout = xiofs_actimeo_jiffies(sbi);
+
+	if (d_really_is_negative(dentry)) {
+		if (timeout && time_before(jiffies, dentry->d_time + timeout))
+			return 1;
+		return 0;
+	}
+
+	if (timeout && XIOFS_I(inode)->attr_jiffies &&
+	    time_before(jiffies, XIOFS_I(inode)->attr_jiffies + timeout))
+		return 1;
+
+	err = xiofs_http_getattr(inode, &attr);
+	if (err == -ENOENT || err == -ESTALE)
+		return 0;
+	if (err)
+		return err;
+	if (attr.etag[0])
+		strscpy(XIOFS_I(inode)->etag, attr.etag,
+			sizeof(XIOFS_I(inode)->etag));
+	i_size_write(inode, attr.size);
+	xiofs_set_times(inode, attr.mtime);
+	XIOFS_I(inode)->attr_jiffies = jiffies;
+	dentry->d_time = jiffies;
+	return 1;
+}
+
+const struct dentry_operations xiofs_dops = {
+	.d_revalidate	= xiofs_d_revalidate,
+};
 
 static struct dentry *xiofs_lookup(struct inode *dir, struct dentry *dentry,
 				      unsigned int flags)
@@ -31,6 +82,7 @@ static struct dentry *xiofs_lookup(struct inode *dir, struct dentry *dentry,
 
 	err = xiofs_http_getattr_path(XIOFS_SB(dir->i_sb), path, &attr);
 	if (err == -ENOENT) {
+		dentry->d_time = jiffies;
 		d_add(dentry, NULL);
 		return NULL;
 	}
@@ -40,6 +92,7 @@ static struct dentry *xiofs_lookup(struct inode *dir, struct dentry *dentry,
 	inode = xiofs_iget(dir->i_sb, path, &attr);
 	if (IS_ERR(inode))
 		return ERR_CAST(inode);
+	dentry->d_time = jiffies;
 	return d_splice_alias(inode, dentry);
 }
 
@@ -48,17 +101,23 @@ static int xiofs_getattr(xiofs_idmap_t idmap, const struct path *path,
 			    unsigned int flags)
 {
 	struct inode *inode = d_inode(path->dentry);
+	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
+	struct xiofs_inode_info *ki = XIOFS_I(inode);
 	struct xiofs_attr attr = {};
+	unsigned long timeout = xiofs_actimeo_jiffies(sbi);
 	int err;
 
-	err = xiofs_http_getattr(inode, &attr);
-	if (err)
-		return err;
-	if (attr.etag[0])
-		strscpy(XIOFS_I(inode)->etag, attr.etag,
-			sizeof(XIOFS_I(inode)->etag));
-	i_size_write(inode, attr.size);
-	xiofs_set_times(inode, attr.mtime);
+	if (!(timeout && ki->attr_jiffies &&
+	      time_before(jiffies, ki->attr_jiffies + timeout))) {
+		err = xiofs_http_getattr(inode, &attr);
+		if (err)
+			return err;
+		if (attr.etag[0])
+			strscpy(ki->etag, attr.etag, sizeof(ki->etag));
+		i_size_write(inode, attr.size);
+		xiofs_set_times(inode, attr.mtime);
+		ki->attr_jiffies = jiffies;
+	}
 	xiofs_fillattr(idmap, request_mask, inode, stat);
 	return 0;
 }
@@ -79,6 +138,7 @@ static int xiofs_setattr(xiofs_idmap_t idmap, struct dentry *dentry,
 		truncate_setsize(inode, attr->ia_size);
 	}
 	setattr_copy(idmap, inode, attr);
+	XIOFS_I(inode)->attr_jiffies = jiffies;
 	mark_inode_dirty(inode);
 	return 0;
 }

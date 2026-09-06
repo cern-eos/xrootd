@@ -56,6 +56,8 @@ struct Options {
   std::string bearer;
   std::string url;
   std::string mountpoint;
+  unsigned actimeo{30};
+  unsigned timeo{30};
   bool verify_peer{true};
   bool import_only{false};
   bool verbose{false};
@@ -67,15 +69,16 @@ void usage(const char *argv0)
   std::cerr
       << "Usage: " << argv0 << " [--cacert FILE] [--insecure]\n"
       << "          [--token TOK | --tokenfile FILE] [--import-only]\n"
-      << "          URL [MOUNTPOINT]\n"
+      << "          [--actimeo SEC] [--timeo SEC] URL [MOUNTPOINT]\n"
       << "\n"
       << "  Handshake to URL, install kTLS, import the socket into xiofs.ko.\n"
       << "  With MOUNTPOINT (default), mount -t xiofs first then import.\n"
       << "  --import-only assumes the filesystem is already mounted.\n"
+      << "  --actimeo metadata TTL (default 30, 0 = always revalidate).\n"
+      << "  --timeo socket wait/recv timeout seconds (default 30).\n"
       << "\n"
       << "  As mount.xiofs: mount -t xiofs -o host=H,port=P,path=/export none DIR\n"
-      << "  Extra -o keys (stripped before the kernel): cacert, token, tokenfile,\n"
-      << "  insecure, url.\n";
+      << "  Extra -o keys: cacert, token, tokenfile, insecure, url, actimeo, timeo.\n";
 }
 
 int fail(const std::string &msg, int rc)
@@ -326,17 +329,19 @@ int importSock(int fd, const XioFS::Url &url, const Options &opt,
   return 0;
 }
 
-std::string kernelMountData(const XioFS::Url &url)
+std::string kernelMountData(const XioFS::Url &url, const Options &opt)
 {
   std::ostringstream os;
   os << "host=" << url.host << ",port=" << url.port << ",path="
-     << (url.path.empty() ? "/" : url.path);
+     << (url.path.empty() ? "/" : url.path)
+     << ",actimeo=" << opt.actimeo << ",timeo=" << opt.timeo;
   return os.str();
 }
 
-int doMount(const XioFS::Url &url, const std::string &dir, std::string &err)
+int doMount(const XioFS::Url &url, const Options &opt, const std::string &dir,
+            std::string &err)
 {
-  std::string data = kernelMountData(url);
+  std::string data = kernelMountData(url, opt);
   if (mount("none", dir.c_str(), "xiofs", MS_NOSUID | MS_NODEV, data.c_str()) <
       0) {
     err = std::string("mount: ") + strerror(errno) + " (data=" + data + ")";
@@ -385,6 +390,10 @@ bool applyMountOpt(const std::string &kv, Options &opt, XioFS::Url &url,
     opt.verify_peer = false;
   else if (key == "url")
     opt.url = val;
+  else if (key == "actimeo")
+    opt.actimeo = static_cast<unsigned>(std::atoi(val.c_str()));
+  else if (key == "timeo")
+    opt.timeo = static_cast<unsigned>(std::atoi(val.c_str()));
   else {
     err = "unknown mount option: " + key;
     return false;
@@ -494,6 +503,10 @@ int parseAgentArgs(int argc, char **argv, Options &opt, std::string &err)
         return -1;
     } else if (a == "--import-only")
       opt.import_only = true;
+    else if (a == "--actimeo" && i + 1 < argc)
+      opt.actimeo = static_cast<unsigned>(std::atoi(argv[++i]));
+    else if (a == "--timeo" && i + 1 < argc)
+      opt.timeo = static_cast<unsigned>(std::atoi(argv[++i]));
     else if (a == "--verbose" || a == "-v")
       opt.verbose = true;
     else if (a == "-h" || a == "--help") {
@@ -531,14 +544,14 @@ int run(const Options &opt)
     return fail(err, 2);
 
   if (opt.fake) {
-    std::cout << "xiofsagent: would mount " << kernelMountData(url) << " on "
+    std::cout << "xiofsagent: would mount " << kernelMountData(url, opt) << " on "
               << opt.mountpoint << "\n";
     return 0;
   }
 
   bool did_mount = false;
   if (!opt.import_only) {
-    if (doMount(url, opt.mountpoint, err))
+    if (doMount(url, opt, opt.mountpoint, err))
       return fail(err, 1);
     did_mount = true;
   }

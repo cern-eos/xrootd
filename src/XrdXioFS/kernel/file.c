@@ -8,6 +8,7 @@
 #include <linux/buffer_head.h>
 #include <linux/fs.h>
 #include <linux/highmem.h>
+#include <linux/jiffies.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/module.h>
@@ -233,6 +234,7 @@ static int xiofs_write_end(struct file *file, struct address_space *mapping,
 	}
 	if (pos + copied > i_size_read(inode))
 		i_size_write(inode, pos + copied);
+	XIOFS_I(inode)->attr_jiffies = jiffies;
 	set_page_dirty(page);
 	unlock_page(page);
 	put_page(page);
@@ -259,6 +261,11 @@ static int xiofs_writepage(struct page *page, struct writeback_control *wbc)
 	kaddr = kmap_local_page(page);
 	err = xiofs_http_write(inode, pos, len, kaddr, &nwritten);
 	kunmap_local(kaddr);
+	if (xiofs_connerr(err)) {
+		redirty_page_for_writepage(wbc, page);
+		unlock_page(page);
+		return err;
+	}
 	if (err) {
 		SetPageError(page);
 		mapping_set_error(page->mapping, err);
@@ -282,79 +289,47 @@ static int xiofs_writepages(struct address_space *mapping,
 {
 	struct inode *inode = mapping->host;
 	struct folio *folio = NULL;
-	void *buf = NULL;
-	size_t cap = 0, used = 0;
-	loff_t start = -1;
 	int error = 0;
 
 	while ((folio = writeback_iter(mapping, wbc, folio, &error))) {
-		size_t fsz = folio_size(folio);
 		loff_t pos = folio_pos(folio);
 		loff_t isize = i_size_read(inode);
-		size_t len = fsz;
+		size_t len = folio_size(folio);
 		void *kaddr;
 		size_t nwritten = 0;
+		int err = 0;
 
 		if (pos >= isize) {
-			folio_end_writeback(folio);
 			folio_unlock(folio);
+			folio_end_writeback(folio);
 			continue;
 		}
 		if (pos + (loff_t)len > isize)
 			len = (size_t)(isize - pos);
 
-		if (start >= 0 && pos != start + (loff_t)used) {
-			error = xiofs_http_write(inode, start, used, buf,
-						    &nwritten);
-			used = 0;
-			start = -1;
-			if (error) {
-				mapping_set_error(mapping, error);
-				folio_set_error(folio);
-				folio_end_writeback(folio);
-				folio_unlock(folio);
-				break;
-			}
-		}
-		if (used + len > cap) {
-			kvfree(buf);
-			cap = max_t(size_t, used + len, XIOFS_RA_BYTES);
-			buf = kvmalloc(cap, GFP_KERNEL);
-			if (!buf) {
-				error = -ENOMEM;
-				folio_set_error(folio);
-				folio_end_writeback(folio);
-				folio_unlock(folio);
-				break;
-			}
-		}
-		if (start < 0)
-			start = pos;
 		kaddr = kmap_local_folio(folio, 0);
-		memcpy(buf + used, kaddr, len);
+		err = xiofs_http_write(inode, pos, len, kaddr, &nwritten);
 		kunmap_local(kaddr);
-		used += len;
-		folio_end_writeback(folio);
-		folio_unlock(folio);
-		if (used >= XIOFS_RA_BYTES) {
-			error = xiofs_http_write(inode, start, used, buf,
-						    &nwritten);
-			used = 0;
-			start = -1;
-			if (error) {
-				mapping_set_error(mapping, error);
-				break;
-			}
+		if (xiofs_connerr(err)) {
+			folio_redirty_for_writepage(wbc, folio);
+			folio_unlock(folio);
+			folio_end_writeback(folio);
+			if (!error)
+				error = err;
+			continue;
 		}
+		if (err) {
+			folio_set_error(folio);
+			mapping_set_error(mapping, err);
+			folio_unlock(folio);
+			folio_end_writeback(folio);
+			if (!error)
+				error = err;
+			continue;
+		}
+		folio_unlock(folio);
+		folio_end_writeback(folio);
 	}
-	if (!error && used && start >= 0) {
-		size_t nwritten = 0;
-
-		error = xiofs_http_write(inode, start, used, buf, &nwritten);
-		if (error)
-			mapping_set_error(mapping, error);
-	}
-	kvfree(buf);
 	return error;
 }
 #else

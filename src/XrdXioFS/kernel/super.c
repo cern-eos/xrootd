@@ -5,11 +5,13 @@
 #include <linux/fs.h>
 #include <linux/fs_context.h>
 #include <linux/fs_parser.h>
+#include <linux/jiffies.h>
 #include <linux/kmod.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/statfs.h>
 #include <linux/string.h>
+#include <linux/wait.h>
 
 #include "xiofs.h"
 #include "xiofs_compat.h"
@@ -20,12 +22,16 @@ enum {
 	Opt_host,
 	Opt_port,
 	Opt_path,
+	Opt_actimeo,
+	Opt_timeo,
 };
 
 static const struct fs_parameter_spec xiofs_fs_parameters[] = {
 	fsparam_string("host", Opt_host),
 	fsparam_u32("port", Opt_port),
 	fsparam_string("path", Opt_path),
+	fsparam_u32("actimeo", Opt_actimeo),
+	fsparam_u32("timeo", Opt_timeo),
 	{}
 };
 
@@ -33,6 +39,8 @@ struct xiofs_fc_ctx {
 	char		host[256];
 	unsigned int	port;
 	char		export_path[256];
+	unsigned int	actimeo_sec;
+	unsigned int	timeo_sec;
 };
 
 static void xiofs_set_hosthdr(struct xiofs_sb_info *sbi)
@@ -80,6 +88,7 @@ static struct inode *xiofs_alloc_inode(struct super_block *sb)
 		return NULL;
 	ki->remote_path[0] = 0;
 	ki->etag[0] = 0;
+	ki->attr_jiffies = 0;
 	return &ki->vfs_inode;
 }
 
@@ -132,6 +141,7 @@ struct inode *xiofs_iget(struct super_block *sb, const char *path,
 	strscpy(ki->remote_path, path, sizeof(ki->remote_path));
 	if (attr && attr->etag[0])
 		strscpy(ki->etag, attr->etag, sizeof(ki->etag));
+	ki->attr_jiffies = jiffies;
 
 	inode->i_ino = hash;
 	inode->i_uid = current_fsuid();
@@ -175,9 +185,12 @@ int xiofs_fill_super(struct super_block *sb, struct fs_context *fc)
 	if (!sbi)
 		return -ENOMEM;
 	mutex_init(&sbi->io_lock);
+	init_waitqueue_head(&sbi->sock_wait);
 	INIT_LIST_HEAD(&sbi->list);
 	sbi->sb = sb;
 	sbi->port = ctx->port ? ctx->port : 443;
+	sbi->actimeo_sec = ctx->actimeo_sec;
+	sbi->timeo_sec = ctx->timeo_sec ? ctx->timeo_sec : XIOFS_DEF_TIMEO_SEC;
 	strscpy(sbi->host, ctx->host, sizeof(sbi->host));
 	strscpy(sbi->export_path,
 		ctx->export_path[0] ? ctx->export_path : "/",
@@ -186,6 +199,7 @@ int xiofs_fill_super(struct super_block *sb, struct fs_context *fc)
 
 	sb->s_magic = XIOFS_MAGIC;
 	sb->s_op = &xiofs_sops;
+	sb->s_d_op = &xiofs_dops;
 	sb->s_time_gran = 1;
 	sb->s_blocksize = PAGE_SIZE;
 	sb->s_blocksize_bits = PAGE_SHIFT;
@@ -239,6 +253,12 @@ static int xiofs_fc_parse_param(struct fs_context *fc,
 		strscpy(ctx->export_path, param->string,
 			sizeof(ctx->export_path));
 		return 0;
+	case Opt_actimeo:
+		ctx->actimeo_sec = result.uint_32;
+		return 0;
+	case Opt_timeo:
+		ctx->timeo_sec = result.uint_32;
+		return 0;
 	default:
 		return -EINVAL;
 	}
@@ -268,6 +288,8 @@ static int xiofs_init_fs_context(struct fs_context *fc)
 	if (!ctx)
 		return -ENOMEM;
 	ctx->port = 443;
+	ctx->actimeo_sec = XIOFS_DEF_ACTIMEO_SEC;
+	ctx->timeo_sec = XIOFS_DEF_TIMEO_SEC;
 	strscpy(ctx->export_path, "/", sizeof(ctx->export_path));
 	fc->fs_private = ctx;
 	fc->ops = &xiofs_fc_ops;
