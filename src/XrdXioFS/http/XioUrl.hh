@@ -1,12 +1,12 @@
 //------------------------------------------------------------------------------
 // Copyright (c) 2026 by the XRootD Collaboration
 //------------------------------------------------------------------------------
-#ifndef KFS_URL_HH
-#define KFS_URL_HH
+#ifndef XIOFS_URL_HH
+#define XIOFS_URL_HH
 
 #include <string>
 
-namespace Kfs {
+namespace XioFS {
 
 struct Url {
   std::string scheme;     // "https" or "http"
@@ -22,6 +22,6 @@ bool parseUrl(const std::string &in, Url &out, std::string &err);
 // Join a mount prefix with a FUSE/CLI relative path. Both sides may be "/".
 std::string joinPath(const std::string &base, const std::string &rel);
 
-} // namespace Kfs
+} // namespace XioFS
 
 #endif

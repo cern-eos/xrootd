@@ -1,7 +1,7 @@
 //------------------------------------------------------------------------------
-// kfsd — FUSE mount of an XrdHttp HTTP/2 export.
+// xiofsd — FUSE mount of an XrdHttp HTTP/2 export.
 //
-//   kfsd [--cacert FILE] [--insecure] [--token TOK] URL MOUNTPOINT [fuse-opts]
+//   xiofsd [--cacert FILE] [--insecure] [--token TOK] URL MOUNTPOINT [fuse-opts]
 //
 // Reads are Range GETs. Writes are PATCH with Content-Range; create/truncate
 // to empty use PUT. mkdir/unlink/rename map to MKCOL/DELETE/MOVE.
@@ -16,7 +16,7 @@
 #endif
 #define FUSE_USE_VERSION 26
 
-#include "KfsClient.hh"
+#include "XioClient.hh"
 
 #include <fuse.h>
 
@@ -32,7 +32,7 @@
 
 namespace {
 
-Kfs::Client g_client;
+XioFS::Client g_client;
 
 struct FileState {
   std::string etag;
@@ -45,7 +45,7 @@ FileState *fileState(struct fuse_file_info *fi)
   return reinterpret_cast<FileState *>(fi->fh);
 }
 
-void fillStat(const Kfs::Attr &a, struct stat *st)
+void fillStat(const XioFS::Attr &a, struct stat *st)
 {
   memset(st, 0, sizeof(*st));
   st->st_ino = a.ino ? static_cast<ino_t>(a.ino) : 1;
@@ -73,16 +73,16 @@ int putEmpty(const char *path, const std::string &if_match = {},
 
 std::string currentEtag(const char *path)
 {
-  Kfs::Attr a;
+  XioFS::Attr a;
   std::string err;
   if (g_client.getattr(path, a, err))
     return {};
   return a.etag;
 }
 
-int kfs_getattr(const char *path, struct stat *st)
+int xiofs_getattr(const char *path, struct stat *st)
 {
-  Kfs::Attr a;
+  XioFS::Attr a;
   std::string err;
   int rc = g_client.getattr(path, a, err);
   if (rc)
@@ -91,12 +91,12 @@ int kfs_getattr(const char *path, struct stat *st)
   return 0;
 }
 
-int kfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+int xiofs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
                 off_t, struct fuse_file_info *)
 {
   filler(buf, ".", nullptr, 0);
   filler(buf, "..", nullptr, 0);
-  std::vector<Kfs::DavEntry> ents;
+  std::vector<XioFS::DavEntry> ents;
   std::string err;
   int rc = g_client.readdir(path, ents, err);
   if (rc)
@@ -114,9 +114,9 @@ int kfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
   return 0;
 }
 
-int kfs_open(const char *path, struct fuse_file_info *fi)
+int xiofs_open(const char *path, struct fuse_file_info *fi)
 {
-  Kfs::Attr a;
+  XioFS::Attr a;
   std::string err;
   int rc = g_client.getattr(path, a, err);
   if (rc)
@@ -135,7 +135,7 @@ int kfs_open(const char *path, struct fuse_file_info *fi)
   return 0;
 }
 
-int kfs_create(const char *path, mode_t, struct fuse_file_info *fi)
+int xiofs_create(const char *path, mode_t, struct fuse_file_info *fi)
 {
   std::string none;
   if (fi && (fi->flags & O_EXCL))
@@ -149,7 +149,7 @@ int kfs_create(const char *path, mode_t, struct fuse_file_info *fi)
   return 0;
 }
 
-int kfs_release(const char *, struct fuse_file_info *fi)
+int xiofs_release(const char *, struct fuse_file_info *fi)
 {
   delete fileState(fi);
   if (fi)
@@ -157,7 +157,7 @@ int kfs_release(const char *, struct fuse_file_info *fi)
   return 0;
 }
 
-int kfs_read(const char *path, char *buf, size_t size, off_t offset,
+int xiofs_read(const char *path, char *buf, size_t size, off_t offset,
              struct fuse_file_info *)
 {
   if (offset < 0)
@@ -173,7 +173,7 @@ int kfs_read(const char *path, char *buf, size_t size, off_t offset,
   return static_cast<int>(body.size());
 }
 
-int kfs_write(const char *path, const char *buf, size_t size, off_t offset,
+int xiofs_write(const char *path, const char *buf, size_t size, off_t offset,
               struct fuse_file_info *fi)
 {
   if (offset < 0)
@@ -191,7 +191,7 @@ int kfs_write(const char *path, const char *buf, size_t size, off_t offset,
   return static_cast<int>(size);
 }
 
-int kfs_truncate(const char *path, off_t size)
+int xiofs_truncate(const char *path, off_t size)
 {
   if (size < 0)
     return -EINVAL;
@@ -200,7 +200,7 @@ int kfs_truncate(const char *path, off_t size)
   if (size == 0)
     return g_client.put(path, {}, err, etag);
 
-  Kfs::Attr a;
+  XioFS::Attr a;
   int rc = g_client.getattr(path, a, err);
   if (rc)
     return rc;
@@ -224,68 +224,68 @@ int kfs_truncate(const char *path, off_t size)
                         std::string(1, '\0'), err, a.etag);
 }
 
-int kfs_mkdir(const char *path, mode_t)
+int xiofs_mkdir(const char *path, mode_t)
 {
   std::string err;
   return g_client.mkdir(path, err);
 }
 
-int kfs_unlink(const char *path)
+int xiofs_unlink(const char *path)
 {
   std::string err;
   return g_client.unlink(path, err, currentEtag(path));
 }
 
-int kfs_rmdir(const char *path)
+int xiofs_rmdir(const char *path)
 {
-  return kfs_unlink(path);
+  return xiofs_unlink(path);
 }
 
-int kfs_rename(const char *from, const char *to)
+int xiofs_rename(const char *from, const char *to)
 {
   std::string err;
   return g_client.rename(from, to, err, currentEtag(from));
 }
 
-int kfs_chmod(const char *, mode_t)
+int xiofs_chmod(const char *, mode_t)
 {
   return 0;
 }
 
-int kfs_chown(const char *, uid_t, gid_t)
+int xiofs_chown(const char *, uid_t, gid_t)
 {
   return 0;
 }
 
-int kfs_utimens(const char *, const struct timespec[2])
+int xiofs_utimens(const char *, const struct timespec[2])
 {
   return 0;
 }
 
-int kfs_fsync(const char *, int, struct fuse_file_info *)
+int xiofs_fsync(const char *, int, struct fuse_file_info *)
 {
   return 0;
 }
 
-fuse_operations kfs_ops()
+fuse_operations xiofs_ops()
 {
   fuse_operations ops{};
-  ops.getattr = kfs_getattr;
-  ops.readdir = kfs_readdir;
-  ops.open = kfs_open;
-  ops.create = kfs_create;
-  ops.release = kfs_release;
-  ops.read = kfs_read;
-  ops.write = kfs_write;
-  ops.truncate = kfs_truncate;
-  ops.mkdir = kfs_mkdir;
-  ops.unlink = kfs_unlink;
-  ops.rmdir = kfs_rmdir;
-  ops.rename = kfs_rename;
-  ops.chmod = kfs_chmod;
-  ops.chown = kfs_chown;
-  ops.utimens = kfs_utimens;
-  ops.fsync = kfs_fsync;
+  ops.getattr = xiofs_getattr;
+  ops.readdir = xiofs_readdir;
+  ops.open = xiofs_open;
+  ops.create = xiofs_create;
+  ops.release = xiofs_release;
+  ops.read = xiofs_read;
+  ops.write = xiofs_write;
+  ops.truncate = xiofs_truncate;
+  ops.mkdir = xiofs_mkdir;
+  ops.unlink = xiofs_unlink;
+  ops.rmdir = xiofs_rmdir;
+  ops.rename = xiofs_rename;
+  ops.chmod = xiofs_chmod;
+  ops.chown = xiofs_chown;
+  ops.utimens = xiofs_utimens;
+  ops.fsync = xiofs_fsync;
   return ops;
 }
 
@@ -300,7 +300,7 @@ void usage(const char *argv0)
 
 int main(int argc, char **argv)
 {
-  Kfs::Http2Session::Options opt;
+  XioFS::Http2Session::Options opt;
   std::vector<char *> fuse_argv;
   fuse_argv.push_back(argv[0]);
   std::string url;
@@ -333,17 +333,17 @@ int main(int argc, char **argv)
   std::string err;
   int rc = g_client.open(url, opt, err);
   if (rc) {
-    std::cerr << "kfsd: " << err << "\n";
+    std::cerr << "xiofsd: " << err << "\n";
     return 1;
   }
 
   fuse_argv.push_back(const_cast<char *>(mount.c_str()));
   fuse_argv.push_back(const_cast<char *>("-o"));
   fuse_argv.push_back(const_cast<char *>(
-      "auto_cache,big_writes,max_readahead=4194304"));
+      "fsname=xiofs,subtype=xiofs,auto_cache,big_writes,max_readahead=4194304"));
   fuse_argv.push_back(nullptr);
 
-  auto ops = kfs_ops();
+  auto ops = xiofs_ops();
   return fuse_main(static_cast<int>(fuse_argv.size() - 1), fuse_argv.data(),
                    &ops, nullptr);
 }

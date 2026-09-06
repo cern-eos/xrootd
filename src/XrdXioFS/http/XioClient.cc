@@ -1,12 +1,12 @@
 //------------------------------------------------------------------------------
 // Copyright (c) 2026 by the XRootD Collaboration
 //------------------------------------------------------------------------------
-#include "KfsClient.hh"
+#include "XioClient.hh"
 
 #include <cerrno>
 #include <functional>
 
-namespace Kfs {
+namespace XioFS {
 
 int httpToErrno(int status)
 {
@@ -325,4 +325,4 @@ int Client::rename(const std::string &from, const std::string &to,
   return 0;
 }
 
-} // namespace Kfs
+} // namespace XioFS

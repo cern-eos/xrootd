@@ -1,13 +1,13 @@
 #undef NDEBUG
 
-#include "KfsDav.hh"
-#include "KfsUrl.hh"
+#include "XioDav.hh"
+#include "XioUrl.hh"
 
 #include <gtest/gtest.h>
 
-using namespace Kfs;
+using namespace XioFS;
 
-TEST(KfsUrl, HttpsWithPortAndPath)
+TEST(XioUrl, HttpsWithPortAndPath)
 {
   Url u;
   std::string err;
@@ -20,7 +20,7 @@ TEST(KfsUrl, HttpsWithPortAndPath)
   EXPECT_EQ("localhost:7097", u.authority);
 }
 
-TEST(KfsUrl, DefaultHttpsPortOmittedFromAuthority)
+TEST(XioUrl, DefaultHttpsPortOmittedFromAuthority)
 {
   Url u;
   std::string err;
@@ -30,14 +30,14 @@ TEST(KfsUrl, DefaultHttpsPortOmittedFromAuthority)
   EXPECT_EQ("/export", u.path);
 }
 
-TEST(KfsUrl, JoinPath)
+TEST(XioUrl, JoinPath)
 {
   EXPECT_EQ("/export/file", joinPath("/export", "/file"));
   EXPECT_EQ("/file", joinPath("/", "/file"));
   EXPECT_EQ("/export", joinPath("/export", "/"));
 }
 
-TEST(KfsDav, ParseXrdHttpMultistatus)
+TEST(XioDav, ParseXrdHttpMultistatus)
 {
   const char *xml =
       "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
@@ -74,13 +74,13 @@ TEST(KfsDav, ParseXrdHttpMultistatus)
   EXPECT_GT(ents[1].mtime, 0);
 }
 
-TEST(KfsDav, HrefBasename)
+TEST(XioDav, HrefBasename)
 {
   EXPECT_EQ("file.txt", hrefBasename("/export/file.txt"));
   EXPECT_EQ("dir", hrefBasename("/export/dir/"));
 }
 
-TEST(KfsDav, HttpDate)
+TEST(XioDav, HttpDate)
 {
   time_t t = 0;
   ASSERT_TRUE(parseHttpDate("Tue, 01 May 2012 02:42:13 GMT", t));

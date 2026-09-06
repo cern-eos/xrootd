@@ -1,12 +1,12 @@
 //------------------------------------------------------------------------------
 // Copyright (c) 2026 by the XRootD Collaboration
 //------------------------------------------------------------------------------
-#include "KfsUrl.hh"
+#include "XioUrl.hh"
 
 #include <cctype>
 #include <cstdlib>
 
-namespace Kfs {
+namespace XioFS {
 
 bool parseUrl(const std::string &in, Url &out, std::string &err)
 {
@@ -109,4 +109,4 @@ std::string joinPath(const std::string &base, const std::string &rel)
   return b + r;
 }
 
-} // namespace Kfs
+} // namespace XioFS

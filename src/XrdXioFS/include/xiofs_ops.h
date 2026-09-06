@@ -1,14 +1,14 @@
 //------------------------------------------------------------------------------
-// Shared KernelFS transport and I/O vocabulary.
+// Shared XIOFS transport and I/O vocabulary.
 //
-// Userspace (FUSE / kfscli) and the Linux module use the same operation
+// Userspace (FUSE / xiofscli) and the Linux module use the same operation
 // names. The HTTP/2 FUSE client and the future HTTP/1.1+kTLS kernel
 // transport both map these onto XrdHttp verbs.
 //
 // Copyright (c) 2026 by the XRootD Collaboration
 //------------------------------------------------------------------------------
-#ifndef KERNELFS_OPS_H
-#define KERNELFS_OPS_H
+#ifndef XIOFS_OPS_H
+#define XIOFS_OPS_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -17,14 +17,14 @@
 extern "C" {
 #endif
 
-enum kernelfs_memory_type {
-  KFS_MEM_PAGECACHE = 0,
-  KFS_MEM_USER,
-  KFS_MEM_DMABUF,
-  KFS_MEM_GPU
+enum xiofs_memory_type {
+  XIOFS_MEM_PAGECACHE = 0,
+  XIOFS_MEM_USER,
+  XIOFS_MEM_DMABUF,
+  XIOFS_MEM_GPU
 };
 
-struct kernelfs_attr {
+struct xiofs_attr {
   uint64_t ino;
   uint64_t size;
   uint64_t mtime_sec;
@@ -33,18 +33,18 @@ struct kernelfs_attr {
   char     etag[128];
 };
 
-struct kernelfs_dirent {
+struct xiofs_dirent {
   char     name[256];
   uint64_t size;
   uint64_t mtime_sec;
   uint32_t is_dir;
 };
 
-struct kernelfs_io {
+struct xiofs_io {
   uint64_t object_ino;
   uint64_t offset;
   uint64_t length;
-  enum kernelfs_memory_type memory_type;
+  enum xiofs_memory_type memory_type;
   void    *buf;
 };
 
@@ -61,14 +61,14 @@ struct kernelfs_io {
  *   unlink         -> DELETE
  *   rename         -> MOVE
  */
-struct kernelfs_transport_ops {
+struct xiofs_transport_ops {
   int (*connect)(void *ctx);
   void (*disconnect)(void *ctx);
 
   int (*lookup)(void *ctx, const char *parent, const char *name,
-                struct kernelfs_attr *out);
-  int (*getattr)(void *ctx, const char *path, struct kernelfs_attr *out);
-  int (*readdir)(void *ctx, const char *path, struct kernelfs_dirent *ents,
+                struct xiofs_attr *out);
+  int (*getattr)(void *ctx, const char *path, struct xiofs_attr *out);
+  int (*readdir)(void *ctx, const char *path, struct xiofs_dirent *ents,
                  size_t cap, size_t *nents);
 
   int (*submit_read_cpu)(void *ctx, const char *path, uint64_t offset,

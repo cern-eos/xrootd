@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------------
-// HTTP/2 client session (nghttp2 + OpenSSL) for KernelFS.
+// HTTP/2 client session (nghttp2 + OpenSSL) for XIOFS.
 //
 // Speaks ALPN "h2" over TLS, or h2c prior knowledge on cleartext. One
 // connection is shared: an I/O thread drives nghttp2 so FUSE threads can
@@ -8,10 +8,10 @@
 //
 // Copyright (c) 2026 by the XRootD Collaboration
 //------------------------------------------------------------------------------
-#ifndef KFS_HTTP2_HH
-#define KFS_HTTP2_HH
+#ifndef XIOFS_HTTP2_HH
+#define XIOFS_HTTP2_HH
 
-#include "KfsUrl.hh"
+#include "XioUrl.hh"
 
 #include <chrono>
 #include <condition_variable>
@@ -23,7 +23,7 @@
 #include <utility>
 #include <vector>
 
-namespace Kfs {
+namespace XioFS {
 
 struct HttpRequest {
   std::string method{"GET"};
@@ -107,6 +107,6 @@ private:
   static int setNonBlocking(int fd);
 };
 
-} // namespace Kfs
+} // namespace XioFS
 
 #endif

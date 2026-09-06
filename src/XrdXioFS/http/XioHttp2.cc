@@ -1,7 +1,7 @@
 //------------------------------------------------------------------------------
 // Copyright (c) 2026 by the XRootD Collaboration
 //------------------------------------------------------------------------------
-#include "KfsHttp2.hh"
+#include "XioHttp2.hh"
 
 #include <nghttp2/nghttp2.h>
 #include <openssl/err.h>
@@ -25,7 +25,7 @@
 #include <cctype>
 #include <vector>
 
-namespace Kfs {
+namespace XioFS {
 
 namespace {
 
@@ -653,7 +653,7 @@ int Http2Session::request(const HttpRequest &req, HttpResponse &resp,
   nva.push_back(makeNv(":path", path));
   nva.push_back(makeNv(":scheme", scheme));
   nva.push_back(makeNv(":authority", url_.authority));
-  nva.push_back(makeNv("user-agent", "XrdKernelFS/0.1"));
+  nva.push_back(makeNv("user-agent", "XIOFS/0.1"));
   std::string auth;
   if (!opt_.bearer.empty()) {
     auth = "Bearer " + opt_.bearer;
@@ -714,4 +714,4 @@ int Http2Session::request(const HttpRequest &req, HttpResponse &resp,
   return 0;
 }
 
-} // namespace Kfs
+} // namespace XioFS

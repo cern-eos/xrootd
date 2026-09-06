@@ -1,13 +1,13 @@
 //------------------------------------------------------------------------------
 // Copyright (c) 2026 by the XRootD Collaboration
 //------------------------------------------------------------------------------
-#include "KfsDav.hh"
+#include "XioDav.hh"
 
 #include <cctype>
 #include <cstring>
 #include <ctime>
 
-namespace Kfs {
+namespace XioFS {
 
 namespace {
 
@@ -217,4 +217,4 @@ bool parseMultistatus(const std::string &xml, std::vector<DavEntry> &out,
   return true;
 }
 
-} // namespace Kfs
+} // namespace XioFS

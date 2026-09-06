@@ -72,7 +72,7 @@ add_subdirectory( XrdXml )
 add_subdirectory( XrdCl )
 add_subdirectory( XrdClHttp )
 add_subdirectory( XrdClS3 )
-add_subdirectory( XrdKernelFS )
+add_subdirectory( XrdXioFS )
 add_subdirectory( XrdEc )
 
 if( NOT XRDCL_ONLY )

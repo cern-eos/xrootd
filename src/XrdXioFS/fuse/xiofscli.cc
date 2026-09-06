@@ -1,15 +1,15 @@
 //------------------------------------------------------------------------------
-// kfscli — KernelFS HTTP/2 client talking to XrdHttp.
+// xiofscli — XIOFS HTTP/2 client talking to XrdHttp.
 //
 // Usage:
-//   kfscli [--cacert FILE] [--insecure] [--token TOK] URL COMMAND [args]
+//   xiofscli [--cacert FILE] [--insecure] [--token TOK] URL COMMAND [args]
 //
 // Commands: stat | ls | cat | read OFFSET LENGTH | put LOCALFILE
 //           | write OFFSET [LOCALFILE] | rm | mkdir
 //
 // Copyright (c) 2026 by the XRootD Collaboration
 //------------------------------------------------------------------------------
-#include "KfsClient.hh"
+#include "XioClient.hh"
 
 #include <cstdio>
 #include <cstdlib>
@@ -20,8 +20,8 @@
 #include <string>
 #include <vector>
 
-using Kfs::Client;
-using Kfs::Http2Session;
+using XioFS::Client;
+using XioFS::Http2Session;
 
 static void usage(const char *argv0)
 {
@@ -43,7 +43,7 @@ static void usage(const char *argv0)
 
 static int fail(const std::string &msg, int rc)
 {
-  std::cerr << "kfscli: " << msg << "\n";
+  std::cerr << "xiofscli: " << msg << "\n";
   return rc;
 }
 
@@ -86,7 +86,7 @@ int main(int argc, char **argv)
   const std::string rel = "/";
 
   if (cmd == "stat") {
-    Kfs::Attr a;
+    XioFS::Attr a;
     rc = c.getattr(rel, a, err);
     if (rc)
       return fail(err, 1);
@@ -99,7 +99,7 @@ int main(int argc, char **argv)
   }
 
   if (cmd == "ls") {
-    std::vector<Kfs::DavEntry> ents;
+    std::vector<XioFS::DavEntry> ents;
     rc = c.readdir(rel, ents, err);
     if (rc)
       return fail(err, 1);
@@ -110,7 +110,7 @@ int main(int argc, char **argv)
   }
 
   if (cmd == "cat") {
-    Kfs::Attr a;
+    XioFS::Attr a;
     rc = c.getattr(rel, a, err);
     if (rc)
       return fail(err, 1);

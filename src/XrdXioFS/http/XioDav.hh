@@ -3,15 +3,15 @@
 //
 // Copyright (c) 2026 by the XRootD Collaboration
 //------------------------------------------------------------------------------
-#ifndef KFS_DAV_HH
-#define KFS_DAV_HH
+#ifndef XIOFS_DAV_HH
+#define XIOFS_DAV_HH
 
 #include <cstdint>
 #include <ctime>
 #include <string>
 #include <vector>
 
-namespace Kfs {
+namespace XioFS {
 
 struct DavEntry {
   std::string name;
@@ -31,6 +31,6 @@ std::string hrefBasename(const std::string &href);
 // HTTP-date ("Tue, 01 May 2012 02:42:13 GMT") as used by XrdHttp ISOdatetime.
 bool parseHttpDate(const std::string &s, time_t &out);
 
-} // namespace Kfs
+} // namespace XioFS
 
 #endif

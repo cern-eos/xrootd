@@ -405,35 +405,35 @@ function test_httph2() {
 		echo "nghttp not available; skipping small-window flow control checks"
 	fi
 
-	if command -v kfscli >/dev/null 2>&1; then
-		echo "Testing KernelFS HTTP/2 client (kfscli)"
-		kfscli --cacert "${CURL_CA}" "${HTTPS_HOST}/h2-alphabet.txt" stat \
+	if command -v xiofscli >/dev/null 2>&1; then
+		echo "Testing XIOFS HTTP/2 client (xiofscli)"
+		xiofscli --cacert "${CURL_CA}" "${HTTPS_HOST}/h2-alphabet.txt" stat \
 			| grep -q 'file size=26' \
-			|| error "kfscli stat should report file size=26"
-		kfscli --cacert "${CURL_CA}" "${HTTPS_HOST}/h2-alphabet.txt" cat \
-			> "${tmpdir}/kfs-cat.out"
-		assert diff -u "${alphabet}" "${tmpdir}/kfs-cat.out"
-		kfscli --cacert "${CURL_CA}" "${HTTPS_HOST}/h2-alphabet.txt" read 0 4 \
-			> "${tmpdir}/kfs-range.out"
-		printf 'abcd' > "${tmpdir}/kfs-range.ref"
-		assert diff -u "${tmpdir}/kfs-range.ref" "${tmpdir}/kfs-range.out"
-		kfscli --cacert "${CURL_CA}" "${HTTPS_HOST}/h2-list" ls \
-			> "${tmpdir}/kfs-ls.out"
-		grep -q 'testlistings' "${tmpdir}/kfs-ls.out" \
-			|| error "kfscli ls of /h2-list should include testlistings"
-		printf 'abcdefghij' > "${tmpdir}/kfs-w.bin"
-		kfscli --cacert "${CURL_CA}" "${HTTPS_HOST}/h2-kfs-write.bin" \
-			put "${tmpdir}/kfs-w.bin" \
-			|| error "kfscli put should create h2-kfs-write.bin"
-		printf 'XX' | kfscli --cacert "${CURL_CA}" \
-			"${HTTPS_HOST}/h2-kfs-write.bin" write 3 \
-			|| error "kfscli write should PATCH at offset 3"
-		kfscli --cacert "${CURL_CA}" "${HTTPS_HOST}/h2-kfs-write.bin" cat \
-			> "${tmpdir}/kfs-write.out"
-		printf 'abcXXfghij' > "${tmpdir}/kfs-write.ref"
-		assert diff -u "${tmpdir}/kfs-write.ref" "${tmpdir}/kfs-write.out"
+			|| error "xiofscli stat should report file size=26"
+		xiofscli --cacert "${CURL_CA}" "${HTTPS_HOST}/h2-alphabet.txt" cat \
+			> "${tmpdir}/xiofs-cat.out"
+		assert diff -u "${alphabet}" "${tmpdir}/xiofs-cat.out"
+		xiofscli --cacert "${CURL_CA}" "${HTTPS_HOST}/h2-alphabet.txt" read 0 4 \
+			> "${tmpdir}/xiofs-range.out"
+		printf 'abcd' > "${tmpdir}/xiofs-range.ref"
+		assert diff -u "${tmpdir}/xiofs-range.ref" "${tmpdir}/xiofs-range.out"
+		xiofscli --cacert "${CURL_CA}" "${HTTPS_HOST}/h2-list" ls \
+			> "${tmpdir}/xiofs-ls.out"
+		grep -q 'testlistings' "${tmpdir}/xiofs-ls.out" \
+			|| error "xiofscli ls of /h2-list should include testlistings"
+		printf 'abcdefghij' > "${tmpdir}/xiofs-w.bin"
+		xiofscli --cacert "${CURL_CA}" "${HTTPS_HOST}/h2-xiofs-write.bin" \
+			put "${tmpdir}/xiofs-w.bin" \
+			|| error "xiofscli put should create h2-xiofs-write.bin"
+		printf 'XX' | xiofscli --cacert "${CURL_CA}" \
+			"${HTTPS_HOST}/h2-xiofs-write.bin" write 3 \
+			|| error "xiofscli write should PATCH at offset 3"
+		xiofscli --cacert "${CURL_CA}" "${HTTPS_HOST}/h2-xiofs-write.bin" cat \
+			> "${tmpdir}/xiofs-write.out"
+		printf 'abcXXfghij' > "${tmpdir}/xiofs-write.ref"
+		assert diff -u "${tmpdir}/xiofs-write.ref" "${tmpdir}/xiofs-write.out"
 	else
-		echo "kfscli not in PATH; skipping KernelFS client checks"
+		echo "xiofscli not in PATH; skipping XIOFS client checks"
 	fi
 
 	echo "Testing HTTP/2 server push"

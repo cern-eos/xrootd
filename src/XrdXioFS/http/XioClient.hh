@@ -1,21 +1,21 @@
 //------------------------------------------------------------------------------
-// High-level KernelFS client: XrdHttp verbs over HTTP/2.
+// High-level XIOFS client: XrdHttp verbs over HTTP/2.
 //
 // Copyright (c) 2026 by the XRootD Collaboration
 //------------------------------------------------------------------------------
-#ifndef KFS_CLIENT_HH
-#define KFS_CLIENT_HH
+#ifndef XIOFS_CLIENT_HH
+#define XIOFS_CLIENT_HH
 
-#include "KfsDav.hh"
-#include "KfsHttp2.hh"
-#include "KfsUrl.hh"
+#include "XioDav.hh"
+#include "XioHttp2.hh"
+#include "XioUrl.hh"
 
 #include <cstdint>
 #include <mutex>
 #include <string>
 #include <vector>
 
-namespace Kfs {
+namespace XioFS {
 
 struct Attr {
   uint64_t ino{0};
@@ -66,6 +66,6 @@ private:
 
 int httpToErrno(int status);
 
-} // namespace Kfs
+} // namespace XioFS
 
 #endif
