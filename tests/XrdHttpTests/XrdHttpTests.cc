@@ -856,3 +856,40 @@ TEST(XrdHttpTests, parseTransferEncoding) {
     ASSERT_EQ(expected, res) << "input was: \"" << input << "\"";
   }
 }
+
+struct ContentRangeWriteCase {
+  const char *input;
+  int rc;
+  long long first;
+  long long last;
+  long long complete;
+};
+
+static inline const ContentRangeWriteCase contentRangeWriteCases[] {
+  {"bytes 0-3/*", 0, 0, 3, -1},
+  {"bytes 4-7/26", 0, 4, 7, 26},
+  {"BYTES 10-19/20\r\n", 0, 10, 19, 20},
+  {"  bytes 0-0/1", 0, 0, 0, 1},
+  {"bytes 26-29/30", 0, 26, 29, 30},
+  {"bytes 5-4/10", -2, 0, 0, 0},
+  {"bytes 10-19/10", -3, 0, 0, 0},
+  {"bytes */10", -1, 0, 0, 0},
+  {"bytes 0-3", -1, 0, 0, 0},
+  {"items 0-3/10", -1, 0, 0, 0},
+  {"bytes -3/10", -1, 0, 0, 0},
+  {"", -1, 0, 0, 0},
+};
+
+TEST(XrdHttpTests, parseContentRangeWrite) {
+  for (const auto &c : contentRangeWriteCases) {
+    long long first = 0, last = 0, complete = 0;
+    int res = XrdHttpHeaderUtils::parseContentRangeWrite(c.input, first, last,
+                                                         complete);
+    ASSERT_EQ(c.rc, res) << "input was: \"" << c.input << "\"";
+    if (c.rc == 0) {
+      ASSERT_EQ(c.first, first) << "input was: \"" << c.input << "\"";
+      ASSERT_EQ(c.last, last) << "input was: \"" << c.input << "\"";
+      ASSERT_EQ(c.complete, complete) << "input was: \"" << c.input << "\"";
+    }
+  }
+}

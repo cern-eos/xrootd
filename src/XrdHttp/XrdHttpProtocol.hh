@@ -400,11 +400,14 @@ private:
 
   /// Connection-local kXR_open cache. One GET Range after another on the
   /// same path reuses the handle after a kXR_stat confirms size/mtime/flags
-  /// still match; kXR_close waits until a different path, a mutating verb,
-  /// a stale restat, a failed read, or the session ending.
+  /// still match. PATCH keeps a writable handle the same way so successive
+  /// range writes (and later Range GETs) do not re-open. kXR_close waits
+  /// until a different path, a truncating PUT, another mutating verb, a
+  /// stale restat of a read-only handle, a failed I/O, or the session ending.
   struct FileOpenCache {
     bool        valid{false};
     bool        switching{false};
+    bool        writable{false};
     std::string key;
     char        fhandle[4]{};
     long long   filesize{0};
@@ -416,9 +419,10 @@ private:
   bool fileCacheReopenPending_{false};
 
   const char *fileCacheKey(const XrdHttpReq &req) const;
-  bool fileCacheApply(XrdHttpReq &req);
-  void fileCacheStore(const XrdHttpReq &req);
+  bool fileCacheApply(XrdHttpReq &req, bool needWrite = false);
+  void fileCacheStore(const XrdHttpReq &req, bool writable = false);
   bool fileCacheKeepOpen(const XrdHttpReq &req) const;
+  bool fileCacheIsWritable() const { return fileCache_.valid && fileCache_.writable; }
   bool fileCacheBeginClose();
   bool fileCacheCloseIfDifferent(const XrdHttpReq &req);
   bool fileCacheCloseIfOpen();

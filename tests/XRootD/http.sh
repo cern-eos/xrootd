@@ -209,6 +209,42 @@ if body2 != b"ABCDEFGHIJKLMNOPQRSTUVWXYZ":
 '
   printf 'abcdefghijklmnopqrstuvw987' > "${oss_alphabet}"
 
+  echo "Testing PATCH byte-range writes"
+  patchFilePath="${TMPDIR}/patch.bin"
+  printf 'abcdefghijklmnopqrstuvwxyz' > "${TMPDIR}/patch-src"
+  assert curl -s -T "${TMPDIR}/patch-src" "${HTTP_HOST}/${patchFilePath}"
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH \
+    -H 'Content-Range: bytes 4-7/*' --data-binary 'XXXX' \
+    "${HTTP_HOST}/${patchFilePath}")
+  assert_eq 204 "${code}" "PATCH should return 204"
+  assert curl -s -o "${TMPDIR}/patch.out" "${HTTP_HOST}/${patchFilePath}"
+  printf 'abcdXXXXijklmnopqrstuvwxyz' > "${TMPDIR}/patch.ref"
+  assert diff -u "${TMPDIR}/patch.ref" "${TMPDIR}/patch.out"
+
+  curl -s -o /dev/null -X PATCH -H 'Content-Range: bytes 0-3/*' \
+    --data-binary 'AAAA' "${HTTP_HOST}/${patchFilePath}" \
+    --next -X PATCH -H 'Content-Range: bytes 8-11/*' --data-binary 'BBBB' \
+    "${HTTP_HOST}/${patchFilePath}"
+  assert curl -s -o "${TMPDIR}/patch.out" "${HTTP_HOST}/${patchFilePath}"
+  printf 'AAAAXXXXBBBBmnopqrstuvwxyz' > "${TMPDIR}/patch.ref"
+  assert diff -u "${TMPDIR}/patch.ref" "${TMPDIR}/patch.out"
+
+  curl -s -H 'range: bytes=0-3' -o /dev/null "${HTTP_HOST}/${patchFilePath}" \
+    --next -X PATCH -H 'Content-Range: bytes 12-15/*' --data-binary 'CCCC' \
+    "${HTTP_HOST}/${patchFilePath}"
+  assert curl -s -o "${TMPDIR}/patch.out" "${HTTP_HOST}/${patchFilePath}"
+  printf 'AAAAXXXXBBBBCCCCqrstuvwxyz' > "${TMPDIR}/patch.ref"
+  assert diff -u "${TMPDIR}/patch.ref" "${TMPDIR}/patch.out"
+
+  printf 'zzzzzzzzzzzzzzzzzzzzzzzzzz' > "${TMPDIR}/patch-put"
+  assert curl -s -T "${TMPDIR}/patch-put" "${HTTP_HOST}/${patchFilePath}"
+  assert curl -s -o "${TMPDIR}/patch.out" "${HTTP_HOST}/${patchFilePath}"
+  assert diff -u "${TMPDIR}/patch-put" "${TMPDIR}/patch.out"
+
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH \
+    --data-binary 'x' "${HTTP_HOST}/${patchFilePath}")
+  assert_eq 400 "${code}" "PATCH without Content-Range should return 400"
+
   ## GET with trailers
   curl -v -L --raw -H "X-Transfer-Status: true" -H "TE: trailers" "${HTTP_HOST}/$alphabetFilePath" --output - | tr -d '\r' > "$outputFilePath"
   cat "$outputFilePath"

@@ -109,6 +109,56 @@ function test_httph2() {
 	printf 'abcd' > "${tmpdir}/r-after-switch.ref"
 	assert diff -u "${tmpdir}/r-after-switch.ref" "${tmpdir}/r-after-switch"
 
+	echo "Testing PATCH byte-range writes"
+	printf 'abcdefghijklmnopqrstuvwxyz' > "${tmpdir}/patch-src"
+	assert h2 -s -T "${tmpdir}/patch-src" "${HTTPS_HOST}/h2-patch.bin"
+	code=$(h2 -s -o /dev/null -w '%{http_code}' -X PATCH \
+		-H 'Content-Range: bytes 4-7/*' --data-binary 'XXXX' \
+		"${HTTPS_HOST}/h2-patch.bin")
+	assert_eq 204 "${code}" "PATCH should return 204"
+	assert h2 -s -o "${tmpdir}/patch.out" "${HTTPS_HOST}/h2-patch.bin"
+	printf 'abcdXXXXijklmnopqrstuvwxyz' > "${tmpdir}/patch.ref"
+	assert diff -u "${tmpdir}/patch.ref" "${tmpdir}/patch.out"
+
+	# Two PATCHes on one connection reuse the writable cached open.
+	h2 -s -o /dev/null -X PATCH -H 'Content-Range: bytes 0-3/*' \
+		--data-binary 'AAAA' "${HTTPS_HOST}/h2-patch.bin" \
+		--next --http2 --cacert "${CURL_CA}" \
+		-X PATCH -H 'Content-Range: bytes 8-11/*' --data-binary 'BBBB' \
+		"${HTTPS_HOST}/h2-patch.bin"
+	assert h2 -s -o "${tmpdir}/patch.out" "${HTTPS_HOST}/h2-patch.bin"
+	printf 'AAAAXXXXBBBBmnopqrstuvwxyz' > "${tmpdir}/patch.ref"
+	assert diff -u "${tmpdir}/patch.ref" "${tmpdir}/patch.out"
+
+	# Range GET then PATCH: the read-only cache must be closed first.
+	h2 -s -H 'range: bytes=0-3' -o "${tmpdir}/patch-r1" \
+		"${HTTPS_HOST}/h2-patch.bin" \
+		--next --http2 --cacert "${CURL_CA}" \
+		-X PATCH -H 'Content-Range: bytes 12-15/*' --data-binary 'CCCC' \
+		"${HTTPS_HOST}/h2-patch.bin"
+	assert h2 -s -o "${tmpdir}/patch.out" "${HTTPS_HOST}/h2-patch.bin"
+	printf 'AAAAXXXXBBBBCCCCqrstuvwxyz' > "${tmpdir}/patch.ref"
+	assert diff -u "${tmpdir}/patch.ref" "${tmpdir}/patch.out"
+
+	# PATCH then Range GET: the writable handle is reusable for reads.
+	h2 -s -o /dev/null -X PATCH -H 'Content-Range: bytes 16-19/*' \
+		--data-binary 'DDDD' "${HTTPS_HOST}/h2-patch.bin" \
+		--next --http2 --cacert "${CURL_CA}" \
+		-H 'range: bytes=12-19' -o "${tmpdir}/patch-r2" \
+		"${HTTPS_HOST}/h2-patch.bin"
+	printf 'CCCCDDDD' > "${tmpdir}/patch-r2.ref"
+	assert diff -u "${tmpdir}/patch-r2.ref" "${tmpdir}/patch-r2"
+
+	# PUT still replaces the whole object.
+	printf 'zzzzzzzzzzzzzzzzzzzzzzzzzz' > "${tmpdir}/patch-put"
+	assert h2 -s -T "${tmpdir}/patch-put" "${HTTPS_HOST}/h2-patch.bin"
+	assert h2 -s -o "${tmpdir}/patch.out" "${HTTPS_HOST}/h2-patch.bin"
+	assert diff -u "${tmpdir}/patch-put" "${tmpdir}/patch.out"
+
+	code=$(h2 -s -o /dev/null -w '%{http_code}' -X PATCH \
+		--data-binary 'x' "${HTTPS_HOST}/h2-patch.bin")
+	assert_eq 400 "${code}" "PATCH without Content-Range should return 400"
+
 	alphabetadler32="$(xrdadler32 "${alphabet}" | cut -d' ' -f1)"
 	alphabetcrc32c="$(xrdcrc32c -s "${alphabet}")"
 	alphabetmd5sumb64='mRykpCtRV62NckS3pmYroQ=='
@@ -329,6 +379,37 @@ function test_httph2() {
 		assert cmp "${tmpdir}/big.bin" "${tmpdir}/ng-put.out"
 	else
 		echo "nghttp not available; skipping small-window flow control checks"
+	fi
+
+	if command -v kfscli >/dev/null 2>&1; then
+		echo "Testing KernelFS HTTP/2 client (kfscli)"
+		kfscli --cacert "${CURL_CA}" "${HTTPS_HOST}/h2-alphabet.txt" stat \
+			| grep -q 'file size=26' \
+			|| error "kfscli stat should report file size=26"
+		kfscli --cacert "${CURL_CA}" "${HTTPS_HOST}/h2-alphabet.txt" cat \
+			> "${tmpdir}/kfs-cat.out"
+		assert diff -u "${alphabet}" "${tmpdir}/kfs-cat.out"
+		kfscli --cacert "${CURL_CA}" "${HTTPS_HOST}/h2-alphabet.txt" read 0 4 \
+			> "${tmpdir}/kfs-range.out"
+		printf 'abcd' > "${tmpdir}/kfs-range.ref"
+		assert diff -u "${tmpdir}/kfs-range.ref" "${tmpdir}/kfs-range.out"
+		kfscli --cacert "${CURL_CA}" "${HTTPS_HOST}/h2-list" ls \
+			> "${tmpdir}/kfs-ls.out"
+		grep -q 'testlistings' "${tmpdir}/kfs-ls.out" \
+			|| error "kfscli ls of /h2-list should include testlistings"
+		printf 'abcdefghij' > "${tmpdir}/kfs-w.bin"
+		kfscli --cacert "${CURL_CA}" "${HTTPS_HOST}/h2-kfs-write.bin" \
+			put "${tmpdir}/kfs-w.bin" \
+			|| error "kfscli put should create h2-kfs-write.bin"
+		printf 'XX' | kfscli --cacert "${CURL_CA}" \
+			"${HTTPS_HOST}/h2-kfs-write.bin" write 3 \
+			|| error "kfscli write should PATCH at offset 3"
+		kfscli --cacert "${CURL_CA}" "${HTTPS_HOST}/h2-kfs-write.bin" cat \
+			> "${tmpdir}/kfs-write.out"
+		printf 'abcXXfghij' > "${tmpdir}/kfs-write.ref"
+		assert diff -u "${tmpdir}/kfs-write.ref" "${tmpdir}/kfs-write.out"
+	else
+		echo "kfscli not in PATH; skipping KernelFS client checks"
 	fi
 
 	echo "Testing HTTP/2 server push"

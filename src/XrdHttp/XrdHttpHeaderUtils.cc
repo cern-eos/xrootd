@@ -26,6 +26,7 @@
 
 #include <vector>
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cstdlib>
 #include <limits>
@@ -162,5 +163,81 @@ int XrdHttpHeaderUtils::parseTransferEncoding(const std::string & value) {
   if (!any_token)        return -1;
   if (!chunked_seen)     return -2;
   if (!last_was_chunked) return -3;
+  return 0;
+}
+
+int XrdHttpHeaderUtils::parseContentRangeWrite(const std::string & value,
+                                               long long & first,
+                                               long long & last,
+                                               long long & complete) {
+  first = last = complete = -1;
+  std::string_view sv{value};
+  while (!sv.empty() && (sv.back() == '\r' || sv.back() == '\n' ||
+                         sv.back() == ' '  || sv.back() == '\t')) {
+    sv.remove_suffix(1);
+  }
+  while (!sv.empty() && (sv.front() == ' ' || sv.front() == '\t')) {
+    sv.remove_prefix(1);
+  }
+  if (sv.size() < 6) {
+    return -1;
+  }
+  const char *unit = "bytes";
+  for (int i = 0; i < 5; ++i) {
+    if (std::tolower(static_cast<unsigned char>(sv[i])) != unit[i]) {
+      return -1;
+    }
+  }
+  sv.remove_prefix(5);
+  if (sv.empty() || (sv.front() != ' ' && sv.front() != '\t')) {
+    return -1;
+  }
+  while (!sv.empty() && (sv.front() == ' ' || sv.front() == '\t')) {
+    sv.remove_prefix(1);
+  }
+
+  const auto parse_nn = [](std::string_view s, long long &out) -> int {
+    if (s.empty()) {
+      return -1;
+    }
+    for (char c : s) {
+      if (c < '0' || c > '9') {
+        return -1;
+      }
+    }
+    std::string nullTerm{s};
+    errno = 0;
+    long long parsed = std::strtoll(nullTerm.c_str(), nullptr, 10);
+    if (errno == ERANGE || parsed < 0) {
+      return -1;
+    }
+    out = parsed;
+    return 0;
+  };
+
+  const size_t dash = sv.find('-');
+  const size_t slash = sv.find('/');
+  if (dash == std::string_view::npos || slash == std::string_view::npos ||
+      slash < dash + 1) {
+    return -1;
+  }
+  if (parse_nn(sv.substr(0, dash), first) < 0) {
+    return -1;
+  }
+  if (parse_nn(sv.substr(dash + 1, slash - dash - 1), last) < 0) {
+    return -1;
+  }
+  std::string_view cl = sv.substr(slash + 1);
+  if (cl == "*") {
+    complete = -1;
+  } else if (parse_nn(cl, complete) < 0) {
+    return -1;
+  }
+  if (first < 0 || last < first) {
+    return -2;
+  }
+  if (complete >= 0 && last >= complete) {
+    return -3;
+  }
   return 0;
 }

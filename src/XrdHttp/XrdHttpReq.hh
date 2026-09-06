@@ -144,6 +144,10 @@ private:
 
   void getfhandle();
 
+  // PUT/PATCH body: write the next chunk (or close / keep the cached handle).
+  int processWritePayload();
+  long long writeFileOffset() const;
+
   // Process the checksum response and return a header that should
   // be included in the response.
   int PostProcessChecksum(std::string &digest_header);
@@ -362,6 +366,12 @@ public:
 
   /// In a long write, we track where we have arrived
   long long writtenbytes;
+
+  /// PATCH Content-Range: first byte offset, inclusive length, complete-length
+  /// (-1 if unknown / "*"). patchOffset < 0 means the header was absent.
+  long long patchOffset{-1};
+  long long patchLength{-1};
+  long long patchComplete{-1};
 
   int mScitag;
 

@@ -182,6 +182,16 @@ int XrdHttpReq::parseLine(char *line, int len) {
       // which is syntactically invalid the Range header should be ignored.
       // Therefore no need for the range handler to report an error.
       readRangeHandler.ParseContentRange(val);
+    } else if (!strcasecmp(key, "content-range") && request == rtPATCH) {
+      long long first = -1, last = -1, complete = -1;
+      if (XrdHttpHeaderUtils::parseContentRangeWrite(val, first, last,
+                                                     complete) != 0) {
+        request = rtMalformed;
+        return -9;
+      }
+      patchOffset = first;
+      patchLength = last - first + 1;
+      patchComplete = complete;
     } else if (!strcasecmp(key, "content-length")) {
       // Parse and validate the Content-Length value (one-or-more digits,
       // no sign, no embedded garbage, no overflow). Anything malformed
@@ -943,6 +953,193 @@ int XrdHttpReq::prepareChecksumQuery(XrdHttpChecksumHandler::XrdHttpChecksumRawP
   return 0;
 }
 
+long long XrdHttpReq::writeFileOffset() const
+{
+  const long long base = (patchOffset >= 0) ? patchOffset : 0;
+  return base + writtenbytes;
+}
+
+int XrdHttpReq::processWritePayload()
+{
+  const char *verb = (request == rtPATCH) ? "PATCH" : "PUT";
+
+  if (request == rtPATCH && sendcontinue && writtenbytes == 0) {
+    sendcontinue = false;
+    prot->SendSimpleResp(100, NULL, NULL, 0, 0, keepalive);
+    if (!prot->BuffUsed())
+      return 1;
+  }
+
+  if (!m_transfer_encoding_chunked && writtenbytes < length &&
+      prot->BuffUsed() == 0) {
+    prot->ResumeBytes = std::min(length - writtenbytes,
+                                 (long long) prot->BuffAvailable());
+    return 1;
+  }
+
+  if (m_transfer_encoding_chunked) {
+    if (m_current_chunk_size == m_current_chunk_offset) {
+      // Chunk has been consumed; we now must process the CRLF.
+      // Note that we don't support trailer headers.
+      if (prot->BuffUsed() < 2) return 1;
+      if (prot->myBuffStart[0] != '\r' || prot->myBuffStart[1] != '\n') {
+        prot->SendSimpleResp(400, NULL, NULL, (char *) "Invalid trailing chunk encoding.", 0, keepalive);
+        return -1;
+      }
+      prot->BuffConsume(2);
+      if (m_current_chunk_size == 0) {
+        // All data has been sent.  Turn off chunk processing and
+        // set the bytes written and length appropriately; on next callback,
+        // we will hit the close() block below.
+        m_transfer_encoding_chunked = false;
+        length = writtenbytes;
+        return ProcessHTTPReq();
+      }
+      m_current_chunk_size = -1;
+      m_current_chunk_offset = 0;
+      // If there is more data, we try to process the next chunk; otherwise, return
+      if (!prot->BuffUsed()) return 1;
+    }
+    if (-1 == m_current_chunk_size) {
+
+        // Parse out the next chunk size.
+      long long idx = 0;
+      bool found_newline = false;
+      // Set a maximum size of chunk we will allow
+      // Nginx sets this to "NGX_MAX_OFF_T_VALUE", which is 9223372036854775807 (a some crazy number)
+      // We set it to 1TB, which is 1099511627776
+      // This is to prevent a malicious client from sending a very large chunk size
+      // or a malformed chunk request.
+      // 1TB in base-16 is 0x40000000000, so only allow 11 characters, plus the CRLF
+      long long max_chunk_size_chars = std::min(static_cast<long long>(prot->BuffUsed()), static_cast<long long>(13));
+      for (; idx < max_chunk_size_chars; idx++) {
+        if (prot->myBuffStart[idx] == '\n') {
+          found_newline = true;
+          break;
+        }
+      }
+      // If we found a new line, but it is the first character in the buffer (no chunk length)
+      // or if the previous character is not a CR.
+      if (found_newline && ((idx == 0) || prot->myBuffStart[idx-1] != '\r')) {
+        prot->SendSimpleResp(400, NULL, NULL, (char *)"Invalid chunked encoding", 0, false);
+        TRACE(REQ, "XrdHTTP " << verb << ": Sending invalid chunk encoding.  Start of chunk should have had a length, followed by a CRLF.");
+        return -1;
+      }
+      if (found_newline) {
+        char *endptr = NULL;
+        std::string line_contents(prot->myBuffStart, idx);
+        long long chunk_contents = strtoll(line_contents.c_str(), &endptr, 16);
+          // Chunk sizes can be followed by trailer information or CRLF
+        if (*endptr != ';' && *endptr != '\r') {
+          prot->SendSimpleResp(400, NULL, NULL, (char *)"Invalid chunked encoding", 0, false);
+          TRACE(REQ, "XrdHTTP " << verb << ": Sending invalid chunk encoding. Chunk size was not followed by a ';' or CR." << __LINE__);
+          return -1;
+        }
+        m_current_chunk_size = chunk_contents;
+        m_current_chunk_offset = 0;
+        prot->BuffConsume(idx + 1);
+        TRACE(REQ, "XrdHTTP " << verb << ": next chunk from client will be " << m_current_chunk_size << " bytes");
+      } else {
+          // Need more data!
+        return 1;
+      }
+    }
+
+    if (m_current_chunk_size == 0) {
+      // All data has been sent.  Invoke this routine again immediately to process CRLF
+      return ProcessHTTPReq();
+    } else {
+      // At this point, we have a chunk size defined and should consume payload data
+      memset(&xrdreq, 0, sizeof (xrdreq));
+      xrdreq.write.requestid = htons(kXR_write);
+      memcpy(xrdreq.write.fhandle, fhandle, 4);
+
+      long long chunk_bytes_remaining = m_current_chunk_size - m_current_chunk_offset;
+      long long bytes_to_write = std::min(static_cast<long long>(prot->BuffUsed()),
+                                     chunk_bytes_remaining);
+
+      xrdreq.write.offset = htonll(writeFileOffset());
+      xrdreq.write.dlen = htonl(bytes_to_write);
+
+      TRACEI(REQ, "XrdHTTP " << verb << ": Writing chunk of size " << bytes_to_write << " starting with '" << *(prot->myBuffStart) << "'" << " with " << chunk_bytes_remaining << " bytes remaining in the chunk");
+      if (!prot->Bridge->Run((char *) &xrdreq, prot->myBuffStart, bytes_to_write)) {
+        generateWebdavErrMsg();
+        return sendFooterError("Could not run write request on the bridge");
+      }
+      // If there are more bytes in the buffer, then immediately call us after the
+      // write is finished; otherwise, wait for data.
+      return (prot->BuffUsed() > chunk_bytes_remaining) ? 0 : 1;
+    }
+  } else if (writtenbytes < length) {
+
+
+    // --------- WRITE
+    memset(&xrdreq, 0, sizeof (xrdreq));
+    xrdreq.write.requestid = htons(kXR_write);
+    memcpy(xrdreq.write.fhandle, fhandle, 4);
+
+    long long bytes_to_read = std::min(static_cast<long long>(prot->BuffUsed()),
+                                  length - writtenbytes);
+
+    xrdreq.write.offset = htonll(writeFileOffset());
+    xrdreq.write.dlen = htonl(bytes_to_read);
+
+    TRACEI(REQ, "Writing " << bytes_to_read << " at " << writeFileOffset());
+    if (!prot->Bridge->Run((char *) &xrdreq, prot->myBuffStart, bytes_to_read)) {
+      generateWebdavErrMsg();
+      return sendFooterError("Could not run write request on the bridge");
+    }
+
+    if (writtenbytes + prot->BuffUsed() >= length)
+      // Trigger an immediate recall after this request has finished
+      return 0;
+    else
+      // We want to be invoked again after this request is finished
+      // only if there is pending data
+      return 1;
+
+
+
+  } else {
+
+    if (request == rtPATCH) {
+      if (patchLength >= 0 && writtenbytes != patchLength) {
+        prot->SendSimpleResp(400, NULL, NULL,
+            (char *) "PATCH body length does not match Content-Range", 0, false);
+        prot->fileCacheForget();
+        return -1;
+      }
+      const long long endoff = writeFileOffset();
+      if (endoff > filesize)
+        filesize = endoff;
+      prot->fileCacheStore(*this, true);
+      if (prot->fileCacheKeepOpen(*this)) {
+        TRACEI(REQ, "Keeping cached open at end of PATCH");
+        prot->SendSimpleResp(204, NULL, NULL, NULL, 0, keepalive);
+        const int rc = keepalive ? 1 : -1;
+        reset();
+        return rc;
+      }
+      prot->fileCacheForget();
+    }
+
+    // --------- CLOSE
+    memset(&xrdreq, 0, sizeof (ClientRequest));
+    xrdreq.close.requestid = htons(kXR_close);
+    memcpy(xrdreq.close.fhandle, fhandle, 4);
+
+
+    if (!prot->Bridge->Run((char *) &xrdreq, 0, 0)) {
+      generateWebdavErrMsg();
+      return sendFooterError("Could not run close request on the bridge");
+    }
+
+    // We have finished
+    return 1;
+
+  }
+}
+
 int XrdHttpReq::ProcessHTTPReq() {
 
   kXR_int32 l;
@@ -1415,158 +1612,13 @@ int XrdHttpReq::ProcessHTTPReq() {
           return 0;
 
         return 1;
-
-      } else {
-
-        if (m_transfer_encoding_chunked) {
-          if (m_current_chunk_size == m_current_chunk_offset) {
-            // Chunk has been consumed; we now must process the CRLF.
-            // Note that we don't support trailer headers.
-            if (prot->BuffUsed() < 2) return 1;
-            if (prot->myBuffStart[0] != '\r' || prot->myBuffStart[1] != '\n') {
-              prot->SendSimpleResp(400, NULL, NULL, (char *) "Invalid trailing chunk encoding.", 0, keepalive);
-              return -1;
-            }
-            prot->BuffConsume(2);
-            if (m_current_chunk_size == 0) {
-              // All data has been sent.  Turn off chunk processing and
-              // set the bytes written and length appropriately; on next callback,
-              // we will hit the close() block below.
-              m_transfer_encoding_chunked = false;
-              length = writtenbytes;
-              return ProcessHTTPReq();
-            }
-            m_current_chunk_size = -1;
-            m_current_chunk_offset = 0;
-            // If there is more data, we try to process the next chunk; otherwise, return
-            if (!prot->BuffUsed()) return 1;
-          }
-          if (-1 == m_current_chunk_size) {
-
-              // Parse out the next chunk size.
-            long long idx = 0;
-            bool found_newline = false;
-            // Set a maximum size of chunk we will allow
-            // Nginx sets this to "NGX_MAX_OFF_T_VALUE", which is 9223372036854775807 (a some crazy number)
-            // We set it to 1TB, which is 1099511627776
-            // This is to prevent a malicious client from sending a very large chunk size
-            // or a malformed chunk request.
-            // 1TB in base-16 is 0x40000000000, so only allow 11 characters, plus the CRLF
-            long long max_chunk_size_chars = std::min(static_cast<long long>(prot->BuffUsed()), static_cast<long long>(13));
-            for (; idx < max_chunk_size_chars; idx++) {
-              if (prot->myBuffStart[idx] == '\n') {
-                found_newline = true;
-                break;
-              }
-            }
-            // If we found a new line, but it is the first character in the buffer (no chunk length)
-            // or if the previous character is not a CR.
-            if (found_newline && ((idx == 0) || prot->myBuffStart[idx-1] != '\r')) {
-              prot->SendSimpleResp(400, NULL, NULL, (char *)"Invalid chunked encoding", 0, false);
-              TRACE(REQ, "XrdHTTP PUT: Sending invalid chunk encoding.  Start of chunk should have had a length, followed by a CRLF.");
-              return -1;
-            }
-            if (found_newline) {
-              char *endptr = NULL;
-              std::string line_contents(prot->myBuffStart, idx);
-              long long chunk_contents = strtoll(line_contents.c_str(), &endptr, 16);
-                // Chunk sizes can be followed by trailer information or CRLF
-              if (*endptr != ';' && *endptr != '\r') {
-                prot->SendSimpleResp(400, NULL, NULL, (char *)"Invalid chunked encoding", 0, false);
-                TRACE(REQ, "XrdHTTP PUT: Sending invalid chunk encoding. Chunk size was not followed by a ';' or CR." << __LINE__);
-                return -1;
-              }
-              m_current_chunk_size = chunk_contents;
-              m_current_chunk_offset = 0;
-              prot->BuffConsume(idx + 1);
-              TRACE(REQ, "XrdHTTP PUT: next chunk from client will be " << m_current_chunk_size << " bytes");
-            } else {
-                // Need more data!
-              return 1;
-            }
-          }
-
-          if (m_current_chunk_size == 0) {
-            // All data has been sent.  Invoke this routine again immediately to process CRLF
-            return ProcessHTTPReq();
-          } else {
-            // At this point, we have a chunk size defined and should consume payload data
-            memset(&xrdreq, 0, sizeof (xrdreq));
-            xrdreq.write.requestid = htons(kXR_write);
-            memcpy(xrdreq.write.fhandle, fhandle, 4);
-
-            long long chunk_bytes_remaining = m_current_chunk_size - m_current_chunk_offset;
-            long long bytes_to_write = std::min(static_cast<long long>(prot->BuffUsed()),
-                                           chunk_bytes_remaining);
-
-            xrdreq.write.offset = htonll(writtenbytes);
-            xrdreq.write.dlen = htonl(bytes_to_write);
-
-            TRACEI(REQ, "XrdHTTP PUT: Writing chunk of size " << bytes_to_write << " starting with '" << *(prot->myBuffStart) << "'" << " with " << chunk_bytes_remaining << " bytes remaining in the chunk");
-            if (!prot->Bridge->Run((char *) &xrdreq, prot->myBuffStart, bytes_to_write)) {
-              generateWebdavErrMsg();
-              return sendFooterError("Could not run write request on the bridge");
-            }
-            // If there are more bytes in the buffer, then immediately call us after the
-            // write is finished; otherwise, wait for data.
-            return (prot->BuffUsed() > chunk_bytes_remaining) ? 0 : 1;
-          }
-        } else if (writtenbytes < length) {
-
-
-          // --------- WRITE
-          memset(&xrdreq, 0, sizeof (xrdreq));
-          xrdreq.write.requestid = htons(kXR_write);
-          memcpy(xrdreq.write.fhandle, fhandle, 4);
-
-          long long bytes_to_read = std::min(static_cast<long long>(prot->BuffUsed()),
-                                        length - writtenbytes);
-
-          xrdreq.write.offset = htonll(writtenbytes);
-          xrdreq.write.dlen = htonl(bytes_to_read);
-
-          TRACEI(REQ, "Writing " << bytes_to_read);
-          if (!prot->Bridge->Run((char *) &xrdreq, prot->myBuffStart, bytes_to_read)) {
-            generateWebdavErrMsg();
-            return sendFooterError("Could not run write request on the bridge");
-          }
-
-          if (writtenbytes + prot->BuffUsed() >= length)
-            // Trigger an immediate recall after this request has finished
-            return 0;
-          else
-            // We want to be invoked again after this request is finished
-            // only if there is pending data
-            return 1;
-
-
-
-        } else {
-
-          // --------- CLOSE
-          memset(&xrdreq, 0, sizeof (ClientRequest));
-          xrdreq.close.requestid = htons(kXR_close);
-          memcpy(xrdreq.close.fhandle, fhandle, 4);
-
-
-          if (!prot->Bridge->Run((char *) &xrdreq, 0, 0)) {
-            generateWebdavErrMsg();
-            return sendFooterError("Could not run close request on the bridge");
-          }
-
-          // We have finished
-          return 1;
-
-        }
-
       }
-
-      break;
+      return processWritePayload();
 
     }
     case XrdHttpReq::rtOPTIONS:
     {
-      prot->SendSimpleResp(200, NULL, (char *) "DAV: 1\r\nDAV: <http://apache.org/dav/propset/fs/1>\r\nAllow: HEAD,GET,PUT,PROPFIND,DELETE,OPTIONS", NULL, 0, keepalive);
+      prot->SendSimpleResp(200, NULL, (char *) "DAV: 1\r\nDAV: <http://apache.org/dav/propset/fs/1>\r\nAllow: HEAD,GET,PUT,PATCH,PROPFIND,DELETE,OPTIONS", NULL, 0, keepalive);
       bool ret_keepalive = keepalive; // reset() clears keepalive
       reset();
       return ret_keepalive ? 1 : -1;
@@ -1644,9 +1696,44 @@ int XrdHttpReq::ProcessHTTPReq() {
     }
     case XrdHttpReq::rtPATCH:
     {
-      prot->SendSimpleResp(501, NULL, NULL, (char *) "Request not supported yet.", 0, false);
+      if (patchOffset < 0) {
+        prot->SendSimpleResp(400, NULL, NULL,
+            (char *) "PATCH requires Content-Range: bytes first-last/complete",
+            0, false);
+        return -1;
+      }
+      if (length_seen && patchLength >= 0 && length != patchLength) {
+        prot->SendSimpleResp(400, NULL, NULL,
+            (char *) "Content-Length does not match Content-Range", 0, false);
+        return -1;
+      }
 
-      return -1;
+      if (!fopened) {
+        prot->fileCacheApply(*this, true);
+        if (!fopened && prot->fileCacheCloseIfOpen())
+          return 0;
+        if (!fopened) {
+          memset(&xrdreq, 0, sizeof (ClientRequest));
+          xrdreq.open.requestid = htons(kXR_open);
+          l = resourceplusopaque.length() + 1;
+          xrdreq.open.dlen = htonl(l);
+          xrdreq.open.mode = htons(kXR_ur | kXR_uw | kXR_gw | kXR_gr | kXR_or);
+          // kXR_open_updt maps to SFS_O_RDWR: in-place writes, no truncate.
+          xrdreq.open.options = htons(kXR_open_updt | kXR_retstat);
+
+          if (!prot->Bridge->Run((char *) &xrdreq,
+                                 (char *) resourceplusopaque.c_str(), l)) {
+            prot->SendSimpleResp(404, NULL, NULL,
+                                 (char *) "Could not run request.", 0, keepalive);
+            return -1;
+          }
+
+          if (prot->BuffUsed() > 0 || (length == 0 && !sendcontinue))
+            return 0;
+          return 1;
+        }
+      }
+      return processWritePayload();
     }
     case XrdHttpReq::rtPROPFIND:
     {
@@ -2277,8 +2364,11 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
                         << " stat=" << (char *) iovP[0].iov_base);
               sscanf((const char *) iovP[0].iov_base, "%lld %lld %ld %ld",
                      &etag, &stsize, &stflags, &stmtime);
-              stale = (stflags & kXR_isDir) ||
-                      prot->fileCacheStale(stsize, stflags, stmtime);
+              stale = (stflags & kXR_isDir);
+              // A writable handle is still the same file after our own PATCH;
+              // size/mtime will have changed. Refresh stats and keep it.
+              if (!stale && !prot->fileCacheIsWritable())
+                stale = prot->fileCacheStale(stsize, stflags, stmtime);
               if (!stale) {
                 filesize = stsize;
                 fileflags = stflags;
@@ -2286,7 +2376,7 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
                 readRangeHandler.SetFilesize(filesize);
                 if (!length)
                   length = filesize;
-                prot->fileCacheStore(*this);
+                prot->fileCacheStore(*this, prot->fileCacheIsWritable());
                 return 0;
               }
             }
@@ -2430,6 +2520,7 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
     } // case GET
 
     case XrdHttpReq::rtPUT:
+    case XrdHttpReq::rtPATCH:
     {
       if (!fopened) {
         if (xrdresp != kXR_ok) {
@@ -2439,6 +2530,17 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
 
         getfhandle();
         fopened = true;
+
+        if (request == rtPATCH && iovN > 1 && iovP && iovP[1].iov_base &&
+            iovP[1].iov_len > 1) {
+          TRACEI(REQ, "Stat for PATCH " << resource.c_str()
+                    << " stat=" << (char *) iovP[1].iov_base);
+          long dummyl;
+          sscanf((const char *) iovP[1].iov_base, "%ld %lld %ld %ld",
+                 &dummyl, &filesize, &fileflags, &filemodtime);
+        }
+        if (request == rtPATCH)
+          prot->fileCacheStore(*this, true);
 
         // We try to completely fill up our buffer before flushing
         prot->ResumeBytes = std::min(length - writtenbytes, (long long) prot->BuffAvailable());
@@ -2455,6 +2557,8 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
         // However, we decide to send a response anyway before we close the connection
         // We are not sure if sending a final response before reading the entire request
         if (xrdresp == kXR_error) {
+          if (request == rtPATCH)
+            prot->fileCacheForget();
           prot->SendSimpleResp(httpStatusCode, NULL, NULL, httpErrorBody.c_str(), httpErrorBody.length(), keepalive);
           return -1;
         }
@@ -2479,7 +2583,10 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
 
         if (ntohs(xrdreq.header.requestid) == kXR_close) {
           if (xrdresp == kXR_ok) {
-            prot->SendSimpleResp(201, NULL, NULL, (char *)":-)", 0, keepalive);
+            if (request == rtPATCH)
+              prot->SendSimpleResp(204, NULL, NULL, NULL, 0, keepalive);
+            else
+              prot->SendSimpleResp(201, NULL, NULL, (char *)":-)", 0, keepalive);
             return keepalive ? 1 : -1;
           } else {
             prot->SendSimpleResp(httpStatusCode, NULL, NULL, httpErrorBody.c_str(), httpErrorBody.length(), keepalive);
@@ -2945,6 +3052,9 @@ void XrdHttpReq::reset() {
   hdr2cgistr = "";
   m_appended_hdr2cgistr = false;
   m_appended_asize = false;
+  patchOffset = -1;
+  patchLength = -1;
+  patchComplete = -1;
 
   iovP = 0;
   iovN = 0;

@@ -147,6 +147,33 @@ XrdSysTrace XrdHttpTrace("http");
 namespace
 {
 const char *TraceID = "Protocol";
+
+#ifdef HAVE_NGHTTP2
+const unsigned char kServerAlpn[] = {
+  2, 'h','2',
+  8, 'h','t','t','p','/','1','.','1'
+};
+
+int AlpnSelectCb(SSL * /*ssl*/,
+                 const unsigned char **out,
+                 unsigned char *outlen,
+                 const unsigned char *in,
+                 unsigned int inlen,
+                 void * /*arg*/)
+{
+  if (SSL_select_next_proto(const_cast<unsigned char **>(out), outlen,
+                            kServerAlpn, sizeof(kServerAlpn),
+                            in, inlen) == OPENSSL_NPN_NEGOTIATED)
+    return SSL_TLSEXT_ERR_OK;
+  return SSL_TLSEXT_ERR_NOACK;
+}
+
+void installHttpAlpn(SSL_CTX *ctx)
+{
+  if (ctx)
+    SSL_CTX_set_alpn_select_cb(ctx, AlpnSelectCb, nullptr);
+}
+#endif
 }
 
 namespace XrdHttpProtoInfo
@@ -466,6 +493,11 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
 
       SSL_set_bio(ssl, sbio, sbio);
       SSL_set_accept_state(ssl);
+#ifdef HAVE_NGHTTP2
+      // xrd.tls shares a context that does not advertise h2; install ALPN
+      // on the CTX actually used for this handshake.
+      installHttpAlpn(SSL_get_SSL_CTX(ssl));
+#endif
 
       //SSL_set_fd(ssl, Link->FDnum());
       struct timeval tv;
@@ -517,7 +549,10 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
 #ifdef HAVE_NGHTTP2
   if (ishttps && ssldone && wireMode_ == XrdHttpWireMode::kHttp1 &&
       !CurrentReq.headerok && !DoingLogin && lp) {
-    if (BuffUsed() == 0 && SSL_pending(ssl) <= 0)
+    // TLS 1.3 often has the HTTP/2 preface already in SSL_pending(); skip
+    // that read and detectWireMode() sees an empty buffer, then HTTP/1.1
+    // parses "PRI * HTTP/2.0" as a bad request.
+    if (BuffUsed() == 0)
       getDataOneShot(BuffAvailable());
     detectWireMode();
   }
@@ -2249,30 +2284,6 @@ int XrdHttpProtocol::parseHeader2CGI(XrdOucStream &Config, XrdSysError & err,std
   return 0;
 }
 
-
-#ifdef HAVE_NGHTTP2
-namespace {
-static const unsigned char kServerAlpn[] = {
-  2, 'h','2',
-  8, 'h','t','t','p','/','1','.','1'
-};
-
-static int AlpnSelectCb(SSL * /*ssl*/,
-                        const unsigned char **out,
-                        unsigned char *outlen,
-                        const unsigned char *in,
-                        unsigned int inlen,
-                        void * /*arg*/)
-{
-  if (SSL_select_next_proto(const_cast<unsigned char **>(out), outlen,
-                            kServerAlpn, sizeof(kServerAlpn),
-                            in, inlen) == OPENSSL_NPN_NEGOTIATED)
-    return SSL_TLSEXT_ERR_OK;
-  return SSL_TLSEXT_ERR_NOACK;
-}
-}
-#endif
-
 /******************************************************************************/
 /*                               I n i t T L S                                */
 /******************************************************************************/
@@ -2323,7 +2334,7 @@ bool XrdHttpProtocol::InitTLS() {
    SSL_CTX *sslctx = static_cast<SSL_CTX *>(xrdctx->Context());
    if (sslctx) {
 #ifdef HAVE_NGHTTP2
-     SSL_CTX_set_alpn_select_cb(sslctx, AlpnSelectCb, nullptr);
+     installHttpAlpn(sslctx);
 #else
      static const unsigned char alpn[] = {
        8, 'h','t','t','p','/','1','.','1'
@@ -2479,7 +2490,7 @@ const char *XrdHttpProtocol::fileCacheKey(const XrdHttpReq &req) const
   return req.resourceplusopaque.c_str();
 }
 
-bool XrdHttpProtocol::fileCacheApply(XrdHttpReq &req)
+bool XrdHttpProtocol::fileCacheApply(XrdHttpReq &req, bool needWrite)
 {
   if (!fileCache_.valid || fileCache_.switching)
     return false;
@@ -2487,26 +2498,34 @@ bool XrdHttpProtocol::fileCacheApply(XrdHttpReq &req)
     return false;
   if (fileCache_.fileflags & kXR_isDir)
     return false;
+  if (needWrite && !fileCache_.writable)
+    return false;
 
   memcpy(req.fhandle, fileCache_.fhandle, 4);
   req.fopened = true;
-  TRACE(REQ, "Reusing cached open " << fileCache_.key.c_str());
+  req.filesize = fileCache_.filesize;
+  req.fileflags = fileCache_.fileflags;
+  req.filemodtime = fileCache_.filemodtime;
+  TRACE(REQ, "Reusing cached " << (fileCache_.writable ? "write " : "")
+        << "open " << fileCache_.key.c_str());
   return true;
 }
 
-void XrdHttpProtocol::fileCacheStore(const XrdHttpReq &req)
+void XrdHttpProtocol::fileCacheStore(const XrdHttpReq &req, bool writable)
 {
   if (!req.fopened || (req.fileflags & kXR_isDir))
     return;
 
   fileCache_.valid = true;
   fileCache_.switching = false;
+  fileCache_.writable = writable;
   fileCache_.key = fileCacheKey(req);
   memcpy(fileCache_.fhandle, req.fhandle, 4);
   fileCache_.filesize = req.filesize;
   fileCache_.fileflags = req.fileflags;
   fileCache_.filemodtime = req.filemodtime;
-  TRACE(REQ, "Cached open " << fileCache_.key.c_str());
+  TRACE(REQ, "Cached " << (writable ? "write " : "")
+        << "open " << fileCache_.key.c_str());
 }
 
 bool XrdHttpProtocol::fileCacheKeepOpen(const XrdHttpReq &req) const

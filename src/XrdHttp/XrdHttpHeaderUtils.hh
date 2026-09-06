@@ -104,6 +104,29 @@ public:
    *           -3 "chunked" appears but is not the final token.
    */
   static int parseTransferEncoding(const std::string & value);
+
+  /**
+   * Parses a request Content-Range used by PATCH (RFC 9110 section 14.4,
+   * draft-ietf-httpapi-patch-byterange).
+   *
+   * Accepted forms:
+   *   bytes 200-1000/67589
+   *   bytes 200-1000/star
+   *
+   * Trailing CRLF / OWS is tolerated (parseLine forwards the raw header).
+   * The unit must be "bytes" (case-insensitive). Suffix ranges, an unknown
+   * first-last pair, and last >= complete-length are rejected. Complete
+   * length may be "*" meaning unknown.
+   *
+   * @return 0 on success, or:
+   *           -1 syntax error,
+   *           -2 first > last (or a negative bound),
+   *           -3 complete-length is present and last >= complete-length.
+   */
+  static int parseContentRangeWrite(const std::string & value,
+                                    long long & first,
+                                    long long & last,
+                                    long long & complete);
 };
 
 
