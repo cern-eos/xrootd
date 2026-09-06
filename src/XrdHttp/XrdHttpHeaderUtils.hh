@@ -25,6 +25,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 #include <cstdint>
 #include <sys/types.h>
 
@@ -127,6 +128,21 @@ public:
                                     long long & first,
                                     long long & last,
                                     long long & complete);
+
+  /**
+   * Parses If-Match / If-None-Match (RFC 9110 section 13.1.1 / 13.1.2).
+   *
+   * The value is either "*" or a comma-separated list of entity-tags
+   * (optional W/ prefix, quoted-string). Trailing CRLF / OWS is tolerated.
+   *
+   * tags receive the opaque tag text with quotes and W/ stripped.
+   * star is set when the value is "*".
+   *
+   * @return 0 on success, -1 if the value is empty or has no tokens.
+   */
+  static int parseIfMatch(const std::string & value,
+                          std::vector<std::string> & tags,
+                          bool & star);
 };
 
 

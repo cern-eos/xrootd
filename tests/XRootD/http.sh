@@ -245,6 +245,32 @@ if body2 != b"ABCDEFGHIJKLMNOPQRSTUVWXYZ":
     --data-binary 'x' "${HTTP_HOST}/${patchFilePath}")
   assert_eq 400 "${code}" "PATCH without Content-Range should return 400"
 
+  echo "Testing If-Match / If-None-Match"
+  precondFilePath="${TMPDIR}/precond.bin"
+  printf 'abcdefghijklmnopqrstuvwxyz' > "${TMPDIR}/precond-src"
+  assert curl -s -T "${TMPDIR}/precond-src" "${HTTP_HOST}/${precondFilePath}"
+  etag=$(curl -sI "${HTTP_HOST}/${precondFilePath}" | tr -d '\r' \
+    | awk 'BEGIN{IGNORECASE=1} /^ETag:/{sub(/^[^:]+:[ \t]*/,""); print; exit}')
+  [ -n "${etag}" ] || error "HEAD should return an ETag"
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH \
+    -H "If-Match: ${etag}" -H 'Content-Range: bytes 4-7/*' --data-binary 'YYYY' \
+    "${HTTP_HOST}/${precondFilePath}")
+  assert_eq 204 "${code}" "PATCH with matching If-Match should return 204"
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH \
+    -H 'If-Match: "0"' -H 'Content-Range: bytes 4-7/*' --data-binary 'ZZZZ' \
+    "${HTTP_HOST}/${precondFilePath}")
+  assert_eq 412 "${code}" "PATCH with stale If-Match should return 412"
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: ${etag}" \
+    "${HTTP_HOST}/${precondFilePath}")
+  assert_eq 304 "${code}" "GET If-None-Match matching ETag should return 304"
+  code=$(curl -s -o /dev/null -w '%{http_code}' -T "${TMPDIR}/precond-src" \
+    -H 'If-None-Match: *' "${HTTP_HOST}/${precondFilePath}")
+  assert_eq 412 "${code}" "PUT If-None-Match * on existing file should return 412"
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+    -H 'If-Match: "0"' "${HTTP_HOST}/${precondFilePath}")
+  assert_eq 412 "${code}" "DELETE with stale If-Match should return 412"
+  assert curl -s -o /dev/null -f "${HTTP_HOST}/${precondFilePath}"
+
   ## GET with trailers
   curl -v -L --raw -H "X-Transfer-Status: true" -H "TE: trailers" "${HTTP_HOST}/$alphabetFilePath" --output - | tr -d '\r' > "$outputFilePath"
   cat "$outputFilePath"

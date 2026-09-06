@@ -11,6 +11,7 @@
 #include <string>
 #include <sstream>
 #include <tuple>
+#include <vector>
 
 
 using namespace testing;
@@ -892,4 +893,23 @@ TEST(XrdHttpTests, parseContentRangeWrite) {
       ASSERT_EQ(c.complete, complete) << "input was: \"" << c.input << "\"";
     }
   }
+}
+
+TEST(XrdHttpTests, parseIfMatch) {
+  std::vector<std::string> tags;
+  bool star = false;
+  ASSERT_EQ(0, XrdHttpHeaderUtils::parseIfMatch("\"123\"", tags, star));
+  ASSERT_FALSE(star);
+  ASSERT_EQ(std::vector<std::string>{"123"}, tags);
+
+  ASSERT_EQ(0, XrdHttpHeaderUtils::parseIfMatch("*\r\n", tags, star));
+  ASSERT_TRUE(star);
+  ASSERT_TRUE(tags.empty());
+
+  ASSERT_EQ(0, XrdHttpHeaderUtils::parseIfMatch("W/\"abc\", \"def\"", tags, star));
+  ASSERT_FALSE(star);
+  ASSERT_EQ((std::vector<std::string>{"abc", "def"}), tags);
+
+  ASSERT_EQ(-1, XrdHttpHeaderUtils::parseIfMatch("", tags, star));
+  ASSERT_EQ(-1, XrdHttpHeaderUtils::parseIfMatch("\"unclosed", tags, star));
 }

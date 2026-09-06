@@ -221,6 +221,10 @@ int XrdHttpReq::parseLine(char *line, int len) {
       length = parsed;
       length_seen = true;
 
+    } else if (!strcasecmp(key, "if-match")) {
+      if_match = ss;
+    } else if (!strcasecmp(key, "if-none-match")) {
+      if_none_match = ss;
     } else if (!strcasecmp(key, "destination")) {
       destination.assign(val, line+len-val);
       trim(destination);
@@ -1115,7 +1119,9 @@ int XrdHttpReq::processWritePayload()
       prot->fileCacheStore(*this, true);
       if (prot->fileCacheKeepOpen(*this)) {
         TRACEI(REQ, "Keeping cached open at end of PATCH");
-        prot->SendSimpleResp(204, NULL, NULL, NULL, 0, keepalive);
+        std::string hdr;
+        addETagHeader(hdr);
+        prot->SendSimpleResp(204, NULL, hdr.c_str(), NULL, 0, keepalive);
         const int rc = keepalive ? 1 : -1;
         reset();
         return rc;
@@ -1588,6 +1594,22 @@ int XrdHttpReq::ProcessHTTPReq() {
         if (prot->fileCacheCloseIfOpen())
           return 0;
 
+        // If-Match / If-None-Match must see the current object before
+        // kXR_delete truncates it. One extra STAT only when a precond is set.
+        if ((!if_match.empty() || !if_none_match.empty()) && !m_precond_ok) {
+          memset(&xrdreq, 0, sizeof (ClientRequest));
+          xrdreq.stat.requestid = htons(kXR_stat);
+          l = resourceplusopaque.length() + 1;
+          xrdreq.stat.dlen = htonl(l);
+          if (!prot->Bridge->Run((char *) &xrdreq,
+                                 (char *) resourceplusopaque.c_str(), l)) {
+            prot->SendSimpleResp(404, NULL, NULL,
+                                 (char *) "Could not run request.", 0, false);
+            return -1;
+          }
+          return 0;
+        }
+
         // --------- OPEN for write!
         memset(&xrdreq, 0, sizeof (ClientRequest));
         xrdreq.open.requestid = htons(kXR_open);
@@ -1595,9 +1617,9 @@ int XrdHttpReq::ProcessHTTPReq() {
         xrdreq.open.dlen = htonl(l);
         xrdreq.open.mode = htons(kXR_ur | kXR_uw | kXR_gw | kXR_gr | kXR_or);
         if (! XrdHttpProtocol::usingEC) 
-          xrdreq.open.options = htons(kXR_mkpath | kXR_open_wrto | kXR_delete);
+          xrdreq.open.options = htons(kXR_mkpath | kXR_open_wrto | kXR_delete | kXR_retstat);
         else
-          xrdreq.open.options = htons(kXR_mkpath | kXR_open_wrto | kXR_new);
+          xrdreq.open.options = htons(kXR_mkpath | kXR_open_wrto | kXR_new | kXR_retstat);
 
         if (!prot->Bridge->Run((char *) &xrdreq, (char *) resourceplusopaque.c_str(), l)) {
           prot->SendSimpleResp(404, NULL, NULL, (char *) "Could not run request.", 0, keepalive);
@@ -1732,6 +1754,12 @@ int XrdHttpReq::ProcessHTTPReq() {
             return 0;
           return 1;
         }
+      }
+      int pc = evaluatePreconditions(true, false);
+      if (pc) {
+        prot->SendSimpleResp(pc, NULL, NULL, (char *) "Precondition Failed", 0,
+                             false);
+        return -1;
       }
       return processWritePayload();
     }
@@ -2151,10 +2179,27 @@ XrdHttpReq::PostProcessListing(bool final_) {
 
 int
 XrdHttpReq::ReturnGetHeaders() {
+  int pc = evaluatePreconditions(true, true);
+  if (pc == 304) {
+    std::string hdr;
+    addETagHeader(hdr);
+    const bool ka = keepalive;
+    prot->SendSimpleResp(304, NULL, hdr.c_str(), NULL, 0, ka);
+    reset();
+    return ka ? 1 : -1;
+  }
+  if (pc) {
+    prot->SendSimpleResp(pc, NULL, NULL, (char *) "Precondition Failed", 0, false);
+    return -1;
+  }
+
   std::string responseHeader;
   if (!m_digest_header.empty()) {
     responseHeader = m_digest_header;
   }
+  if (!responseHeader.empty())
+    responseHeader += "\r\n";
+  addETagHeader(responseHeader);
   if (fileflags & kXR_cachersp) {
       if (!responseHeader.empty()) {
         responseHeader += "\r\n";
@@ -2224,6 +2269,8 @@ XrdHttpReq::ReturnGetHeaders() {
     header += "\n";
     header += m_digest_header;
   }
+  header += "\r\n";
+  addETagHeader(header);
   if (fileflags & kXR_cachersp) {
     if (!header.empty()) {
       header += "\r\n";
@@ -2300,6 +2347,19 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
                   &fileflags,
                   &filemodtime);
 
+          int pc = evaluatePreconditions(true, true);
+          if (pc == 304) {
+            std::string hdr;
+            addETagHeader(hdr);
+            prot->SendSimpleResp(304, NULL, hdr.c_str(), NULL, 0, keepalive);
+            return keepalive ? 1 : -1;
+          }
+          if (pc) {
+            prot->SendSimpleResp(pc, NULL, NULL, (char *) "Precondition Failed",
+                                 0, false);
+            return -1;
+          }
+
           if (m_want_digest.size() || m_want_repr_digest.size()) {
             return 0;
           } else {
@@ -2329,6 +2389,8 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
                 return -1;
           }
           if (!response_headers.empty()) {response_headers += "\r\n";}
+          addETagHeader(response_headers);
+          response_headers += "\r\n";
           if (fileflags & kXR_cachersp) {
             addAgeHeader(response_headers);
             response_headers += "\r\n";
@@ -2356,14 +2418,13 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
           if (prot->fileCacheTakeVerifyPending()) {
             bool stale = true;
             if (xrdresp == kXR_ok && iovN > 0 && iovP && iovP[0].iov_base) {
-              long long etag = 0;
               long long stsize = 0;
               long stflags = 0;
               long stmtime = 0;
               TRACEI(REQ, "Stat for cached GET " << resource.c_str()
                         << " stat=" << (char *) iovP[0].iov_base);
               sscanf((const char *) iovP[0].iov_base, "%lld %lld %ld %ld",
-                     &etag, &stsize, &stflags, &stmtime);
+                     &etagval, &stsize, &stflags, &stmtime);
               stale = (stflags & kXR_isDir);
               // A writable handle is still the same file after our own PATCH;
               // size/mtime will have changed. Refresh stats and keep it.
@@ -2398,12 +2459,7 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
               TRACEI(REQ, "Stat for GET " << resource.c_str()
                         << " stat=" << (char *) iovP[1].iov_base);
 
-              long dummyl;
-              sscanf((const char *) iovP[1].iov_base, "%ld %lld %ld %ld",
-                    &dummyl,
-                    &filesize,
-                    &fileflags,
-                    &filemodtime);
+              parseXrdStat((const char *) iovP[1].iov_base);
 
               // If this is a directory, bail out early; we will close the file handle
               // and then issue a directory listing.
@@ -2523,21 +2579,45 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
     case XrdHttpReq::rtPATCH:
     {
       if (!fopened) {
+        if (request == rtPUT &&
+            ntohs(xrdreq.header.requestid) == kXR_stat) {
+          bool exists = false;
+          if (xrdresp == kXR_ok && iovN > 0 && iovP && iovP[0].iov_base) {
+            exists = true;
+            parseXrdStat((const char *) iovP[0].iov_base);
+          } else if (httpStatusCode != 404) {
+            prot->SendSimpleResp(httpStatusCode, NULL, NULL,
+                                 httpErrorBody.c_str(), httpErrorBody.length(),
+                                 false);
+            return -1;
+          }
+          int pc = evaluatePreconditions(exists, false);
+          if (pc) {
+            prot->SendSimpleResp(pc, NULL, NULL,
+                                 (char *) "Precondition Failed", 0, false);
+            return -1;
+          }
+          m_precond_ok = true;
+          return 0;
+        }
+
         if (xrdresp != kXR_ok) {
-          prot->SendSimpleResp(httpStatusCode, NULL, NULL, httpErrorBody.c_str(), httpErrorBody.length(), keepalive);
+          int code = httpStatusCode;
+          if (request == rtPATCH && !if_match.empty() &&
+              (code == 404 || code <= 0))
+            code = 412;
+          prot->SendSimpleResp(code, NULL, NULL, httpErrorBody.c_str(), httpErrorBody.length(), keepalive);
           return -1;
         }
 
         getfhandle();
         fopened = true;
 
-        if (request == rtPATCH && iovN > 1 && iovP && iovP[1].iov_base &&
-            iovP[1].iov_len > 1) {
-          TRACEI(REQ, "Stat for PATCH " << resource.c_str()
+        if (iovN > 1 && iovP && iovP[1].iov_base && iovP[1].iov_len > 1) {
+          TRACEI(REQ, "Stat for " << (request == rtPATCH ? "PATCH " : "PUT ")
+                    << resource.c_str()
                     << " stat=" << (char *) iovP[1].iov_base);
-          long dummyl;
-          sscanf((const char *) iovP[1].iov_base, "%ld %lld %ld %ld",
-                 &dummyl, &filesize, &fileflags, &filemodtime);
+          parseXrdStat((const char *) iovP[1].iov_base);
         }
         if (request == rtPATCH)
           prot->fileCacheStore(*this, true);
@@ -2583,10 +2663,12 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
 
         if (ntohs(xrdreq.header.requestid) == kXR_close) {
           if (xrdresp == kXR_ok) {
+            std::string hdr;
+            addETagHeader(hdr);
             if (request == rtPATCH)
-              prot->SendSimpleResp(204, NULL, NULL, NULL, 0, keepalive);
+              prot->SendSimpleResp(204, NULL, hdr.c_str(), NULL, 0, keepalive);
             else
-              prot->SendSimpleResp(201, NULL, NULL, (char *)":-)", 0, keepalive);
+              prot->SendSimpleResp(201, NULL, hdr.c_str(), (char *)":-)", 0, keepalive);
             return keepalive ? 1 : -1;
           } else {
             prot->SendSimpleResp(httpStatusCode, NULL, NULL, httpErrorBody.c_str(), httpErrorBody.length(), keepalive);
@@ -2626,12 +2708,14 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
             TRACEI(REQ, "Stat for removal " << resource.c_str() 
                      << " stat=" << (char *) iovP[0].iov_base);
 
-            long dummyl;
-            sscanf((const char *) iovP[0].iov_base, "%ld %lld %ld %ld",
-                    &dummyl,
-                    &filesize,
-                    &fileflags,
-                    &filemodtime);
+            parseXrdStat((const char *) iovP[0].iov_base);
+          }
+
+          int pc = evaluatePreconditions(iovN > 0, false);
+          if (pc) {
+            prot->SendSimpleResp(pc, NULL, NULL,
+                                 (char *) "Precondition Failed", 0, false);
+            return -1;
           }
 
           return 0;
@@ -2977,6 +3061,59 @@ void XrdHttpReq::addETagHeader(std::string &headers) {
   headers += std::string("Etag: \"") + std::to_string(etagval) + "\"";
 }
 
+void XrdHttpReq::parseXrdStat(const char *s)
+{
+  if (!s)
+    return;
+  sscanf(s, "%lld %lld %ld %ld", &etagval, &filesize, &fileflags, &filemodtime);
+}
+
+int XrdHttpReq::evaluatePreconditions(bool exists, bool safeMethod)
+{
+  if (!if_match.empty()) {
+    std::vector<std::string> tags;
+    bool star = false;
+    if (XrdHttpHeaderUtils::parseIfMatch(if_match, tags, star) != 0)
+      return 400;
+    bool match = false;
+    if (star) {
+      match = exists;
+    } else if (exists) {
+      const std::string cur = std::to_string(etagval);
+      for (const auto &t : tags) {
+        if (t == cur) {
+          match = true;
+          break;
+        }
+      }
+    }
+    if (!match)
+      return 412;
+  }
+
+  if (!if_none_match.empty()) {
+    std::vector<std::string> tags;
+    bool star = false;
+    if (XrdHttpHeaderUtils::parseIfMatch(if_none_match, tags, star) != 0)
+      return 400;
+    bool match = false;
+    if (star) {
+      match = exists;
+    } else if (exists) {
+      const std::string cur = std::to_string(etagval);
+      for (const auto &t : tags) {
+        if (t == cur) {
+          match = true;
+          break;
+        }
+      }
+    }
+    if (match)
+      return safeMethod ? 304 : 412;
+  }
+  return 0;
+}
+
 void XrdHttpReq::reset() {
 
   TRACE(REQ, " XrdHttpReq request ended.");
@@ -3025,6 +3162,7 @@ void XrdHttpReq::reset() {
   length = 0;
   length_seen = false;
   filesize = 0;
+  etagval = 0;
   depth = 0;
   sendcontinue = false;
 
@@ -3055,6 +3193,9 @@ void XrdHttpReq::reset() {
   patchOffset = -1;
   patchLength = -1;
   patchComplete = -1;
+  if_match.clear();
+  if_none_match.clear();
+  m_precond_ok = false;
 
   iovP = 0;
   iovN = 0;

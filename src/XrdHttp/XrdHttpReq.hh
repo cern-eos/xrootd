@@ -200,6 +200,14 @@ private:
   // See XrdXrootdProtocol::StatGen() for the full definition of etag value.
   void addETagHeader(std::string & headers);
 
+  // If-Match / If-None-Match (RFC 9110 §13.2). exists is whether a current
+  // representation is known. safeMethod selects 304 vs 412 for If-None-Match.
+  // Returns 0, 304, 400, or 412.
+  int evaluatePreconditions(bool exists, bool safeMethod);
+
+  // Parse "id size flags mtime" from kXR_stat / kXR_retstat.
+  void parseXrdStat(const char *s);
+
   /**
    * Convenient function to prepare the checksum query to the bridge
    * @param outCksum the checksum that will be requested
@@ -372,6 +380,12 @@ public:
   long long patchOffset{-1};
   long long patchLength{-1};
   long long patchComplete{-1};
+
+  /// If-Match / If-None-Match raw header values (trimmed, no CRLF).
+  std::string if_match;
+  std::string if_none_match;
+  /// PUT: true once a pre-open STAT has evaluated If-Match / If-None-Match.
+  bool m_precond_ok{false};
 
   int mScitag;
 

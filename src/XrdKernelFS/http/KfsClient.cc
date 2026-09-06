@@ -46,6 +46,17 @@ uint64_t makeIno(const std::string &path, const std::string &etag)
   return std::hash<std::string>{}(path + "\n" + etag);
 }
 
+void addIfHeader(std::vector<std::pair<std::string, std::string>> &hdrs,
+                 const char *name, const std::string &val)
+{
+  if (val.empty())
+    return;
+  std::string t = val;
+  if (t != "*" && t.front() != '"')
+    t = "\"" + t + "\"";
+  hdrs.emplace_back(name, std::move(t));
+}
+
 } // namespace
 
 int Client::open(const std::string &url, Http2Session::Options opt, std::string &err)
@@ -223,11 +234,15 @@ int Client::read(const std::string &relpath, uint64_t offset, uint64_t length,
 }
 
 int Client::put(const std::string &relpath, const std::string &body,
-                std::string &err)
+                std::string &err, const std::string &if_match,
+                const std::string &if_none_match)
 {
+  std::vector<std::pair<std::string, std::string>> hdrs{
+      {"content-type", "application/octet-stream"}};
+  addIfHeader(hdrs, "if-match", if_match);
+  addIfHeader(hdrs, "if-none-match", if_none_match);
   HttpResponse resp;
-  int rc = doReq("PUT", relpath, {{"content-type", "application/octet-stream"}},
-                 body, resp, err);
+  int rc = doReq("PUT", relpath, hdrs, body, resp, err);
   if (rc)
     return rc;
   if (int e = httpToErrno(resp.status)) {
@@ -238,24 +253,28 @@ int Client::put(const std::string &relpath, const std::string &body,
 }
 
 int Client::write(const std::string &relpath, uint64_t offset,
-                  const std::string &data, std::string &err)
+                  const std::string &data, std::string &err,
+                  const std::string &if_match, std::string *etag_out)
 {
   if (data.empty())
     return 0;
   const uint64_t last = offset + data.size() - 1;
   const std::string cr = "bytes " + std::to_string(offset) + "-" +
                          std::to_string(last) + "/*";
+  std::vector<std::pair<std::string, std::string>> hdrs{
+      {"content-type", "application/octet-stream"},
+      {"content-range", cr}};
+  addIfHeader(hdrs, "if-match", if_match);
   HttpResponse resp;
-  int rc = doReq("PATCH", relpath,
-                 {{"content-type", "application/octet-stream"},
-                  {"content-range", cr}},
-                 data, resp, err);
+  int rc = doReq("PATCH", relpath, hdrs, data, resp, err);
   if (rc)
     return rc;
   if (int e = httpToErrno(resp.status)) {
     err = "PATCH status " + std::to_string(resp.status);
     return -e;
   }
+  if (etag_out)
+    *etag_out = resp.header("etag");
   return 0;
 }
 
@@ -272,10 +291,13 @@ int Client::mkdir(const std::string &relpath, std::string &err)
   return 0;
 }
 
-int Client::unlink(const std::string &relpath, std::string &err)
+int Client::unlink(const std::string &relpath, std::string &err,
+                   const std::string &if_match)
 {
+  std::vector<std::pair<std::string, std::string>> hdrs;
+  addIfHeader(hdrs, "if-match", if_match);
   HttpResponse resp;
-  int rc = doReq("DELETE", relpath, {}, {}, resp, err);
+  int rc = doReq("DELETE", relpath, hdrs, {}, resp, err);
   if (rc)
     return rc;
   if (int e = httpToErrno(resp.status)) {
@@ -286,12 +308,14 @@ int Client::unlink(const std::string &relpath, std::string &err)
 }
 
 int Client::rename(const std::string &from, const std::string &to,
-                   std::string &err)
+                   std::string &err, const std::string &if_match)
 {
   HttpResponse resp;
   std::string dest = (base_.tls ? "https://" : "http://") + base_.authority +
                      absPath(to);
-  int rc = doReq("MOVE", from, {{"destination", dest}}, {}, resp, err);
+  std::vector<std::pair<std::string, std::string>> hdrs{{"destination", dest}};
+  addIfHeader(hdrs, "if-match", if_match);
+  int rc = doReq("MOVE", from, hdrs, {}, resp, err);
   if (rc)
     return rc;
   if (int e = httpToErrno(resp.status)) {

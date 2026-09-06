@@ -159,6 +159,30 @@ function test_httph2() {
 		--data-binary 'x' "${HTTPS_HOST}/h2-patch.bin")
 	assert_eq 400 "${code}" "PATCH without Content-Range should return 400"
 
+	echo "Testing If-Match / If-None-Match"
+	printf 'abcdefghijklmnopqrstuvwxyz' > "${tmpdir}/precond-src"
+	assert h2 -s -T "${tmpdir}/precond-src" "${HTTPS_HOST}/h2-precond.bin"
+	etag=$(h2 -sI "${HTTPS_HOST}/h2-precond.bin" | tr -d '\r' \
+		| awk 'BEGIN{IGNORECASE=1} /^ETag:/{sub(/^[^:]+:[ \t]*/,""); print; exit}')
+	[ -n "${etag}" ] || error "HEAD should return an ETag"
+	code=$(h2 -s -o /dev/null -w '%{http_code}' -X PATCH \
+		-H "If-Match: ${etag}" -H 'Content-Range: bytes 4-7/*' \
+		--data-binary 'YYYY' "${HTTPS_HOST}/h2-precond.bin")
+	assert_eq 204 "${code}" "PATCH with matching If-Match should return 204"
+	code=$(h2 -s -o /dev/null -w '%{http_code}' -X PATCH \
+		-H 'If-Match: "0"' -H 'Content-Range: bytes 4-7/*' \
+		--data-binary 'ZZZZ' "${HTTPS_HOST}/h2-precond.bin")
+	assert_eq 412 "${code}" "PATCH with stale If-Match should return 412"
+	code=$(h2 -s -o /dev/null -w '%{http_code}' -H "If-None-Match: ${etag}" \
+		"${HTTPS_HOST}/h2-precond.bin")
+	assert_eq 304 "${code}" "GET If-None-Match matching ETag should return 304"
+	code=$(h2 -s -o /dev/null -w '%{http_code}' -T "${tmpdir}/precond-src" \
+		-H 'If-None-Match: *' "${HTTPS_HOST}/h2-precond.bin")
+	assert_eq 412 "${code}" "PUT If-None-Match * on existing file should return 412"
+	code=$(h2 -s -o /dev/null -w '%{http_code}' -X DELETE \
+		-H 'If-Match: "0"' "${HTTPS_HOST}/h2-precond.bin")
+	assert_eq 412 "${code}" "DELETE with stale If-Match should return 412"
+
 	alphabetadler32="$(xrdadler32 "${alphabet}" | cut -d' ' -f1)"
 	alphabetcrc32c="$(xrdcrc32c -s "${alphabet}")"
 	alphabetmd5sumb64='mRykpCtRV62NckS3pmYroQ=='

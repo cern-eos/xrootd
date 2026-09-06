@@ -241,3 +241,57 @@ int XrdHttpHeaderUtils::parseContentRangeWrite(const std::string & value,
   }
   return 0;
 }
+
+int XrdHttpHeaderUtils::parseIfMatch(const std::string & value,
+                                     std::vector<std::string> & tags,
+                                     bool & star)
+{
+  tags.clear();
+  star = false;
+  std::string_view sv{value};
+  while (!sv.empty() && (sv.back() == '\r' || sv.back() == '\n' ||
+                         sv.back() == ' ' || sv.back() == '\t'))
+    sv.remove_suffix(1);
+  while (!sv.empty() && (sv.front() == ' ' || sv.front() == '\t'))
+    sv.remove_prefix(1);
+  if (sv.empty())
+    return -1;
+  if (sv == "*") {
+    star = true;
+    return 0;
+  }
+
+  size_t start = 0;
+  while (start <= sv.size()) {
+    size_t comma = sv.find(',', start);
+    std::string_view tok = (comma == std::string_view::npos)
+                               ? sv.substr(start)
+                               : sv.substr(start, comma - start);
+    while (!tok.empty() && (tok.front() == ' ' || tok.front() == '\t'))
+      tok.remove_prefix(1);
+    while (!tok.empty() && (tok.back() == ' ' || tok.back() == '\t'))
+      tok.remove_suffix(1);
+    if (!tok.empty()) {
+      if (tok == "*") {
+        star = true;
+      } else {
+        if (tok.size() >= 2 && (tok[0] == 'W' || tok[0] == 'w') && tok[1] == '/') {
+          tok.remove_prefix(2);
+          while (!tok.empty() && (tok.front() == ' ' || tok.front() == '\t'))
+            tok.remove_prefix(1);
+        }
+        if (tok.size() >= 2 && tok.front() == '"' && tok.back() == '"')
+          tok = tok.substr(1, tok.size() - 2);
+        else if (!tok.empty() && tok.front() == '"')
+          return -1;
+        tags.emplace_back(tok);
+      }
+    }
+    if (comma == std::string_view::npos)
+      break;
+    start = comma + 1;
+  }
+  if (!star && tags.empty())
+    return -1;
+  return 0;
+}

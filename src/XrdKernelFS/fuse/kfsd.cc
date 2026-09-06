@@ -5,6 +5,7 @@
 //
 // Reads are Range GETs. Writes are PATCH with Content-Range; create/truncate
 // to empty use PUT. mkdir/unlink/rename map to MKCOL/DELETE/MOVE.
+// Writes send If-Match from the ETag captured at open.
 //
 // Copyright (c) 2026 by the XRootD Collaboration
 //------------------------------------------------------------------------------
@@ -20,6 +21,7 @@
 #include <fuse.h>
 
 #include <cerrno>
+#include <cstdint>
 #include <fcntl.h>
 #include <cstring>
 #include <iostream>
@@ -31,6 +33,17 @@
 namespace {
 
 Kfs::Client g_client;
+
+struct FileState {
+  std::string etag;
+};
+
+FileState *fileState(struct fuse_file_info *fi)
+{
+  if (!fi || !fi->fh)
+    return nullptr;
+  return reinterpret_cast<FileState *>(fi->fh);
+}
 
 void fillStat(const Kfs::Attr &a, struct stat *st)
 {
@@ -48,10 +61,23 @@ void fillStat(const Kfs::Attr &a, struct stat *st)
   st->st_blocks = (st->st_size + 511) / 512;
 }
 
-int putEmpty(const char *path)
+int putEmpty(const char *path, const std::string &if_match = {},
+             const std::string &if_none_match = {})
 {
   std::string err;
-  return g_client.put(path, {}, err);
+  int rc = g_client.put(path, {}, err, if_match, if_none_match);
+  if (rc == -ESTALE && !if_none_match.empty())
+    return -EEXIST;
+  return rc;
+}
+
+std::string currentEtag(const char *path)
+{
+  Kfs::Attr a;
+  std::string err;
+  if (g_client.getattr(path, a, err))
+    return {};
+  return a.etag;
 }
 
 int kfs_getattr(const char *path, struct stat *st)
@@ -97,14 +123,38 @@ int kfs_open(const char *path, struct fuse_file_info *fi)
     return rc;
   if (a.is_dir)
     return -EISDIR;
-  if ((fi->flags & O_TRUNC) && (fi->flags & O_ACCMODE) != O_RDONLY)
-    return putEmpty(path);
+  if ((fi->flags & O_TRUNC) && (fi->flags & O_ACCMODE) != O_RDONLY) {
+    rc = putEmpty(path, a.etag);
+    if (rc)
+      return rc;
+    a.etag = currentEtag(path);
+  }
+  auto *st = new FileState;
+  st->etag = a.etag;
+  fi->fh = reinterpret_cast<uint64_t>(st);
   return 0;
 }
 
-int kfs_create(const char *path, mode_t, struct fuse_file_info *)
+int kfs_create(const char *path, mode_t, struct fuse_file_info *fi)
 {
-  return putEmpty(path);
+  std::string none;
+  if (fi && (fi->flags & O_EXCL))
+    none = "*";
+  int rc = putEmpty(path, {}, none);
+  if (rc)
+    return rc;
+  auto *st = new FileState;
+  st->etag = currentEtag(path);
+  fi->fh = reinterpret_cast<uint64_t>(st);
+  return 0;
+}
+
+int kfs_release(const char *, struct fuse_file_info *fi)
+{
+  delete fileState(fi);
+  if (fi)
+    fi->fh = 0;
+  return 0;
 }
 
 int kfs_read(const char *path, char *buf, size_t size, off_t offset,
@@ -124,15 +174,20 @@ int kfs_read(const char *path, char *buf, size_t size, off_t offset,
 }
 
 int kfs_write(const char *path, const char *buf, size_t size, off_t offset,
-              struct fuse_file_info *)
+              struct fuse_file_info *fi)
 {
   if (offset < 0)
     return -EINVAL;
+  FileState *st = fileState(fi);
+  std::string etag = st ? st->etag : currentEtag(path);
   std::string err;
+  std::string new_etag;
   int rc = g_client.write(path, static_cast<uint64_t>(offset),
-                          std::string(buf, size), err);
+                          std::string(buf, size), err, etag, &new_etag);
   if (rc)
     return rc;
+  if (st && !new_etag.empty())
+    st->etag = new_etag;
   return static_cast<int>(size);
 }
 
@@ -141,8 +196,9 @@ int kfs_truncate(const char *path, off_t size)
   if (size < 0)
     return -EINVAL;
   std::string err;
+  const std::string etag = currentEtag(path);
   if (size == 0)
-    return g_client.put(path, {}, err);
+    return g_client.put(path, {}, err, etag);
 
   Kfs::Attr a;
   int rc = g_client.getattr(path, a, err);
@@ -160,12 +216,12 @@ int kfs_truncate(const char *path, off_t size)
       body.resize(static_cast<size_t>(size));
     else if (body.size() < static_cast<size_t>(size))
       body.resize(static_cast<size_t>(size), '\0');
-    return g_client.put(path, body, err);
+    return g_client.put(path, body, err, a.etag);
   }
   // Extend: one-byte PATCH at the last offset. XRootD grows the file;
   // the gap is a hole (reads as zeros on typical OSS).
   return g_client.write(path, static_cast<uint64_t>(size - 1),
-                        std::string(1, '\0'), err);
+                        std::string(1, '\0'), err, a.etag);
 }
 
 int kfs_mkdir(const char *path, mode_t)
@@ -177,7 +233,7 @@ int kfs_mkdir(const char *path, mode_t)
 int kfs_unlink(const char *path)
 {
   std::string err;
-  return g_client.unlink(path, err);
+  return g_client.unlink(path, err, currentEtag(path));
 }
 
 int kfs_rmdir(const char *path)
@@ -188,7 +244,7 @@ int kfs_rmdir(const char *path)
 int kfs_rename(const char *from, const char *to)
 {
   std::string err;
-  return g_client.rename(from, to, err);
+  return g_client.rename(from, to, err, currentEtag(from));
 }
 
 int kfs_chmod(const char *, mode_t)
@@ -218,6 +274,7 @@ fuse_operations kfs_ops()
   ops.readdir = kfs_readdir;
   ops.open = kfs_open;
   ops.create = kfs_create;
+  ops.release = kfs_release;
   ops.read = kfs_read;
   ops.write = kfs_write;
   ops.truncate = kfs_truncate;

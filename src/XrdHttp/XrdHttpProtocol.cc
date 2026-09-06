@@ -2504,6 +2504,7 @@ bool XrdHttpProtocol::fileCacheApply(XrdHttpReq &req, bool needWrite)
   memcpy(req.fhandle, fileCache_.fhandle, 4);
   req.fopened = true;
   req.filesize = fileCache_.filesize;
+  req.etagval = fileCache_.etagval;
   req.fileflags = fileCache_.fileflags;
   req.filemodtime = fileCache_.filemodtime;
   TRACE(REQ, "Reusing cached " << (fileCache_.writable ? "write " : "")
@@ -2522,6 +2523,7 @@ void XrdHttpProtocol::fileCacheStore(const XrdHttpReq &req, bool writable)
   fileCache_.key = fileCacheKey(req);
   memcpy(fileCache_.fhandle, req.fhandle, 4);
   fileCache_.filesize = req.filesize;
+  fileCache_.etagval = req.etagval;
   fileCache_.fileflags = req.fileflags;
   fileCache_.filemodtime = req.filemodtime;
   TRACE(REQ, "Cached " << (writable ? "write " : "")

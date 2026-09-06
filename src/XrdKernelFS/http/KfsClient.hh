@@ -36,12 +36,17 @@ public:
               std::string &err);
   int read(const std::string &relpath, uint64_t offset, uint64_t length,
            std::string &out, std::string &err);
-  int put(const std::string &relpath, const std::string &body, std::string &err);
+  int put(const std::string &relpath, const std::string &body, std::string &err,
+          const std::string &if_match = {},
+          const std::string &if_none_match = {});
   int write(const std::string &relpath, uint64_t offset, const std::string &data,
-            std::string &err);
+            std::string &err, const std::string &if_match = {},
+            std::string *etag_out = nullptr);
   int mkdir(const std::string &relpath, std::string &err);
-  int unlink(const std::string &relpath, std::string &err);
-  int rename(const std::string &from, const std::string &to, std::string &err);
+  int unlink(const std::string &relpath, std::string &err,
+             const std::string &if_match = {});
+  int rename(const std::string &from, const std::string &to, std::string &err,
+             const std::string &if_match = {});
 
   const Url &base() const { return base_; }
   bool connected() const { return sess_.connected(); }

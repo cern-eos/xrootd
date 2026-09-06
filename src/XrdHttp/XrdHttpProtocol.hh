@@ -411,6 +411,7 @@ private:
     std::string key;
     char        fhandle[4]{};
     long long   filesize{0};
+    long long   etagval{0};
     long        fileflags{0};
     long        filemodtime{0};
   } fileCache_;
