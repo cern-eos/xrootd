@@ -26,6 +26,8 @@
 #include <string>
 #include <vector>
 
+#include <strings.h>
+
 #include <openssl/evp.h>
 
 #include "XrdHttpProtocol.hh"
@@ -33,6 +35,7 @@
 #include "XrdHttpSecXtractor.hh"
 #include "XrdSec/XrdSecLoadSecurity.hh"
 #include "XrdSec/XrdSecInterface.hh"
+#include "XrdOuc/XrdOucEnv.hh"
 #include "XrdOuc/XrdOucErrInfo.hh"
 #include "Xrd/XrdLink.hh"
 #include "XrdCrypto/XrdCryptoX509Chain.hh"
@@ -77,12 +80,6 @@ std::string bearerTokenKey(const char *tok, int tlen)
    return std::string(hex, mdLen * 2);
 }
 
-bool hasPrefix(const char *s, const char *end, const char *pfx)
-{
-   while (*pfx && s < end && *s == *pfx) {++s; ++pfx;}
-   return !*pfx;
-}
-
 const char *stripBearerToken(const char *bTok, int &sz)
 {
    const char *sTok = bTok;
@@ -93,8 +90,9 @@ const char *stripBearerToken(const char *bTok, int &sz)
    while (sTok < endPtr && isspace(static_cast<unsigned char>(*sTok))) ++sTok;
    if (sTok >= endPtr) return nullptr;
 
-   if ((endPtr - sTok) >= 9 && hasPrefix(sTok, endPtr, "Bearer%20")) sTok += 9;
-   else if ((endPtr - sTok) >= 7 && hasPrefix(sTok, endPtr, "Bearer ")) sTok += 7;
+   // RFC 6750: the "Bearer" scheme name is case-insensitive.
+   if ((endPtr - sTok) >= 9 && strncasecmp(sTok, "Bearer%20", 9) == 0) sTok += 9;
+   else if ((endPtr - sTok) >= 7 && strncasecmp(sTok, "Bearer ", 7) == 0) sTok += 7;
 
    while (sTok < endPtr && isspace(static_cast<unsigned char>(*sTok))) ++sTok;
    if (sTok >= endPtr) return nullptr;
@@ -112,18 +110,30 @@ void copyEntityAttrs(XrdSecEntity &dst, const XrdSecEntity &src)
       }
 }
 
+// Locate an "authz=" CGI parameter. The key must be a whole parameter name
+// (at the start of the string or right after '&'), so "xauthz=..." or
+// "myauthz=..." are not mistaken for it.
+bool findAuthzCgi(const std::string &cgi, std::string &value)
+{
+   static const char key[] = "authz=";
+   static const size_t klen = sizeof(key) - 1;
+   size_t pos = 0;
+   while ((pos = cgi.find(key, pos)) != std::string::npos)
+      {if (pos == 0 || cgi[pos - 1] == '&' || cgi[pos - 1] == '?')
+          {size_t start = pos + klen;
+           size_t end = cgi.find('&', start);
+           value = (end == std::string::npos ? cgi.substr(start)
+                                             : cgi.substr(start, end - start));
+           return !value.empty();
+          }
+       pos += klen;
+      }
+   return false;
+}
+
 bool extractBearerToken(const XrdHttpReq &req, std::string &token)
 {
-   const std::string &cgi = req.hdr2cgistr;
-   const char *key = "authz=";
-   size_t pos = cgi.find(key);
-   if (pos != std::string::npos)
-      {size_t start = pos + strlen(key);
-       size_t end = cgi.find('&', start);
-       token = (end == std::string::npos ? cgi.substr(start)
-                                         : cgi.substr(start, end - start));
-       return !token.empty();
-      }
+   if (findAuthzCgi(req.hdr2cgistr, token)) return true;
 
    for (const auto &hdr : req.allheaders)
       {if (!strcasecmp(hdr.first.c_str(), "authorization"))
@@ -168,16 +178,28 @@ bool XrdHttpProtocol::InitSecurity() {
        secxtractor->Init(sslctx, XrdHttpTrace.What);
       }
 
-// Load the security framework when HTTP bearer OIDC is enabled.
+// Obtain the security framework when HTTP bearer OIDC is enabled. Prefer the
+// instance the xrootd protocol already created (published in the shared xrd
+// environment) so that sec.protocol plugins are initialized exactly once per
+// process; only fall back to loading our own when none is available.
 //
    if (oidcHttpMode && !CIA)
-      {if (!oidcConfigFN)
-          {eDest.Say("Error: http.oidc requires a configuration file path");
-           return false;
+      {if (oidcSharedEnv)
+          CIA = static_cast<XrdSecService *>(oidcSharedEnv->GetPtr("XrdSecService*"));
+       if (CIA)
+          {TRACE(ALL, "http.oidc: using the xrootd protocol security framework");
           }
-       if (!(CIA = XrdSecLoadSecService(&eDest, oidcConfigFN)))
-          {eDest.Say("Error loading security framework for http.oidc");
-           return false;
+       else
+          {if (!oidcConfigFN)
+              {eDest.Say("Error: http.oidc requires a configuration file path");
+               return false;
+              }
+           eDest.Say("Config warning: http.oidc could not find the xrootd "
+                     "security framework; loading a separate instance.");
+           if (!(CIA = XrdSecLoadSecService(&eDest, oidcConfigFN)))
+              {eDest.Say("Error loading security framework for http.oidc");
+               return false;
+              }
           }
       }
 
@@ -187,8 +209,57 @@ bool XrdHttpProtocol::InitSecurity() {
 }
 
 /******************************************************************************/
+/*                      D r o p O i d c I d e n t i t y                       */
+/******************************************************************************/
+
+bool
+XrdHttpProtocol::DropOidcIdentity()
+{
+  // The Bridge holds a login for the previous identity; it can only be
+  // dismantled when it is not in the middle of serving a request.
+  if (Bridge && !Bridge->Disc()) return false;
+  Bridge = nullptr;
+  DoingLogin = false;
+  DoneSetInfo = false;
+
+  // Rebuild the SecEntity from scratch so that no attribute of the previous
+  // token (base_path, restricted_path, scope, ...) survives into the new one.
+  // Connection-level fields are preserved.
+  char *host = SecEntity.host;              SecEntity.host = nullptr;
+  char *moninfo = SecEntity.moninfo;        SecEntity.moninfo = nullptr;
+  XrdNetAddrInfo *addrInfo = SecEntity.addrInfo;
+  const char *tident = SecEntity.tident;
+  XrdSecMonitor *secMon = SecEntity.secMon;
+
+  if (SecEntity.name)         free(SecEntity.name);
+  if (SecEntity.vorg)         free(SecEntity.vorg);
+  if (SecEntity.role)         free(SecEntity.role);
+  if (SecEntity.grps)         free(SecEntity.grps);
+  if (SecEntity.caps)         free(SecEntity.caps);
+  if (SecEntity.endorsements) free(SecEntity.endorsements);
+  if (SecEntity.creds)        free(SecEntity.creds);
+
+  SecEntity.Reset();
+  SecEntity.host = host;
+  SecEntity.moninfo = moninfo;
+  SecEntity.addrInfo = addrInfo;
+  SecEntity.tident = tident;
+  SecEntity.secMon = secMon;
+  strcpy(SecEntity.prot, "http");
+
+  oidcBearerTokKey.clear();
+  return true;
+}
+
+/******************************************************************************/
 /*               H a n d l e O I D C A u t h e n t i c a t i o n              */
 /******************************************************************************/
+
+// Bearer identity is a per-request property in HTTP, even on a keep-alive
+// connection. Every request carrying a token is therefore validated (the
+// sec.protocol oidc plugin keeps a validated-token cache, so a repeat of the
+// same token costs a SHA-256 and a map lookup); the token fingerprint is only
+// used to decide whether the expensive Bridge re-login is necessary.
 
 int
 XrdHttpProtocol::HandleOidcAuthentication()
@@ -203,10 +274,21 @@ XrdHttpProtocol::HandleOidcAuthentication()
 
   std::string bearer;
   if (!extractBearerToken(CurrentReq, bearer))
-     {if (oidcHttpMode == 2 && oidcBearerTokKey.empty())
+     {if (oidcHttpMode == 2)
          {TRACEI(REQ, " OIDC bearer token required but not provided.");
+          if (!oidcBearerTokKey.empty() && !DropOidcIdentity()) oidcBearerTokKey.clear();
           SendSimpleResp(401, nullptr, nullptr, "Authentication required", 0, false);
           return 1;
+         }
+      // Optional mode: a request without a token on a connection that was
+      // previously bearer-authenticated reverts to the anonymous identity.
+      if (!oidcBearerTokKey.empty())
+         {if (!DropOidcIdentity())
+             {TRACEI(REQ, " OIDC token withdrawn but bridge is busy.");
+              SendSimpleResp(503, nullptr, nullptr, "Authentication busy", 0, false);
+              return 1;
+             }
+          TRACEI(REQ, " OIDC bearer token withdrawn; continuing anonymously.");
          }
       return 0;
      }
@@ -226,7 +308,7 @@ XrdHttpProtocol::HandleOidcAuthentication()
       return 1;
      }
 
-  if (!oidcBearerTokKey.empty() && tokKey == oidcBearerTokKey) return 0;
+  const bool sameToken = (!oidcBearerTokKey.empty() && tokKey == oidcBearerTokKey);
 
   const int bsz = 5 + tlen + 1;
   std::vector<char> credBuf(static_cast<size_t>(bsz));
@@ -258,22 +340,30 @@ XrdHttpProtocol::HandleOidcAuthentication()
       const char *et = eMsg.getErrText(ec);
       TRACEI(REQ, " OIDC token validation failed: " << (et && *et ? et : "unknown"));
       authProt->Delete();
+      // A token that was valid earlier on this connection (e.g. it has since
+      // expired) must not leave its identity behind. If the Bridge is busy the
+      // fingerprint is cleared anyway so the next request re-validates.
+      if (!oidcBearerTokKey.empty() && !DropOidcIdentity()) oidcBearerTokKey.clear();
       SendSimpleResp(401, nullptr, nullptr, "Authentication failed", 0, false);
       return 1;
      }
 
+  // Same token, still valid: identity and Bridge login stay as they are.
+  if (sameToken)
+     {authProt->Delete();
+      return 0;
+     }
+
+  // New or changed token: replace any previous identity (bearer or anonymous
+  // Bridge login) before installing the new one.
   if (!oidcBearerTokKey.empty() || Bridge)
-     {if (Bridge && !Bridge->Disc())
+     {if (!DropOidcIdentity())
          {TRACEI(REQ, " OIDC token changed but bridge is busy.");
           authProt->Delete();
           SendSimpleResp(503, nullptr, nullptr, "Authentication busy", 0, false);
           return 1;
          }
-      Bridge = nullptr;
-      DoingLogin = false;
-      DoneSetInfo = false;
-      if (!oidcBearerTokKey.empty())
-         TRACEI(REQ, " OIDC bearer token changed; re-authenticating.");
+      TRACEI(REQ, " OIDC bearer token changed; re-authenticating.");
      }
 
   if (SecEntity.name) free(SecEntity.name);

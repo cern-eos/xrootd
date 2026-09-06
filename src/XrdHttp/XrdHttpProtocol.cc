@@ -158,6 +158,7 @@ using namespace XrdHttpProtoInfo;
 
 int XrdHttpProtocol::oidcHttpMode = 0;
 const char *XrdHttpProtocol::oidcConfigFN = nullptr;
+XrdOucEnv *XrdHttpProtocol::oidcSharedEnv = nullptr;
 
 /******************************************************************************/
 /*            P r o t o c o l   M a n a g e m e n t   S t a c k s             */
@@ -914,6 +915,7 @@ int XrdHttpProtocol::Stats(char *buff, int blen, int do_sync) {
 
 int XrdHttpProtocol::Config(const char *ConfigFN, XrdOucEnv *myEnv) {
   XrdHttpProtocol::oidcConfigFN = ConfigFN;
+  XrdHttpProtocol::oidcSharedEnv = myEnv;
   XrdOucEnv cfgEnv;
   XrdOucStream Config(&eDest, getenv("XRDINSTANCE"), &cfgEnv, "=====> ");
   std::vector<extHInfo> extHIVec;

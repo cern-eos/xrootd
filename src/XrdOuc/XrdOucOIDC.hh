@@ -40,7 +40,13 @@ char *InitSecProtocol(const char *parms, XrdOucErrInfo *erp);
 bool IsConfigured();
 
 //------------------------------------------------------------------------------
-//! Strip whitespace and an optional Bearer prefix from a token buffer.
+//! Configured maximum token size in bytes (-maxsz), as applied by the server.
+//------------------------------------------------------------------------------
+int MaxTokenSize();
+
+//------------------------------------------------------------------------------
+//! Strip whitespace and an optional (case-insensitive) Bearer prefix from a
+//! token buffer.
 //! When maxLen >= 0 the input is treated as length-bounded untrusted data.
 //------------------------------------------------------------------------------
 const char *StripToken(const char *bTok, int &sz, int maxLen = -1);
