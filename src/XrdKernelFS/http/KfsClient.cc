@@ -50,6 +50,7 @@ uint64_t makeIno(const std::string &path, const std::string &etag)
 
 int Client::open(const std::string &url, Http2Session::Options opt, std::string &err)
 {
+  std::lock_guard<std::mutex> lock(mu_);
   if (!parseUrl(url, base_, err))
     return -EINVAL;
   opt_ = std::move(opt);
@@ -58,6 +59,7 @@ int Client::open(const std::string &url, Http2Session::Options opt, std::string 
 
 void Client::close()
 {
+  std::lock_guard<std::mutex> lock(mu_);
   sess_.close();
 }
 
@@ -77,24 +79,28 @@ int Client::doReq(const char *method, const std::string &rel,
                   const std::vector<std::pair<std::string, std::string>> &hdrs,
                   const std::string &body, HttpResponse &resp, std::string &err)
 {
-  int rc = ensure(err);
-  if (rc)
-    return rc;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    int rc = ensure(err);
+    if (rc)
+      return rc;
+  }
   HttpRequest req;
   req.method = method;
   req.path = absPath(rel);
   req.headers = hdrs;
   req.body = body;
-  rc = sess_.request(req, resp, err);
+  int rc = sess_.request(req, resp, err);
   if (rc) {
-    // One reconnect retry for dropped sessions.
+    std::lock_guard<std::mutex> lock(mu_);
     sess_.close();
     int rc2 = sess_.connect(base_, opt_, err);
     if (rc2)
       return rc2;
-    rc = sess_.request(req, resp, err);
+  } else {
+    return 0;
   }
-  return rc;
+  return sess_.request(req, resp, err);
 }
 
 int Client::getattr(const std::string &relpath, Attr &out, std::string &err)

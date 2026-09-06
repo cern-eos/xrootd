@@ -11,6 +11,7 @@
 #include "KfsUrl.hh"
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -49,6 +50,7 @@ private:
   Url base_;
   Http2Session sess_;
   Http2Session::Options opt_;
+  std::mutex mu_;
 
   std::string absPath(const std::string &rel) const;
   int ensure(std::string &err);

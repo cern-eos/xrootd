@@ -82,6 +82,10 @@ FUSE I/O uses Range GETs for reads and PATCH (`Content-Range`) for
 are MKCOL / DELETE / MOVE. `auto_cache` lets the kernel page cache absorb
 repeated 4 KiB reads; `kfscli` remains the non-FUSE client.
 
+The HTTP/2 session keeps one TLS connection and multiplexes streams on
+an I/O thread, so concurrent FUSE reads and writes do not wait for each
+other to finish.
+
 ## Layout
 
 ```
