@@ -247,14 +247,31 @@ int xiofs_rename(const char *from, const char *to)
   return g_client.rename(from, to, err, currentEtag(from));
 }
 
-int xiofs_chmod(const char *, mode_t)
+int xiofs_chmod(const char *path, mode_t mode)
 {
-  return 0;
+  std::string err;
+  return g_client.chmod(path, mode, err);
 }
 
 int xiofs_chown(const char *, uid_t, gid_t)
 {
   return 0;
+}
+
+int xiofs_link(const char *from, const char *to)
+{
+  std::string err;
+  return g_client.link(from, to, err);
+}
+
+int xiofs_symlink(const char *, const char *)
+{
+  return -EPERM;
+}
+
+int xiofs_mknod(const char *, mode_t, dev_t)
+{
+  return -EPERM;
 }
 
 int xiofs_utimens(const char *, const struct timespec[2])
@@ -284,6 +301,9 @@ fuse_operations xiofs_ops()
   ops.rename = xiofs_rename;
   ops.chmod = xiofs_chmod;
   ops.chown = xiofs_chown;
+  ops.link = xiofs_link;
+  ops.symlink = xiofs_symlink;
+  ops.mknod = xiofs_mknod;
   ops.utimens = xiofs_utimens;
   ops.fsync = xiofs_fsync;
   return ops;

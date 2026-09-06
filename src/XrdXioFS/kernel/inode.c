@@ -137,6 +137,11 @@ static int xiofs_setattr(xiofs_idmap_t idmap, struct dentry *dentry,
 			return err;
 		truncate_setsize(inode, attr->ia_size);
 	}
+	if (attr->ia_valid & ATTR_MODE) {
+		err = xiofs_http_chmod(inode, attr->ia_mode);
+		if (err)
+			return err;
+	}
 	setattr_copy(idmap, inode, attr);
 	XIOFS_I(inode)->attr_jiffies = jiffies;
 	mark_inode_dirty(inode);
@@ -226,6 +231,27 @@ static int xiofs_rename(xiofs_idmap_t idmap, struct inode *old_dir,
 	return xiofs_http_rename(d_inode(old_dentry), new_path);
 }
 
+static int xiofs_link(struct dentry *old_dentry, struct inode *dir,
+		      struct dentry *new_dentry)
+{
+	struct inode *inode = d_inode(old_dentry);
+	char new_path[XIOFS_PATH_MAX];
+	int err;
+
+	err = xiofs_join_path(new_path, sizeof(new_path),
+			      XIOFS_I(dir)->remote_path,
+			      new_dentry->d_name.name);
+	if (err)
+		return err;
+	err = xiofs_http_link(inode, new_path);
+	if (err)
+		return err;
+	ihold(inode);
+	inc_nlink(inode);
+	d_instantiate(new_dentry, inode);
+	return 0;
+}
+
 static int xiofs_iterate(struct file *file, struct dir_context *ctx)
 {
 	struct inode *dir = file_inode(file);
@@ -266,6 +292,7 @@ const struct inode_operations xiofs_dir_inode_ops = {
 	.unlink		= xiofs_unlink,
 	.rmdir		= xiofs_rmdir,
 	.rename		= xiofs_rename,
+	.link		= xiofs_link,
 	.setattr	= xiofs_setattr,
 };
 

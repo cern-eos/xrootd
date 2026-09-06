@@ -4,7 +4,9 @@
 #include "XioClient.hh"
 
 #include <cerrno>
+#include <cstdio>
 #include <functional>
+#include <sys/stat.h>
 
 namespace XioFS {
 
@@ -320,6 +322,43 @@ int Client::rename(const std::string &from, const std::string &to,
     return rc;
   if (int e = httpToErrno(resp.status)) {
     err = "MOVE status " + std::to_string(resp.status);
+    return -e;
+  }
+  return 0;
+}
+
+int Client::chmod(const std::string &relpath, mode_t mode, std::string &err)
+{
+  char body[512];
+  std::snprintf(body, sizeof(body),
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+                "<D:propertyupdate xmlns:D=\"DAV:\" xmlns:X=\"http://xrootd.org/ns\">"
+                "<D:set><D:prop><X:mode>%o</X:mode></D:prop></D:set>"
+                "</D:propertyupdate>",
+                static_cast<unsigned>(mode & 0777));
+  HttpResponse resp;
+  int rc = doReq("PROPPATCH", relpath,
+                 {{"content-type", "application/xml; charset=\"utf-8\""}},
+                 body, resp, err);
+  if (rc)
+    return rc;
+  if (int e = httpToErrno(resp.status)) {
+    err = "PROPPATCH status " + std::to_string(resp.status);
+    return -e;
+  }
+  return 0;
+}
+
+int Client::link(const std::string &from, const std::string &to, std::string &err)
+{
+  HttpResponse resp;
+  std::string dest = (base_.tls ? "https://" : "http://") + base_.authority +
+                     absPath(to);
+  int rc = doReq("LINK", from, {{"destination", dest}}, {}, resp, err);
+  if (rc)
+    return rc;
+  if (int e = httpToErrno(resp.status)) {
+    err = "LINK status " + std::to_string(resp.status);
     return -e;
   }
   return 0;

@@ -5,7 +5,7 @@
 //   xiofscli [--cacert FILE] [--insecure] [--token TOK] URL COMMAND [args]
 //
 // Commands: stat | ls | cat | read OFFSET LENGTH | put LOCALFILE
-//           | write OFFSET [LOCALFILE] | rm | mkdir
+//           | write OFFSET [LOCALFILE] | rm | mkdir | chmod MODE | ln DESTPATH
 //
 // Copyright (c) 2026 by the XRootD Collaboration
 //------------------------------------------------------------------------------
@@ -18,6 +18,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <sys/stat.h>
 #include <vector>
 
 using XioFS::Client;
@@ -38,7 +39,9 @@ static void usage(const char *argv0)
       << "    put LOCALFILE\n"
       << "    write OFFSET [LOCALFILE]\n"
       << "    rm\n"
-      << "    mkdir\n";
+      << "    mkdir\n"
+      << "    chmod MODE\n"
+      << "    ln DESTPATH\n";
 }
 
 static int fail(const std::string &msg, int rc)
@@ -197,6 +200,25 @@ int main(int argc, char **argv)
 
   if (cmd == "mkdir") {
     rc = c.mkdir(rel, err);
+    if (rc)
+      return fail(err, 1);
+    return 0;
+  }
+
+  if (cmd == "chmod") {
+    if (args.size() < 3)
+      return fail("chmod MODE", 2);
+    mode_t mode = static_cast<mode_t>(std::strtoul(args[2].c_str(), nullptr, 8));
+    rc = c.chmod(rel, mode, err);
+    if (rc)
+      return fail(err, 1);
+    return 0;
+  }
+
+  if (cmd == "ln") {
+    if (args.size() < 3)
+      return fail("ln DESTPATH", 2);
+    rc = c.link(rel, args[2], err);
     if (rc)
       return fail(err, 1);
     return 0;

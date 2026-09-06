@@ -724,3 +724,58 @@ int xiofs_http_truncate(struct inode *inode, loff_t size)
 	}
 	return -EOPNOTSUPP;
 }
+
+int xiofs_http_chmod(struct inode *inode, umode_t mode)
+{
+	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
+	char body[512];
+	char req[896];
+	size_t n = 0, blen;
+	struct xiofs_http_resp meta;
+	int err;
+
+	blen = scnprintf(body, sizeof(body),
+			 "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+			 "<D:propertyupdate xmlns:D=\"DAV:\" xmlns:X=\"http://xrootd.org/ns\">"
+			 "<D:set><D:prop><X:mode>%o</X:mode></D:prop></D:set>"
+			 "</D:propertyupdate>",
+			 (unsigned int)(mode & 0777));
+	n += snprintf(req + n, sizeof(req) - n,
+		      "PROPPATCH %s HTTP/1.1\r\nHost: %s\r\n"
+		      "Content-Type: application/xml; charset=\"utf-8\"\r\n"
+		      "Content-Length: %zu\r\n"
+		      "Connection: keep-alive\r\n",
+		      XIOFS_I(inode)->remote_path, sbi->hosthdr, blen);
+	xiofs_add_auth(req, sizeof(req), &n, sbi);
+	n += snprintf(req + n, sizeof(req) - n, "\r\n");
+	mutex_lock(&sbi->io_lock);
+	err = xiofs_transact(sbi, req, n, body, blen, NULL, 0, NULL, &meta);
+	mutex_unlock(&sbi->io_lock);
+	if (!err)
+		err = xiofs_http_status_to_errno(meta.status);
+	return err;
+}
+
+int xiofs_http_link(struct inode *old_inode, const char *new_path)
+{
+	struct xiofs_sb_info *sbi = XIOFS_SB(old_inode->i_sb);
+	char req[1024];
+	size_t n = 0;
+	struct xiofs_http_resp meta;
+	int err;
+
+	n += snprintf(req + n, sizeof(req) - n,
+		      "LINK %s HTTP/1.1\r\nHost: %s\r\n"
+		      "Destination: https://%s%s\r\n"
+		      "Connection: keep-alive\r\n",
+		      XIOFS_I(old_inode)->remote_path, sbi->hosthdr,
+		      sbi->hosthdr, new_path);
+	xiofs_add_auth(req, sizeof(req), &n, sbi);
+	n += snprintf(req + n, sizeof(req) - n, "\r\n");
+	mutex_lock(&sbi->io_lock);
+	err = xiofs_transact(sbi, req, n, NULL, 0, NULL, 0, NULL, &meta);
+	mutex_unlock(&sbi->io_lock);
+	if (!err)
+		err = xiofs_http_status_to_errno(meta.status);
+	return err;
+}

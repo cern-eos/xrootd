@@ -597,6 +597,21 @@ virtual XrdOssDF *newFile(const char *tident)=0;
 virtual int       Chmod(const char * path, mode_t mode, XrdOucEnv *envP=0)=0;
 
 //-----------------------------------------------------------------------------
+//! Create a hard link to an existing file.
+//!
+//! @param  old_path - Pointer to the existing path.
+//! @param  new_path - Pointer to the new path that will refer to the same file.
+//! @param  envP     - Pointer to environmental information.
+//!
+//! @return 0 upon success or -errno or -osserr (see XrdOssError.hh).
+//-----------------------------------------------------------------------------
+
+virtual int       Link(const char *old_path, const char *new_path,
+                       XrdOucEnv *envP=0)
+                      {(void)old_path; (void)new_path; (void)envP;
+                       return -ENOTSUP;}
+
+//-----------------------------------------------------------------------------
 //! Notify storage system that a client has connected.
 //!
 //! @param  env    - Reference to environmental information.

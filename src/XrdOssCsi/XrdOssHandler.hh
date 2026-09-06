@@ -88,6 +88,7 @@ public:
 // virtual XrdOssDF *newFile(const char *tident)=0;
 
 virtual int       Chmod(const char *path, mode_t mode, XrdOucEnv *envP=0) /* override */ { return successor_->Chmod(path, mode, envP); }
+virtual int       Link(const char *old_path, const char *new_path, XrdOucEnv *envP=0) /* override */ { return successor_->Link(old_path, new_path, envP); }
 
 virtual void      Connect(XrdOucEnv &env) /* override */ { successor_->Connect(env); }
 

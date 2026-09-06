@@ -1191,6 +1191,27 @@ virtual int            gpFile(      gpfFunc          &gpAct,
                               const XrdSecEntity     *client = 0);
 
 //-----------------------------------------------------------------------------
+//! Create a hard link to an existing file.
+//!
+//! @param  oPath   - Pointer to the existing path.
+//! @param  nPath   - Pointer to the new path that will refer to the same file.
+//! @param  eInfo   - The object where error info is to be returned.
+//! @param  client  - Client's identify (see common description).
+//! @param  opaqueO - oPath's CGI information (see common description).
+//! @param  opaqueN - nPath's CGI information (see common description).
+//!
+//! @return One of SFS_OK, SFS_ERROR, SFS_REDIRECT, or SFS_STALL.
+//!         The default implementation returns SFS_ERROR / ENOTSUP.
+//-----------------------------------------------------------------------------
+
+virtual int            link(const char             *oPath,
+                            const char             *nPath,
+                                  XrdOucErrInfo    &eInfo,
+                            const XrdSecEntity     *client = 0,
+                            const char             *opaqueO = 0,
+                            const char             *opaqueN = 0);
+
+//-----------------------------------------------------------------------------
 //! Create a directory.
 //!
 //! @param  path   - Pointer to the path of the directory to be created.

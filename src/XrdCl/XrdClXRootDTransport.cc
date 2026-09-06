@@ -1187,6 +1187,10 @@ namespace XrdCl
         req->mv.arg1len = htons( req->mv.arg1len );
         break;
 
+      case kXR_link:
+        req->link.arg1len = htons( req->link.arg1len );
+        break;
+
       //------------------------------------------------------------------------
       // kXR_readv
       //------------------------------------------------------------------------
@@ -3386,6 +3390,19 @@ namespace XrdCl
         o << ", ";
         o << "destination: ";
         o.write( msg + sizeof( ClientMvRequest ) + sreq->arg1len + 1, sreq->dlen - sreq->arg1len - 1 );
+        o << ")";
+        break;
+      }
+
+      case kXR_link:
+      {
+        ClientLinkRequest *sreq = (ClientLinkRequest *)msg;
+        o << "kXR_link (";
+        o << "source: ";
+        o.write( msg + sizeof( ClientLinkRequest ), sreq->arg1len );
+        o << ", ";
+        o << "destination: ";
+        o.write( msg + sizeof( ClientLinkRequest ) + sreq->arg1len + 1, sreq->dlen - sreq->arg1len - 1 );
         o << ")";
         break;
       }

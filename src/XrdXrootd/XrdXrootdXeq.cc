@@ -1306,6 +1306,45 @@ int XrdXrootdProtocol::do_Mv()
 }
 
 /******************************************************************************/
+/*                               d o _ L i n k                                */
+/******************************************************************************/
+
+int XrdXrootdProtocol::do_Link()
+{
+   int rc;
+   char *oldp, *newp, *Opaque, *Npaque;
+   XrdOucErrInfo myError(Link->ID, Monitor.Did, clientPV);
+
+   oldp = newp = argp->buff;
+   if (Request.link.arg1len)
+      {int n = ntohs(Request.link.arg1len);
+       if (n < 0 || n >= Request.link.dlen || *(argp->buff+n) != ' ')
+          return Response.Send(kXR_ArgInvalid, "invalid path specification");
+       *(oldp+n) = 0;
+       newp += n+1;
+      } else {
+       while(*newp && *newp != ' ') newp++;
+       if (*newp) {*newp = '\0'; newp++;
+                   while(*newp && *newp == ' ') newp++;
+                  }
+      }
+
+   if (rpCheck(oldp, &Opaque)) return rpEmsg("Linking",    oldp);
+   if (rpCheck(newp, &Npaque)) return rpEmsg("Linking to", newp);
+   if (!Squash(oldp))          return vpEmsg("Linking",    oldp);
+   if (!Squash(newp))          return vpEmsg("Linking to", newp);
+
+   if (*newp == '\0')
+      return Response.Send(kXR_ArgMissing, "new path specified for link");
+
+   rc = osFS->link(oldp, newp, myError, CRED, Opaque, Npaque);
+   TRACEP(FS, "rc=" <<rc <<" link " <<oldp <<' ' <<newp);
+   if (SFS_OK == rc) return Response.Send();
+
+   return fsError(rc, XROOTD_MON_MV, myError, oldp, Opaque);
+}
+
+/******************************************************************************/
 /*                            d o _ O f f l o a d                             */
 /******************************************************************************/
 

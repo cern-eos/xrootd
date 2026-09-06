@@ -143,6 +143,7 @@ enum XRequestTypes {
    kXR_pgread,  // 3030 was kXR_decrypt
    kXR_writev,  // 3031
    kXR_clone,   // 3032
+   kXR_link,    // 3033 hard link (POSIX link / WebDAV BIND)
    kXR_REQFENCE // Always last valid request code +1
 };
 
@@ -454,6 +455,19 @@ struct ClientMkdirRequest {
 /******************************************************************************/
 
 struct ClientMvRequest {
+   kXR_char  streamid[2];
+   kXR_unt16 requestid;
+   kXR_char  reserved[14];
+   kXR_int16 arg1len;
+   kXR_int32 dlen;
+};
+
+/******************************************************************************/
+/*                      k X R _ l i n k   R e q u e s t                       */
+/******************************************************************************/
+
+// Same layout as kXR_mv: data is "<src> <dst>" with arg1len = strlen(src).
+struct ClientLinkRequest {
    kXR_char  streamid[2];
    kXR_unt16 requestid;
    kXR_char  reserved[14];
@@ -895,6 +909,7 @@ typedef union {
    struct ClientEndsessRequest endsess;
    struct ClientFattrRequest fattr;
    struct ClientGPfileRequest gpfile;
+   struct ClientLinkRequest link;
    struct ClientLocateRequest locate;
    struct ClientLoginRequest login;
    struct ClientMkdirRequest mkdir;

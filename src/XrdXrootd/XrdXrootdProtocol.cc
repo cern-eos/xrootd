@@ -592,6 +592,7 @@ int XrdXrootdProtocol::Process2()
           case kXR_locate:    return do_Locate();
           case kXR_mkdir:     return do_Mkdir();
           case kXR_mv:        return do_Mv();
+          case kXR_link:      return do_Link();
           case kXR_query:     return do_Query();
           case kXR_prepare:   return do_Prepare();
           case kXR_rm:        return do_Rm();

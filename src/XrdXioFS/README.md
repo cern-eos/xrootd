@@ -42,6 +42,8 @@ kTLS, and imports the socket via `/dev/xiofsctl`. See
 | mkdir | `MKCOL` |
 | unlink | `DELETE` |
 | rename | `MOVE` |
+| chmod | `PROPPATCH` (`X:mode` / Apache `executable`) |
+| hard link | `LINK` (`Destination:`) |
 
 Identity is **URL path + ETag** (XrdHttp `ETag` from `StatGen`).
 
@@ -84,7 +86,7 @@ xiofsd --cacert ca.pem https://localhost:7097/export /mnt/xiofs -f
 
 FUSE I/O uses Range GETs for reads and PATCH (`Content-Range`) for
 `pwrite`. `create` / truncate-to-empty is `PUT`. mkdir / unlink / rename
-are MKCOL / DELETE / MOVE. `auto_cache` lets the kernel page cache absorb
+are MKCOL / DELETE / MOVE. `chmod` is PROPPATCH; `link` is LINK. `auto_cache`
 repeated 4 KiB reads; `xiofscli` remains the non-FUSE client.
 
 The HTTP/2 session keeps one TLS connection and multiplexes streams on

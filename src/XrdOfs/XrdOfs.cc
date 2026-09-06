@@ -2051,6 +2051,49 @@ int XrdOfs::chmod(const char             *path,    // In
 }
 
 /******************************************************************************/
+/*                                  l i n k                                   */
+/******************************************************************************/
+
+int XrdOfs::link(const char             *old_name,
+                 const char             *new_name,
+                       XrdOucErrInfo    &einfo,
+                 const XrdSecEntity     *client,
+                 const char             *infoO,
+                 const char             *infoN)
+{
+   EPNAME("link");
+   static const int locFlags = SFS_O_RDWR|SFS_O_META;
+   const char *tident = einfo.getErrUser();
+   XrdOucEnv old_Env(infoO, 0, client);
+   XrdOucEnv new_Env(infoN, 0, client);
+   int retc;
+   XTRACE(rename, new_name, "old fn=" <<old_name <<" new ");
+
+   AUTHORIZE(client, &old_Env, AOP_Read, "link", old_name, einfo);
+   if (client)
+      client->eaAPI->Add("request.name", "", true);
+
+   AUTHORIZE(client, &new_Env, AOP_Excl_Insert, "link to", new_name, einfo);
+
+   if (Finder && Finder->isRemote())
+      {if ((retc = Finder->Locate(einfo, old_name, locFlags, &old_Env)))
+          return fsError(einfo, retc);
+      }
+
+   (void)tident;
+
+   XrdSfsFileExistence exists_flag;
+   if ((retc = exists(new_name, exists_flag, einfo, client, infoN)))
+      return retc;
+   if (exists_flag != XrdSfsFileExistNo)
+      return XrdOfsFS->Emsg(epname, einfo, -EEXIST, "link", new_name, "?");
+
+   if (!(retc = XrdOfsOss->Link(old_name, new_name, &new_Env)))
+      return SFS_OK;
+   return XrdOfsFS->Emsg(epname, einfo, retc, "link", new_name, "?");
+}
+
+/******************************************************************************/
 /*                               C o n n e c t                                */
 /******************************************************************************/
 

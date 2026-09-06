@@ -645,6 +645,20 @@ virtual int       Init(XrdSysLogger *lp, const char *cfn, XrdOucEnv *envP)
                       {return wrapPI.Init(lp, cfn, envP);}
 
 //-----------------------------------------------------------------------------
+//! Create a hard link to an existing file.
+//!
+//! @param  old_path - Pointer to the existing path.
+//! @param  new_path - Pointer to the new path that will refer to the same file.
+//! @param  envP     - Pointer to environmental information.
+//!
+//! @return 0 upon success or -errno or -osserr (see XrdOssError.hh).
+//-----------------------------------------------------------------------------
+
+virtual int       Link(const char *old_path, const char *new_path,
+                       XrdOucEnv *envP=0)
+                      {return wrapPI.Link(old_path, new_path, envP);}
+
+//-----------------------------------------------------------------------------
 //! Create a directory.
 //!
 //! @param  path   - Pointer to the path of the directory to be created.

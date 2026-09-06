@@ -312,6 +312,22 @@ int XrdSfsFileSystem::FSctl(const int               cmd,
 }
 
 /******************************************************************************/
+/*                                  l i n k                                   */
+/******************************************************************************/
+
+int XrdSfsFileSystem::link(const char             *oPath,
+                           const char             *nPath,
+                                 XrdOucErrInfo    &eInfo,
+                           const XrdSecEntity     *client,
+                           const char             *opaqueO,
+                           const char             *opaqueN)
+{
+   (void)oPath; (void)nPath; (void)client; (void)opaqueO; (void)opaqueN;
+   eInfo.setErrInfo(ENOTSUP, "Not supported.");
+   return SFS_ERROR;
+}
+
+/******************************************************************************/
 /*                                g p F i l e                                 */
 /******************************************************************************/
 

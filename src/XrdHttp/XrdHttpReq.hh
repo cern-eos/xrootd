@@ -89,6 +89,8 @@ public:
     rtMOVE,
     rtPOST,
     rtCOPY,
+    rtPROPPATCH,
+    rtLINK,
     rtCount
   };
 
@@ -254,6 +256,12 @@ public:
   /// Parse the body of a request, assuming that it's XML and that it's entirely in memory
   int parseBody(char *body, long long len);
 
+  /// Parse a WebDAV PROPPATCH propertyupdate body (chmod / executable / mode).
+  int parsePropPatch(char *body, long long len);
+
+  /// Emit RFC 4918 207 Multi-Status for a completed PROPPATCH.
+  int sendPropPatchResult();
+
   /// Prepare the buffers for sending a readv request
   int ReqReadV(const XrdHttpIOList &cl);
   std::vector<readahead_list> ralist;
@@ -386,6 +394,14 @@ public:
   std::string if_none_match;
   /// PUT: true once a pre-open STAT has evaluated If-Match / If-None-Match.
   bool m_precond_ok{false};
+
+  /// PROPPATCH: parsed property items and the unix mode to apply (-1 = none).
+  struct PropPatchItem {
+    std::string xmlname; // local name as in the request
+    int status{403};
+  };
+  std::vector<PropPatchItem> proppatchItems;
+  int proppatchUnixMode{-1};
 
   int mScitag;
 

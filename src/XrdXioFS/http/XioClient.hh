@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <sys/types.h>
 #include <vector>
 
 namespace XioFS {
@@ -47,6 +48,8 @@ public:
              const std::string &if_match = {});
   int rename(const std::string &from, const std::string &to, std::string &err,
              const std::string &if_match = {});
+  int chmod(const std::string &relpath, mode_t mode, std::string &err);
+  int link(const std::string &from, const std::string &to, std::string &err);
 
   const Url &base() const { return base_; }
   bool connected() const { return sess_.connected(); }

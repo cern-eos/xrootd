@@ -273,6 +273,13 @@ public:
                              const XrdSecEntity     *client,
                              const char             *opaque = 0);
 
+        int            link(const char             *oldName,
+                            const char             *newName,
+                                  XrdOucErrInfo    &out_error,
+                            const XrdSecEntity     *client,
+                            const char             *opaqueO = 0,
+                            const char             *opaqueN = 0);
+
         void           Connect(const XrdSecEntity     *client = 0);
 
         void           Disc(const XrdSecEntity *client = 0);

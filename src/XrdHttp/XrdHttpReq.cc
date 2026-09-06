@@ -64,6 +64,9 @@
 
 #include "XrdHttpStatic.hh"
 
+#include <sys/stat.h>
+#include <cstdlib>
+
 #define MAX_TK_LEN      256
 #define MAX_RESOURCE_LEN 16384
 
@@ -98,15 +101,225 @@ int XrdHttpReq::parseBody(char *body, long long len) {
    * The document being in memory, it has no base per RFC 2396,
    * and the "noname.xml" argument will serve as its base.
    */
-  //xmlbody = xmlReadMemory(body, len, "noname.xml", NULL, 0);
-  //if (xmlbody == NULL) {
-  //  fprintf(stderr, "Failed to parse document\n");
-  //  return 1;
-  //}
-
-
-
+  (void)body;
+  (void)len;
   return 1;
+}
+
+namespace {
+
+std::string davLocalName(std::string tag)
+{
+  auto sp = tag.find_first_of(" \t\r\n/");
+  if (sp != std::string::npos)
+    tag.resize(sp);
+  auto c = tag.rfind(':');
+  if (c != std::string::npos)
+    tag.erase(0, c + 1);
+  for (char &ch : tag)
+    ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+  return tag;
+}
+
+bool davIsLiveProp(const std::string &local)
+{
+  return local == "getlastmodified" || local == "getcontentlength"
+      || local == "getetag" || local == "creationdate"
+      || local == "resourcetype" || local == "displayname"
+      || local == "getcontenttype" || local == "iscollection"
+      || local == "supportedlock" || local == "lockdiscovery";
+}
+
+kXR_unt16 unixToKxrMode(mode_t m)
+{
+  kXR_unt16 r = 0;
+  if (m & S_IRUSR) r |= kXR_ur;
+  if (m & S_IWUSR) r |= kXR_uw;
+  if (m & S_IXUSR) r |= kXR_ux;
+  if (m & S_IRGRP) r |= kXR_gr;
+  if (m & S_IWGRP) r |= kXR_gw;
+  if (m & S_IXGRP) r |= kXR_gx;
+  if (m & S_IROTH) r |= kXR_or;
+  if (m & S_IWOTH) r |= kXR_ow;
+  if (m & S_IXOTH) r |= kXR_ox;
+  return r;
+}
+
+void davTrim(std::string &value)
+{
+  while (!value.empty() && isspace(static_cast<unsigned char>(value.front())))
+    value.erase(value.begin());
+  while (!value.empty() && isspace(static_cast<unsigned char>(value.back())))
+    value.pop_back();
+}
+
+} // namespace
+
+int XrdHttpReq::parsePropPatch(char *body, long long len)
+{
+  proppatchItems.clear();
+  proppatchUnixMode = -1;
+  if (!body || len <= 0)
+    return 0;
+
+  const std::string xml(body, static_cast<size_t>(len));
+  std::string hay = xml;
+  for (char &ch : hay)
+    ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+
+  auto scanNamed = [&](const char *local, bool removing) {
+    size_t pos = 0;
+    while (pos < hay.size()) {
+      auto lt = hay.find('<', pos);
+      if (lt == std::string::npos)
+        break;
+      auto gt = hay.find('>', lt);
+      if (gt == std::string::npos)
+        break;
+      std::string tag = hay.substr(lt + 1, gt - lt - 1);
+      if (tag.empty() || tag[0] == '/' || davLocalName(tag) != local) {
+        pos = gt + 1;
+        continue;
+      }
+      size_t p2 = gt + 1;
+      size_t close = std::string::npos;
+      while ((p2 = hay.find("</", p2)) != std::string::npos) {
+        auto cgt = hay.find('>', p2);
+        if (cgt == std::string::npos)
+          break;
+        if (davLocalName(hay.substr(p2 + 2, cgt - (p2 + 2))) == local) {
+          close = p2;
+          break;
+        }
+        p2 = cgt + 1;
+      }
+      if (close == std::string::npos) {
+        pos = gt + 1;
+        continue;
+      }
+      size_t cursor = gt + 1;
+      while (cursor < close) {
+        auto plt = hay.find('<', cursor);
+        if (plt == std::string::npos || plt >= close)
+          break;
+        auto pgt = hay.find('>', plt);
+        if (pgt == std::string::npos || pgt >= close)
+          break;
+        std::string ptag = hay.substr(plt + 1, pgt - plt - 1);
+        if (!ptag.empty() && ptag[0] == '/') {
+          cursor = pgt + 1;
+          continue;
+        }
+        std::string plocal = davLocalName(ptag);
+        if (plocal.empty() || plocal == "prop") {
+          cursor = pgt + 1;
+          continue;
+        }
+        std::string value;
+        bool selfclose = !ptag.empty() && ptag.back() == '/';
+        size_t nextcur = pgt + 1;
+        if (!selfclose) {
+          size_t p3 = pgt + 1;
+          while ((p3 = hay.find("</", p3)) != std::string::npos && p3 < close) {
+            auto cgt = hay.find('>', p3);
+            if (cgt == std::string::npos)
+              break;
+            if (davLocalName(hay.substr(p3 + 2, cgt - (p3 + 2))) == plocal) {
+              value = xml.substr(pgt + 1, p3 - (pgt + 1));
+              nextcur = cgt + 1;
+              break;
+            }
+            p3 = cgt + 1;
+          }
+        }
+        davTrim(value);
+
+        PropPatchItem item;
+        item.xmlname = plocal;
+        item.status = 403;
+        if (davIsLiveProp(plocal)) {
+          item.status = 403;
+        } else if (plocal == "executable") {
+          item.status = 200;
+          if (proppatchUnixMode < 0) {
+            bool on = !removing && !value.empty()
+                      && (value[0] == 'T' || value[0] == 't' || value[0] == '1');
+            proppatchUnixMode = on ? 0755 : 0644;
+          }
+        } else if (plocal == "mode" || plocal == "unix-mode") {
+          if (removing) {
+            item.status = 403;
+          } else {
+            char *end = 0;
+            long mv = strtol(value.c_str(), &end, 8);
+            if (end != value.c_str() && mv >= 0 && mv <= 07777) {
+              item.status = 200;
+              proppatchUnixMode = static_cast<int>(mv) & 0777;
+            } else {
+              item.status = 400;
+            }
+          }
+        }
+        proppatchItems.push_back(std::move(item));
+        cursor = nextcur > pgt ? nextcur : pgt + 1;
+      }
+      pos = close + 1;
+    }
+  };
+
+  scanNamed("set", false);
+  scanNamed("remove", true);
+  return 0;
+}
+
+int XrdHttpReq::sendPropPatchResult()
+{
+  std::string href = resource.c_str();
+  char *estr = escapeXML(href.c_str());
+  std::string body =
+      "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+      "<D:multistatus xmlns:D=\"DAV:\" "
+      "xmlns:Z=\"http://apache.org/dav/props/\" "
+      "xmlns:X=\"http://xrootd.org/ns\">\n"
+      "<D:response>\n<D:href>";
+  body += estr ? estr : href;
+  if (estr)
+    free(estr);
+  body += "</D:href>\n";
+
+  if (proppatchItems.empty()) {
+    body += "<D:propstat>\n<D:prop/>\n"
+            "<D:status>HTTP/1.1 200 OK</D:status>\n</D:propstat>\n";
+  } else {
+    for (const auto &it : proppatchItems) {
+      const char *st = "HTTP/1.1 403 Forbidden";
+      if (it.status == 200)
+        st = "HTTP/1.1 200 OK";
+      else if (it.status == 400)
+        st = "HTTP/1.1 400 Bad Request";
+      else if (it.status == 409)
+        st = "HTTP/1.1 409 Conflict";
+      else if (it.status >= 500)
+        st = "HTTP/1.1 500 Internal Server Error";
+      std::string el = it.xmlname;
+      if (el == "executable")
+        el = "Z:executable";
+      else if (el == "mode" || el == "unix-mode")
+        el = "X:mode";
+      else
+        el = "D:" + it.xmlname;
+      body += "<D:propstat>\n<D:prop><";
+      body += el;
+      body += "/></D:prop>\n<D:status>";
+      body += st;
+      body += "</D:status>\n</D:propstat>\n";
+    }
+  }
+  body += "</D:response>\n</D:multistatus>\n";
+  prot->SendSimpleResp(207, (char *)"Multi-Status",
+                       (char *)"Content-Type: text/xml; charset=\"utf-8\"",
+                       (char *)body.c_str(), body.length(), keepalive);
+  return keepalive ? 1 : -1;
 }
 
 XrdHttpReq::~XrdHttpReq() {
@@ -413,6 +626,10 @@ int XrdHttpReq::parseFirstLine(char *line, int len) {
       request = rtMOVE;
     } else if (!strcmp(key, "COPY")) {
       request = rtCOPY;
+    } else if (!strcmp(key, "PROPPATCH")) {
+      request = rtPROPPATCH;
+    } else if (!strcmp(key, "LINK") || !strcmp(key, "BIND")) {
+      request = rtLINK;
     } else {
       request = rtUnknown;
     }
@@ -1640,7 +1857,7 @@ int XrdHttpReq::ProcessHTTPReq() {
     }
     case XrdHttpReq::rtOPTIONS:
     {
-      prot->SendSimpleResp(200, NULL, (char *) "DAV: 1\r\nDAV: <http://apache.org/dav/propset/fs/1>\r\nAllow: HEAD,GET,PUT,PATCH,PROPFIND,DELETE,OPTIONS", NULL, 0, keepalive);
+      prot->SendSimpleResp(200, NULL, (char *) "DAV: 1\r\nDAV: bind\r\nDAV: <http://apache.org/dav/propset/fs/1>\r\nAllow: HEAD,GET,PUT,PATCH,PROPFIND,PROPPATCH,DELETE,OPTIONS,MOVE,MKCOL,LINK,BIND", NULL, 0, keepalive);
       bool ret_keepalive = keepalive; // reset() clears keepalive
       reset();
       return ret_keepalive ? 1 : -1;
@@ -1917,6 +2134,92 @@ int XrdHttpReq::ProcessHTTPReq() {
       }
 
       // We don't want to be invoked again after this request is finished
+      return 1;
+    }
+    case XrdHttpReq::rtPROPPATCH:
+    {
+      if (prot->fileCacheCloseIfOpen())
+        return 0;
+
+      if (length > 0) {
+        char *p = 0;
+        if (prot->BuffgetData(length, &p, true) < length) {
+          prot->SendSimpleResp(400, NULL, NULL,
+              (char *) "Error in getting the PROPPATCH request body.", 0, false);
+          return -1;
+        }
+        parsePropPatch(p, length);
+      }
+
+      if (proppatchUnixMode < 0) {
+        return sendPropPatchResult();
+      }
+
+      memset(&xrdreq, 0, sizeof (ClientRequest));
+      xrdreq.chmod.requestid = htons(kXR_chmod);
+      xrdreq.chmod.mode = htons(unixToKxrMode(static_cast<mode_t>(proppatchUnixMode)));
+      l = resourceplusopaque.length() + 1;
+      xrdreq.chmod.dlen = htonl(l);
+      if (!prot->Bridge->Run((char *) &xrdreq,
+                             (char *) resourceplusopaque.c_str(), l)) {
+        prot->SendSimpleResp(500, NULL, NULL, (char *) "Could not run chmod request.", 0, false);
+        return -1;
+      }
+      return 1;
+    }
+    case XrdHttpReq::rtLINK:
+    {
+      if (prot->fileCacheCloseIfOpen())
+        return 0;
+
+      if (destination.empty()) {
+        prot->SendSimpleResp(400, NULL, NULL,
+            (char *) "LINK/BIND requires a Destination header.", 0, false);
+        return -1;
+      }
+
+      size_t skip = destination.find("://");
+      std::string dest_path;
+      if (skip == std::string::npos) {
+        dest_path = destination;
+        if (dest_path.empty() || dest_path[0] != '/') {
+          prot->SendSimpleResp(400, NULL, NULL,
+              (char *) "Cannot determine destination path", 0, false);
+          return -1;
+        }
+      } else {
+        skip += 3;
+        if (prot->myRole == kXR_isManager && destination.compare(skip, host.size(), host) != 0) {
+          prot->SendSimpleResp(501, NULL, NULL,
+              (char *) "Only in-place linking is supported for LINK.", 0, false);
+          return -1;
+        }
+        size_t path_pos = destination.find('/', skip);
+        if (path_pos == std::string::npos) {
+          prot->SendSimpleResp(400, NULL, NULL, (char *) "Cannot determine destination path", 0, false);
+          return -1;
+        }
+        dest_path = destination.substr(path_pos);
+      }
+
+      int qpos = resourceplusopaque.find("?");
+      if (qpos != STR_NPOS) {
+        dest_path.append((dest_path.find("?") == std::string::npos) ? "?" : "&");
+        dest_path.append(resourceplusopaque.c_str() + qpos + 1);
+      }
+
+      std::string link_args = std::string(resourceplusopaque.c_str()) + " " + dest_path;
+      l = link_args.length() + 1;
+
+      memset(&xrdreq, 0, sizeof (ClientRequest));
+      xrdreq.link.requestid = htons(kXR_link);
+      xrdreq.link.arg1len = htons(resourceplusopaque.length());
+      xrdreq.link.dlen = htonl(l);
+
+      if (!prot->Bridge->Run((char *) &xrdreq, (char *) link_args.c_str(), l)) {
+        prot->SendSimpleResp(500, NULL, NULL, (char *) "Could not run request.", 0, false);
+        return -1;
+      }
       return 1;
     }
     default:
@@ -2808,9 +3111,9 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
               }
 
               if (e.flags & kXR_xset) {
-                stringresp += "<lp1:executable>T</lp1:executable>\n";
+                stringresp += "<lp2:executable>T</lp2:executable>\n";
               } else {
-                stringresp += "<lp1:executable>F</lp1:executable>\n";
+                stringresp += "<lp2:executable>F</lp2:executable>\n";
               }
 
 
@@ -2924,10 +3227,9 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
                 }
 
                 if (e.flags & kXR_xset) {
-                  stringresp += "<lp1:executable>T</lp1:executable>\n";
-                  stringresp += "<lp1:iscollection>1</lp1:iscollection>\n";
+                  stringresp += "<lp2:executable>T</lp2:executable>\n";
                 } else {
-                  stringresp += "<lp1:executable>F</lp1:executable>\n";
+                  stringresp += "<lp2:executable>F</lp2:executable>\n";
                 }
 
                 stringresp += "</D:prop>\n<D:status>HTTP/1.1 200 OK</D:status>\n</D:propstat>\n</D:response>\n";
@@ -2996,6 +3298,24 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
       prot->SendSimpleResp(201, NULL, NULL, (char *) ":-)", 0, keepalive);
       return keepalive ? 1 : -1;
 
+    }
+    case XrdHttpReq::rtPROPPATCH:
+    {
+      if (xrdresp != kXR_ok) {
+        prot->SendSimpleResp(httpStatusCode, NULL, NULL,
+                             httpErrorBody.c_str(), httpErrorBody.length(), false);
+        return -1;
+      }
+      return sendPropPatchResult();
+    }
+    case XrdHttpReq::rtLINK:
+    {
+      if (xrdresp != kXR_ok) {
+        prot->SendSimpleResp(httpStatusCode, NULL, NULL, (char *) etext.c_str(), 0, false);
+        return -1;
+      }
+      prot->SendSimpleResp(201, NULL, NULL, (char *) "Created", 0, keepalive);
+      return keepalive ? 1 : -1;
     }
 
     default:
@@ -3196,6 +3516,8 @@ void XrdHttpReq::reset() {
   if_match.clear();
   if_none_match.clear();
   m_precond_ok = false;
+  proppatchItems.clear();
+  proppatchUnixMode = -1;
 
   iovP = 0;
   iovN = 0;

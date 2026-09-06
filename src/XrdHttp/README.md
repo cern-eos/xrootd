@@ -136,7 +136,7 @@ HTTP/2 is available when XRootD is built with nghttp2 (`BUILD_HTTP2`).
    `CurrentReq.headerok` is set.
 
 3. **`processParsedRequest(lp)`** — Shared application handler: auth checks,
-   self-redirect, login, method dispatch (GET, PUT, PROPFIND, …).
+   self-redirect, login, method dispatch (GET, PUT, PROPFIND, PROPPATCH, LINK, …).
 
 4. **`Bridge->Run()`** — Async file operations via `XrdXrootdTransit`. Bridge
    callbacks re-invoke `Process(nullptr)`.

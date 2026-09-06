@@ -41,7 +41,8 @@ bool iequals(const std::string &a, const char *b)
 
 bool isBodyMethod(const std::string &method)
 {
-  return method == "PUT" || method == "POST" || method == "PATCH";
+  return method == "PUT" || method == "POST" || method == "PATCH"
+         || method == "PROPPATCH" || method == "PROPFIND";
 }
 
 bool hasContentLength(const XrdHttp2StreamState *st)

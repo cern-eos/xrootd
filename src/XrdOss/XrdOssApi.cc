@@ -348,6 +348,44 @@ int XrdOssSys::Chmod(const char *path, mode_t mode, XrdOucEnv *envP)
 }
 
 /******************************************************************************/
+/*                                  L i n k                                   */
+/******************************************************************************/
+/*
+  Function: Create a hard link from new_path to old_path.
+
+  Input:    old_path    - Existing file.
+            new_path    - New name that will refer to the same file.
+            envP        - Environmental information.
+
+  Output:   Returns XrdOssOK upon success and -errno upon failure.
+*/
+
+int XrdOssSys::Link(const char *old_path, const char *new_path, XrdOucEnv *envP)
+{
+    char old_local[MAXPATHLEN+1], new_local[MAXPATHLEN+1];
+    char *old_pfn, *new_pfn;
+    int retc;
+
+    (void)envP;
+
+    Check_RW(Link, new_path, "link");
+
+    if (lcl_N2N) {
+       if ((retc = lcl_N2N->lfn2pfn(old_path, old_local, sizeof(old_local))))
+          return retc;
+       if ((retc = lcl_N2N->lfn2pfn(new_path, new_local, sizeof(new_local))))
+          return retc;
+       old_pfn = old_local;
+       new_pfn = new_local;
+    } else {
+       old_pfn = (char *)old_path;
+       new_pfn = (char *)new_path;
+    }
+
+    return (link(old_pfn, new_pfn) ? -errno : XrdOssOK);
+}
+
+/******************************************************************************/
 /*                                 M k d i r                                  */
 /******************************************************************************/
 /*

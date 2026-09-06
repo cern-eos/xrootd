@@ -122,6 +122,8 @@ int xiofs_http_mkdir(struct inode *dir, const char *path);
 int xiofs_http_unlink(struct inode *inode);
 int xiofs_http_rename(struct inode *old_inode, const char *new_path);
 int xiofs_http_truncate(struct inode *inode, loff_t size);
+int xiofs_http_chmod(struct inode *inode, umode_t mode);
+int xiofs_http_link(struct inode *old_inode, const char *new_path);
 
 int xiofs_rdma_gpu_io(struct file *file, struct xiofs_gpu_io *req,
 			 bool writing);

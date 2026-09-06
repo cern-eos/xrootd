@@ -60,6 +60,8 @@ struct xiofs_io {
  *   mkdir          -> MKCOL
  *   unlink         -> DELETE
  *   rename         -> MOVE
+ *   chmod          -> PROPPATCH (X:mode / Z:executable)
+ *   link           -> LINK (Destination, POSIX hard link)
  */
 struct xiofs_transport_ops {
   int (*connect)(void *ctx);

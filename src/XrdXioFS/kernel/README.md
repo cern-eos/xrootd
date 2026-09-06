@@ -115,13 +115,17 @@ revalidates). `d_revalidate` issues PROPFIND/HEAD when the cache expires.
 | mkdir | `MKCOL` |
 | unlink | `DELETE` + `If-Match` |
 | rename | `MOVE` |
+| chmod | `PROPPATCH` `X:mode` |
+| hard link | `LINK` + `Destination` |
 
 ## Explicitly not done
 
 - HTTP/2 in-kernel (HPACK / streams / flow control)
 - Automatic handshake upcall (re-import is still `xiofsagent --import-only`)
 - Chunked responses
-- Byte-range locks, hard links
+- Byte-range locks (local VFS locks still apply)
+- Symlinks, mknod
+- Persistent chown / utimens (no protocol verb)
 - Writeback congestion / batching PATCH across folios
 - RDMA / GPU-direct (`XIOFS_IOC_GPU_READ` returns `-EOPNOTSUPP`)
 
