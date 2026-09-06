@@ -667,7 +667,10 @@ int XrdHttp2Session::dispatchStream(int32_t stream_id, XrdHttpProtocol &prot,
         << st->method << " " << st->path);
 
   int rc = prot.processParsedRequest(lp);
-  if (rc == 0 && lp && prot.CurrentReq.fopened) {
+  // Cache-hit GETs now issue kXR_stat before reuse. fopened is already true
+  // while that verify is in flight, so do not skip ahead on reqstate 0.
+  if (rc == 0 && lp && prot.CurrentReq.fopened &&
+      prot.CurrentReq.reqstate > 0) {
     prot.CurrentReq.reqstate++;
     rc = prot.processParsedRequest(nullptr);
   }

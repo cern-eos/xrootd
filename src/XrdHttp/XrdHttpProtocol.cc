@@ -2489,13 +2489,7 @@ bool XrdHttpProtocol::fileCacheApply(XrdHttpReq &req)
     return false;
 
   memcpy(req.fhandle, fileCache_.fhandle, 4);
-  req.filesize = fileCache_.filesize;
-  req.fileflags = fileCache_.fileflags;
-  req.filemodtime = fileCache_.filemodtime;
   req.fopened = true;
-  req.readRangeHandler.SetFilesize(req.filesize);
-  if (!req.length)
-    req.length = req.filesize;
   TRACE(REQ, "Reusing cached open " << fileCache_.key.c_str());
   return true;
 }
@@ -2570,6 +2564,32 @@ void XrdHttpProtocol::fileCacheForget()
 {
   fileCache_ = FileOpenCache();
   fileCacheHoldReqstate_ = false;
+  fileCacheVerifyPending_ = false;
+  fileCacheReopenPending_ = false;
+}
+
+bool XrdHttpProtocol::fileCacheTakeVerifyPending()
+{
+  const bool pending = fileCacheVerifyPending_;
+  fileCacheVerifyPending_ = false;
+  return pending;
+}
+
+bool XrdHttpProtocol::fileCacheTakeReopenPending()
+{
+  const bool pending = fileCacheReopenPending_;
+  fileCacheReopenPending_ = false;
+  return pending;
+}
+
+bool XrdHttpProtocol::fileCacheStale(long long filesize, long fileflags,
+                                     long filemodtime) const
+{
+  if (!fileCache_.valid)
+    return true;
+  return filesize != fileCache_.filesize ||
+         fileflags != fileCache_.fileflags ||
+         filemodtime != fileCache_.filemodtime;
 }
 
 /******************************************************************************/

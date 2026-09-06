@@ -140,6 +140,75 @@ function test_http() {
   cat "${TMPDIR}/r1" "${TMPDIR}/r2" > "${TMPDIR}/r-all"
   assert diff -u "$alphabetFilePath" "${TMPDIR}/r-all"
 
+  echo "Testing open-once cache restat after the file grows"
+  # oss.localroot prepends REMOTE_DIR to the LFN. Rewrite that file so kXR_stat
+  # sees the new size. An XRootD write-open is denied while the cached handle
+  # is held. Keep this outside an `if` so a Python failure aborts the suite.
+  oss_alphabet="${REMOTE_DIR}${alphabetFilePath}"
+  [[ -f "${oss_alphabet}" ]] || error "oss alphabet not found at ${oss_alphabet}"
+  HTTP_HOST="${HTTP_HOST}" _CACHE_PATH="${alphabetFilePath}" \
+    _CACHE_LOCAL="${oss_alphabet}" python3 -c '
+import os, socket, sys
+from urllib.parse import urlparse
+
+http = urlparse(os.environ["HTTP_HOST"])
+path = os.environ["_CACHE_PATH"]
+local = os.environ["_CACHE_LOCAL"]
+if not path.startswith("/"):
+    path = "/" + path
+
+def read_http(sock):
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        buf += chunk
+    header, _, rest = buf.partition(b"\r\n\r\n")
+    clen = 0
+    for line in header.split(b"\r\n"):
+        if line.lower().startswith(b"content-length:"):
+            clen = int(line.split(b":", 1)[1].strip())
+    body = rest
+    while len(body) < clen:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        body += chunk
+    return header, body[:clen]
+
+host, port = http.hostname, http.port or 80
+s = socket.create_connection((host, port), timeout=10)
+s.settimeout(10)
+req1 = (
+    "GET {path} HTTP/1.1\r\nHost: {host}\r\nRange: bytes=0-12\r\n"
+    "Connection: keep-alive\r\n\r\n"
+).format(path=path, host=host).encode()
+s.sendall(req1)
+_, body1 = read_http(s)
+if body1 != b"abcdefghijklm":
+    sys.stderr.write("first range mismatch: %r\n" % (body1,))
+    sys.exit(1)
+with open(local, "wb") as fh:
+    fh.write(b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    fh.flush()
+    os.fsync(fh.fileno())
+req2 = (
+    "GET {path} HTTP/1.1\r\nHost: {host}\r\nRange: bytes=26-51\r\n"
+    "Connection: close\r\n\r\n"
+).format(path=path, host=host).encode()
+s.sendall(req2)
+hdr2, body2 = read_http(s)
+s.close()
+if b" 206 " not in hdr2 and not hdr2.startswith(b"HTTP/1.1 206"):
+    sys.stderr.write("second range status: %r body=%r\n" % (hdr2.split(b"\r\n", 1)[0], body2))
+    sys.exit(1)
+if body2 != b"ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+    sys.stderr.write("second range mismatch: %r\n" % (body2,))
+    sys.exit(1)
+'
+  printf 'abcdefghijklmnopqrstuvw987' > "${oss_alphabet}"
+
   ## GET with trailers
   curl -v -L --raw -H "X-Transfer-Status: true" -H "TE: trailers" "${HTTP_HOST}/$alphabetFilePath" --output - | tr -d '\r' > "$outputFilePath"
   cat "$outputFilePath"

@@ -113,6 +113,7 @@ void XrdHttp1Session::resetMessage()
   headerField_.clear();
   headerValue_.clear();
   headers_.clear();
+  headerBytes_ = 0;
 }
 
 void XrdHttp1Session::appendMethod(const char *at, size_t length)
@@ -166,7 +167,8 @@ XrdHttp1Session::XrdHttp1Session()
   headersReady_(false),
   haveRequestLine_(false),
   httpMajor_(1),
-  httpMinor_(1)
+  httpMinor_(1),
+  headerBytes_(0)
 {
   llhttp_init(&parser_, HTTP_REQUEST, &kSettings);
   parser_.data = sessionCtx_;
@@ -256,6 +258,12 @@ int XrdHttp1Session::parseHeaders(XrdHttpProtocol &prot, XrdHttpReq &req)
 
   if (err == HPE_OK) {
     prot.BuffConsume(avail);
+    headerBytes_ += static_cast<size_t>(avail);
+    if (headerBytes_ >= kMaxIncompleteHeaderBytes) {
+      TRACE(ALL, " llhttp incomplete headers exceeded "
+            << kMaxIncompleteHeaderBytes << " bytes; disconnecting");
+      return -1;
+    }
     return 1;
   }
 

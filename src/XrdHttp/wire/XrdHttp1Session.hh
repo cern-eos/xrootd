@@ -9,6 +9,7 @@
 class XrdHttpProtocol;
 class XrdHttpReq;
 
+#include <cstddef>
 #include <string>
 #include <utility>
 #include <vector>
@@ -62,6 +63,11 @@ private:
   std::string headerField_;
   std::string headerValue_;
   std::vector<std::pair<std::string, std::string>> headers_;
+
+  /// Bytes fed to llhttp for the current request while headers are still
+  /// incomplete. Matches the legacy parser's 16 KiB incomplete-header cap.
+  static const size_t kMaxIncompleteHeaderBytes = 16384;
+  size_t      headerBytes_;
 
   int applyTo(XrdHttpReq &req);
 };

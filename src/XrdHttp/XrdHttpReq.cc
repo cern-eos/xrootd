@@ -1114,7 +1114,7 @@ int XrdHttpReq::ProcessHTTPReq() {
       // we close the file handle and switch to doing a HTML-based rendering of the directory.  This
       // avoids needing to always to do "stat" first to determine the next step (since the file-open also
       // does a "stat").
-      // - 0: Perform an open on the resource
+      // - 0: Perform an open on the resource (or restat a cached handle, then reopen if stale)
       // - 1: Perform a checksum request on the resource (only if requested in header; otherwise skipped)
       // - 2: Perform a close (for dirlist only)
       // - 3: Perform a dirlist.
@@ -1122,10 +1122,21 @@ int XrdHttpReq::ProcessHTTPReq() {
       switch (reqstate) {
         case 0: // Open the path for reading.
         {
+          // Close+reopen is issued here, not from PostProcess: Bridge::Run()
+          // rejects re-entry while the verify kXR_stat is still in flight.
+          if (prot->fileCacheTakeReopenPending()) {
+            if (prot->fileCacheBeginClose())
+              return 0;
+          }
           if (!fopened)
             prot->fileCacheApply(*this);
           if (fopened) {
-            reqstate = 1;
+            if (prot->doStat((char *) resourceplusopaque.c_str()) < 0) {
+              prot->SendSimpleResp(404, NULL, NULL, (char *) "Could not run request.", 0, false);
+              return -1;
+            }
+            prot->fileCacheMarkVerifyPending();
+            return 0;
           } else if (prot->fileCacheCloseIfDifferent(*this)) {
             return 0;
           } else {
@@ -1309,15 +1320,16 @@ int XrdHttpReq::ProcessHTTPReq() {
 
             // If we are using HTTPS or HTTP/2 (bytes must be framed, never
             // sendfile()'d to the socket), or if the client requested trailers,
-            // or if the read concerns a multirange reponse, disable sendfile
-            // (in the latter two cases, the extra framing is only done in PostProcessHTTPReq)
-            if (prot->ishttps || prot->isHttp2() ||
+            // or if the read concerns a multirange response, disable sendfile
+            // (in the latter two cases, the extra framing is only done in PostProcessHTTPReq).
+            // Re-enable it otherwise: setSF(false) is sticky on the file handle,
+            // and a later cleartext single-range GET may reuse the cached open.
+            const bool disableSF = prot->ishttps || prot->isHttp2() ||
                 (m_transfer_encoding_chunked && m_trailer_headers) ||
-                !readRangeHandler.isSingleRange()) {
-              if (!prot->Bridge->setSF((kXR_char *) fhandle, false)) {
-                TRACE(REQ, " XrdBridge::SetSF(false) failed.");
-
-              }
+                !readRangeHandler.isSingleRange();
+            if (prot->Bridge->setSF((kXR_char *) fhandle, !disableSF) < 0) {
+              TRACE(REQ, " XrdBridge::SetSF(" << (disableSF ? "false" : "true")
+                    << ") failed.");
             }
 
 
@@ -2252,8 +2264,40 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
       // - 3: Perform a dirlist
       // - 4+: Reads from file; if at end, perform a close.
       switch (reqstate) {
-        case 0: // open
+        case 0: // open, or kXR_stat verifying a cached open
         {
+          if (prot->fileCacheTakeVerifyPending()) {
+            bool stale = true;
+            if (xrdresp == kXR_ok && iovN > 0 && iovP && iovP[0].iov_base) {
+              long long etag = 0;
+              long long stsize = 0;
+              long stflags = 0;
+              long stmtime = 0;
+              TRACEI(REQ, "Stat for cached GET " << resource.c_str()
+                        << " stat=" << (char *) iovP[0].iov_base);
+              sscanf((const char *) iovP[0].iov_base, "%lld %lld %ld %ld",
+                     &etag, &stsize, &stflags, &stmtime);
+              stale = (stflags & kXR_isDir) ||
+                      prot->fileCacheStale(stsize, stflags, stmtime);
+              if (!stale) {
+                filesize = stsize;
+                fileflags = stflags;
+                filemodtime = stmtime;
+                readRangeHandler.SetFilesize(filesize);
+                if (!length)
+                  length = filesize;
+                prot->fileCacheStore(*this);
+                return 0;
+              }
+            }
+            TRACEI(REQ, "Cached open stale or verify failed; reopening "
+                   << resource.c_str());
+            fopened = false;
+            prot->fileCacheMarkReopenPending();
+            prot->fileCacheHoldReqstate();
+            return 0;
+          }
+
           if (xrdresp == kXR_ok) {
             fopened = true;
             getfhandle();

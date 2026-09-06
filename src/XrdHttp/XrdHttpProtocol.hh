@@ -399,8 +399,9 @@ private:
 #endif
 
   /// Connection-local kXR_open cache. One GET Range after another on the
-  /// same path reuses the handle; kXR_close waits until a different path,
-  /// a mutating verb, a failed read, or the session ending.
+  /// same path reuses the handle after a kXR_stat confirms size/mtime/flags
+  /// still match; kXR_close waits until a different path, a mutating verb,
+  /// a stale restat, a failed read, or the session ending.
   struct FileOpenCache {
     bool        valid{false};
     bool        switching{false};
@@ -411,6 +412,8 @@ private:
     long        filemodtime{0};
   } fileCache_;
   bool fileCacheHoldReqstate_{false};
+  bool fileCacheVerifyPending_{false};
+  bool fileCacheReopenPending_{false};
 
   const char *fileCacheKey(const XrdHttpReq &req) const;
   bool fileCacheApply(XrdHttpReq &req);
@@ -421,6 +424,12 @@ private:
   bool fileCacheCloseIfOpen();
   bool fileCacheFinishSwitchClose();
   void fileCacheForget();
+  void fileCacheHoldReqstate() { fileCacheHoldReqstate_ = true; }
+  void fileCacheMarkVerifyPending() { fileCacheVerifyPending_ = true; }
+  bool fileCacheTakeVerifyPending();
+  void fileCacheMarkReopenPending() { fileCacheReopenPending_ = true; }
+  bool fileCacheTakeReopenPending();
+  bool fileCacheStale(long long filesize, long fileflags, long filemodtime) const;
 
   /// Indicates whether we've attempted to send app info.
   bool DoneSetInfo;
