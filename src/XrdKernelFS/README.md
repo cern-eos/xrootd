@@ -69,7 +69,7 @@ left the HTTP/2 preface in `SSL_pending()` so `detectWireMode()` never
 saw it. `XrdHttpProtocol` now installs the ALPN callback on the CTX used
 for `SSL_accept` and always buffers pending TLS data before detection.
 
-## kfsd (read-only FUSE)
+## kfsd (FUSE)
 
 Linux libfuse or macFUSE:
 
@@ -77,11 +77,10 @@ Linux libfuse or macFUSE:
 kfsd --cacert ca.pem https://localhost:7097/export /mnt/kfs -f
 ```
 
-FUSE I/O uses Range GETs; the kernel page cache (`kernel_cache,auto_cache`)
-absorbs repeated 4 KiB reads. The daemon is read-only in this slice
-(`PUT` / `PATCH` are available from `kfscli`). XrdHttp `PUT` replaces the whole
-object; `PATCH` with `Content-Range` is the `pwrite` path and reuses the
-server's connection-local write-open cache.
+FUSE I/O uses Range GETs for reads and PATCH (`Content-Range`) for
+`pwrite`. `create` / truncate-to-empty is `PUT`. mkdir / unlink / rename
+are MKCOL / DELETE / MOVE. `auto_cache` lets the kernel page cache absorb
+repeated 4 KiB reads; `kfscli` remains the non-FUSE client.
 
 ## Layout
 

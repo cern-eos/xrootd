@@ -55,7 +55,8 @@ struct kernelfs_io {
  *   lookup/getattr -> PROPFIND Depth 0 (HEAD as a size-only hint)
  *   readdir        -> PROPFIND Depth 1
  *   read           -> GET Range
- *   write          -> PUT (whole object replace)
+ *   write          -> PATCH with Content-Range (pwrite)
+ *   create/trunc 0 -> PUT (whole object replace)
  *   mkdir          -> MKCOL
  *   unlink         -> DELETE
  *   rename         -> MOVE
@@ -72,8 +73,8 @@ struct kernelfs_transport_ops {
 
   int (*submit_read_cpu)(void *ctx, const char *path, uint64_t offset,
                          uint64_t length, void *buf, size_t *nread);
-  int (*submit_write_cpu)(void *ctx, const char *path, const void *buf,
-                          size_t length);
+  int (*submit_write_cpu)(void *ctx, const char *path, uint64_t offset,
+                          uint64_t length, const void *buf, size_t *nwritten);
 
   int (*mkdir)(void *ctx, const char *path);
   int (*unlink)(void *ctx, const char *path);
