@@ -297,7 +297,12 @@ XRootDStatus JournalCacheFile::Open(const std::string &url, OpenFlags::Flags fla
                         "JournalCache : unable to create cache directory: %s",
                         JournalDir.c_str());
             if (pFile) {
-              (void)pFile->Close();
+              XRootDStatus closeSt = pFile->Close();
+              if (!closeSt.IsOK()) {
+                mLog->Error(1,
+                            "JournalCache : close after cache-dir failure: %s",
+                            closeSt.ToStr().c_str());
+              }
             }
             mIsOpen = false;
             mOpenState = FAILED;
