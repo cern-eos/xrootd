@@ -31,7 +31,7 @@ class rb_invariant_error : public std::exception {
 public:
   rb_invariant_error() {}
 
-  virtual const char *what() const throw() {
+  virtual const char *what() const noexcept {
     return "Red-black tree invariant violation!";
   }
 };
