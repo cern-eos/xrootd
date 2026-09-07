@@ -42,6 +42,18 @@ void fillPattern(char *buf, size_t len, char seed) {
   }
 }
 
+std::string readFileToString(const std::string &path) {
+  std::ifstream in(path, std::ios::binary | std::ios::ate);
+  const std::streamoff size = in.tellg();
+  if (!in || size < 0) {
+    return {};
+  }
+  std::string out(static_cast<size_t>(size), '\0');
+  in.seekg(0);
+  in.read(out.data(), size);
+  return out;
+}
+
 class JournalTest : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -1130,9 +1142,7 @@ TEST(XjcdRenderTest, RendersConfigsAndClosedPolicy) {
   ASSERT_TRUE(fs::exists(xrootdPath));
   ASSERT_TRUE(fs::exists(policyPath));
 
-  std::ifstream xrootdIn(xrootdPath);
-  std::string xrootdText((std::istreambuf_iterator<char>(xrootdIn)),
-                         std::istreambuf_iterator<char>());
+  const std::string xrootdText = readFileToString(xrootdPath);
   EXPECT_NE(xrootdText.find("port 1094"), std::string::npos);
   EXPECT_NE(xrootdText.find("port tls 8443"), std::string::npos);
   EXPECT_NE(xrootdText.find("http.cert /etc/ssl/cert.pem"), std::string::npos);
@@ -1149,9 +1159,7 @@ TEST(XjcdRenderTest, RendersConfigsAndClosedPolicy) {
 
   const std::string unitPath = state.systemdUnitPath();
   ASSERT_TRUE(fs::exists(unitPath));
-  std::ifstream unitIn(unitPath);
-  std::string unitText((std::istreambuf_iterator<char>(unitIn)),
-                       std::istreambuf_iterator<char>());
+  const std::string unitText = readFileToString(unitPath);
   EXPECT_NE(unitText.find("ExecStart=/usr/bin/xrootd -c " + xrootdPath),
             std::string::npos);
   EXPECT_NE(unitText.find("EnvironmentFile=-" + state.systemdEnvPath()),
@@ -1162,9 +1170,8 @@ TEST(XjcdRenderTest, RendersConfigsAndClosedPolicy) {
   const std::string cleanerPath = state.cleanerPath();
   ASSERT_TRUE(fs::exists(cleanerPath));
   ASSERT_TRUE(fs::exists(state.cleanerSystemdUnitPath()));
-  std::ifstream cleanerUnitIn(state.cleanerSystemdUnitPath());
-  std::string cleanerUnitText((std::istreambuf_iterator<char>(cleanerUnitIn)),
-                              std::istreambuf_iterator<char>());
+  const std::string cleanerUnitText =
+      readFileToString(state.cleanerSystemdUnitPath());
   EXPECT_NE(cleanerUnitText.find("ExecStart=/usr/bin/xjccleand --journal " +
                                  state.journal),
             std::string::npos);

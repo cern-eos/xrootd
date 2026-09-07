@@ -512,6 +512,9 @@ protected:
       node->parent->colour = BLACK;
       uncle->colour = BLACK;
       N *grandparent = get_grandparent(node);
+      if (!grandparent) {
+        return;
+      }
       grandparent->colour = RED;
       rb_insert_case1(grandparent);
     } else {
@@ -521,6 +524,9 @@ protected:
 
   void rb_insert_case4(N *node) {
     N *grandparent = get_grandparent(node);
+    if (!grandparent) {
+      return;
+    }
 
     if ((node == node->parent->right.get()) &&
         (node->parent == grandparent->left.get())) {
@@ -537,6 +543,9 @@ protected:
 
   void rb_insert_case5(N *node) {
     N *grandparent = get_grandparent(node);
+    if (!grandparent) {
+      return;
+    }
     node->parent->colour = BLACK;
     grandparent->colour = RED;
 

@@ -593,8 +593,14 @@ namespace
         {
           // get the response
           DirectoryList *dirList = 0;
-          response->Get( dirList );
-
+          if( response )
+            response->Get( dirList );
+          if( !dirList )
+          {
+            pCtx->UpdateStatus( XRootDStatus( stError, errInternal ) );
+          }
+          else
+          {
           std::string parent = pCtx->dirList->GetParentName();
 
           DirectoryList::Iterator itr;
@@ -655,6 +661,7 @@ namespace
                 continue;
               }
             }
+          }
           }
         }
 
