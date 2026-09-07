@@ -368,7 +368,8 @@ XrdHttpProtocol::HandleOidcAuthentication()
 
   if (SecEntity.name) free(SecEntity.name);
   SecEntity.name = authProt->Entity.name ? strdup(authProt->Entity.name) : nullptr;
-  strncpy(SecEntity.prot, authProt->Entity.prot, sizeof(SecEntity.prot));
+  strncpy(SecEntity.prot, authProt->Entity.prot, sizeof(SecEntity.prot) - 1);
+  SecEntity.prot[sizeof(SecEntity.prot) - 1] = '\0';
   copyEntityAttrs(SecEntity, authProt->Entity);
   authProt->Delete();
 
