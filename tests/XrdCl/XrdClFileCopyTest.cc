@@ -357,7 +357,7 @@ void FileCopyTest::CopyTestFunc( bool thirdParty )
   FileSystem fs( manager2 );
 
   // Remove any leftover targets from a previous interrupted run.
-  (void)fs.Rm( targetPath );
+  if( fs.Rm( targetPath ).IsOK() ) {}
   remove( localFile.c_str() );
   sync();
 
