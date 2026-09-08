@@ -51,7 +51,6 @@ static constexpr int XrdHttpExtContinueProcessing = 2;
 // This class summarizes the content of a request, for consumption by an external plugin
 class XrdHttpExtReq {
 private:
-  XrdHttpReq *req;
   XrdHttpProtocol *prot;
   
 public:

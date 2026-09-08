@@ -85,20 +85,20 @@ const XrdSecEntity &XrdHttpExtReq::GetSecEntity() const
 
 void XrdHttpExtReq::AppendOpaque(const std::string &key,
                                  const std::string &value) {
-  if (req) {
-    req->appendOpaqueParam(key, value);
+  if (prot) {
+    prot->CurrentReq.appendOpaqueParam(key, value);
   }
 }
 
 void XrdHttpExtReq::SetResponseHeader(const std::string &key,
                                       const std::string &value) {
-  if (req) {
-    req->setExtraResponseHeader(key, value);
+  if (prot) {
+    prot->CurrentReq.setExtraResponseHeader(key, value);
   }
 }
 
 XrdHttpExtReq::XrdHttpExtReq(XrdHttpReq *req, XrdHttpProtocol *pr)
-    : req(req), prot(pr), verb(req->requestverb), headers(req->allheaders) {
+    : prot(pr), verb(req->requestverb), headers(req->allheaders) {
   // Here we fill the request summary with all the fields we can
   resource = req->resource.c_str();
   int envlen = 0;
