@@ -77,10 +77,14 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
 endif()
 
 gtest_add_tests(TARGET xrdcl-s3-test TEST_LIST S3Tests)
+
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/tests/s3")
+
 set_tests_properties(${S3Tests}
   PROPERTIES
     FIXTURES_REQUIRED XrdClS3::s3
-    ENVIRONMENT "XRD_LOGLEVEL=Debug;ENV_FILE=${CMAKE_BINARY_DIR}/tests/s3/setup.sh;XRD_PLUGINCONFDIR=${CMAKE_BINARY_DIR}/tests/s3/client.plugins.d"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/tests/s3"
+    ENVIRONMENT "XRD_LOGLEVEL=Debug;ENV_FILE=${CMAKE_BINARY_DIR}/tests/s3/setup.sh;XRD_PLUGINCONFDIR=${CMAKE_BINARY_DIR}/tests/s3/client.plugins.d;X509_USER_PROXY=/dev/null/x509"
 )
 
 ######################################
@@ -107,12 +111,13 @@ set_tests_properties(XrdClS3::s3::teardown
 add_test(NAME XrdClS3::s3::test
   COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/s3-test.sh" s3)
 
-list(APPEND S3_TEST_LOGS ${CMAKE_CURRENT_BINARY_DIR}/tests/s3/minio.log)
-list(APPEND S3_TEST_LOGS ${CMAKE_CURRENT_BINARY_DIR}/tests/s3/client.log)
+list(APPEND S3_TEST_LOGS ${CMAKE_BINARY_DIR}/tests/s3/minio.log)
+list(APPEND S3_TEST_LOGS ${CMAKE_BINARY_DIR}/tests/s3/client.log)
 
 set_tests_properties(XrdClS3::s3::test
   PROPERTIES
     FIXTURES_REQUIRED XrdClS3::s3
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/tests/s3"
     ENVIRONMENT "BINARY_DIR=${CMAKE_BINARY_DIR}"
     ATTACHED_FILES_ON_FAIL "${S3_TEST_LOGS}"
 )

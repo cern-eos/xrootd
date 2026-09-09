@@ -34,6 +34,12 @@ list(APPEND cache_FIXTURES XRootD::host)
 list(APPEND gsi_FIXTURES TLS)
 
 foreach(CONFIG ${XROOTD_CONFIGS})
+  if(CONFIG MATCHES "^(http|scitokens)")
+    set(_xrd_env "BINARY_DIR=${CMAKE_BINARY_DIR};HOSTNAME=localhost")
+  else()
+    set(_xrd_env "BINARY_DIR=${CMAKE_BINARY_DIR}")
+  endif()
+
   add_test(NAME XRootD::${CONFIG}::setup
     COMMAND sh -c "${CMAKE_CURRENT_SOURCE_DIR}/test.sh ${CONFIG} setup")
 
@@ -41,7 +47,7 @@ foreach(CONFIG ${XROOTD_CONFIGS})
     PROPERTIES
       FIXTURES_SETUP XRootD::${CONFIG}
       FIXTURES_REQUIRED "${${CONFIG}_FIXTURES}"
-      ENVIRONMENT "BINARY_DIR=${CMAKE_BINARY_DIR}"
+      ENVIRONMENT "${_xrd_env}"
   )
 
   add_test(NAME XRootD::${CONFIG}::teardown
@@ -50,7 +56,7 @@ foreach(CONFIG ${XROOTD_CONFIGS})
   set_tests_properties(XRootD::${CONFIG}::teardown
     PROPERTIES
       FIXTURES_CLEANUP XRootD::${CONFIG}
-      ENVIRONMENT "BINARY_DIR=${CMAKE_BINARY_DIR}"
+      ENVIRONMENT "${_xrd_env}"
   )
 
   add_test(NAME XRootD::${CONFIG}::test
@@ -64,7 +70,7 @@ foreach(CONFIG ${XROOTD_CONFIGS})
   set_tests_properties(XRootD::${CONFIG}::test
     PROPERTIES
       FIXTURES_REQUIRED "${${CONFIG}_FIXTURES}"
-      ENVIRONMENT "BINARY_DIR=${CMAKE_BINARY_DIR}"
+      ENVIRONMENT "${_xrd_env}"
       ATTACHED_FILES_ON_FAIL "${${CONFIG}_LOGS}"
   )
 endforeach()

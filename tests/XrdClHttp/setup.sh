@@ -197,7 +197,7 @@ EOF
 # limits.  Hence, we explicitly place the XRootD rundir in /tmp
 XROOTD_RUNDIR="$(mktemp -d -p /tmp xrdcl-http-rundir.XXXXXXXX)"
 chmod 0755 "$XROOTD_RUNDIR"
-mkdir -p "$XROOTD_RUNDIR/cache" "XROOTD_RUNDIR/origin"
+mkdir -p "$XROOTD_RUNDIR/cache" "$XROOTD_RUNDIR/origin"
 XROOTD_CONFIGDIR="$RUNDIR/xrootd"
 rm -rf "$XROOTD_CONFIGDIR"
 mkdir -p "$XROOTD_CONFIGDIR"

@@ -149,18 +149,27 @@ function setup() {
 	# Prepare a test environment file -- can be used by other unit tests that
 	# utilize this fixture but don't inherit the shell environment from run()
 	XRD_PORT="$(cconfig -x xrootd -c "${CONF}" 2>&1 | grep xrd.port | tr -cd '0-9')"
-	HOST="root://${HOSTNAME:-localhost}:${XRD_PORT}/"
+	HOST="$(http_test_host "${XRD_PORT}")"
 	cat > "${LOCAL_DIR}/test_config.sh" << EOF
 HOST=$HOST
 EOF
+}
+
+function http_test_host() {
+	# HTTP/HTTPS tests talk to a loopback server whose TLS SAN includes
+	# localhost. Using $HOSTNAME (CI runner names, dyndns boxes) makes
+	# curl miss the listener or fail certificate checks.
+	case "${NAME}" in
+		http*|scitokens) echo "root://localhost:${1}/" ;;
+		*) echo "root://${HOSTNAME:-localhost}:${1}/" ;;
+	esac
 }
 
 function run() {
 	# Extract server port from configuration file to avoid duplication
 	XRD_PORT="$(cconfig -x xrootd -c "${CONF}" 2>&1 | grep xrd.port | tr -cd '0-9')"
 
-	# Use the actual hostname if we have one, otherwise fallback to localhost
-	HOST="root://${HOSTNAME:-localhost}:${XRD_PORT}/"
+	HOST="$(http_test_host "${XRD_PORT}")"
 
 	export HOST XRD_PORT
 

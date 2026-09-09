@@ -37,12 +37,17 @@ target_link_libraries(xrdcl-http-test XrdClHttpTesting XrdClHttpTransferTest GTe
 gtest_add_tests(TARGET xrdcl-test TEST_LIST CurlClOnlyTests)
 gtest_add_tests(TARGET xrdcl-http-test TEST_LIST CurlTests)
 
+# setup.sh writes $BINARY_DIR/tests/curl, not ${CMAKE_CURRENT_BINARY_DIR}/tests/curl.
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/tests/curl")
+
 set_tests_properties(${CurlTests} ${CurlClOnlyTests}
   PROPERTIES
     FIXTURES_REQUIRED
       XrdClHttp
+    WORKING_DIRECTORY
+      "${CMAKE_BINARY_DIR}/tests/curl"
     ENVIRONMENT
-      "ENV_FILE=${CMAKE_BINARY_DIR}/tests/curl/setup.sh;XRD_PLUGINCONFDIR=${CMAKE_BINARY_DIR}/tests/curl/client.plugins.d"
+      "ENV_FILE=${CMAKE_BINARY_DIR}/tests/curl/setup.sh;XRD_PLUGINCONFDIR=${CMAKE_BINARY_DIR}/tests/curl/client.plugins.d;X509_USER_PROXY=/dev/null/x509"
 )
 
 ######################################
@@ -73,14 +78,16 @@ set_tests_properties(XrdClHttp::teardown
 add_test(NAME XrdClHttp::test
   COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/test.sh" curl)
 
-list(APPEND CURL_TEST_LOGS ${CMAKE_CURRENT_BINARY_DIR}/tests/curl/origin.log)
-list(APPEND CURL_TEST_LOGS ${CMAKE_CURRENT_BINARY_DIR}/tests/curl/cache.log)
-list(APPEND CURL_TEST_LOGS ${CMAKE_CURRENT_BINARY_DIR}/tests/curl/client.log)
+list(APPEND CURL_TEST_LOGS ${CMAKE_BINARY_DIR}/tests/curl/origin.log)
+list(APPEND CURL_TEST_LOGS ${CMAKE_BINARY_DIR}/tests/curl/cache.log)
+list(APPEND CURL_TEST_LOGS ${CMAKE_BINARY_DIR}/tests/curl/client.log)
 
 set_tests_properties(XrdClHttp::test
   PROPERTIES
     FIXTURES_REQUIRED
       XrdClHttp
+    WORKING_DIRECTORY
+      "${CMAKE_BINARY_DIR}/tests/curl"
     ENVIRONMENT
       "BINARY_DIR=${CMAKE_BINARY_DIR}"
     ATTACHED_FILES_ON_FAIL
