@@ -333,6 +333,32 @@ kill_pidfile() {
        kill -s KILL "${pid}" 2>/dev/null || true
 }
 
+wait_for_cluster() {
+       local xrdfs="${XRDFS:-$(command -v xrdfs)}"
+       local host="root://localhost:${XRD_PORT_METAMAN}"
+       local tries
+
+       # cms.delay startup is 2s and srv4 (data.zip) is last to subscribe.
+       # A fixed sleep 1 let XrdCl zip/TPC tests run against a half-joined
+       # tree and fail with "Redirect limit has been reached".
+       if [[ ! -x "${xrdfs}" ]]; then
+              sleep 3
+              return 0
+       fi
+
+       for ((tries = 0; tries < 40; tries++)); do
+              if XRD_REQUESTTIMEOUT=3 "${xrdfs}" "${host}" locate \
+                    /data/cb4aacf1-6f28-42f2-b68a-90a73460f424.dat >/dev/null 2>&1 \
+                 && XRD_REQUESTTIMEOUT=3 "${xrdfs}" "${host}" locate \
+                    /data/data.zip >/dev/null 2>&1; then
+                     return 0
+              fi
+              sleep 0.5
+       done
+       echo "error: cluster did not become ready (${host})" >&2
+       return 1
+}
+
 stop() {
        local i
 
@@ -383,7 +409,7 @@ start(){
               ${CMSD} -b -k fifo -n ${i} -l cmsd.log -s cmsd.pid -c ${i}.cfg
        done
 
-       sleep 1
+       wait_for_cluster
        need_cleanup=0
        trap - EXIT INT TERM HUP
 }
