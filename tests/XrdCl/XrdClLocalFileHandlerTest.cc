@@ -474,7 +474,9 @@ TEST_F(LocalFileHandlerTest, XAttrTest)
   EXPECT_TRUE( testEnv->GetString( "LocalDataPath", localDataPath ) );
 
   char resolved_path[MAXPATHLEN];
-  localDataPath = realpath(localDataPath.c_str(), resolved_path);
+  ASSERT_TRUE(realpath(localDataPath.c_str(), resolved_path))
+      << "LocalDataPath not found: " << localDataPath;
+  localDataPath = resolved_path;
 
   std::string targetURL = localDataPath + "/metaman/lfilehandlertestfilexattr";
   CreateTestFileFunc( targetURL );

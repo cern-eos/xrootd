@@ -135,6 +135,7 @@ TestEnv::TestEnv()
   ImportString( "LocalFile",        "XRDTEST_LOCALFILE" );
   ImportString( "RemoteFile",       "XRDTEST_REMOTEFILE" );
   ImportString( "MultiIPServerURL", "XRDTEST_MULTIIPSERVERURL" );
+  ImportString( "LocalDataPath",    "XRDTEST_LOCALDATAPATH" );
 }
 
 //------------------------------------------------------------------------------

@@ -36,6 +36,7 @@
 #include "XrdCl/XrdClZipOperations.hh"
 #include <sys/stat.h>
 #include <unistd.h>
+#include <cstdlib>
 #include <fstream>
 
 using namespace XrdClTests;
@@ -187,7 +188,12 @@ void FileTest::ReadTest()
   std::string filePath = dataPath + "/cb4aacf1-6f28-42f2-b68a-90a73460f424.dat";
   std::string fileUrl = address + "/";
   fileUrl += filePath;
-  localDataPath = realpath(localDataPath.c_str(), NULL);
+  {
+    char *resolved = realpath(localDataPath.c_str(), nullptr);
+    ASSERT_TRUE(resolved) << "LocalDataPath not found: " << localDataPath;
+    localDataPath = resolved;
+    free(resolved);
+  }
   // using the file protocol to access local files, so that we can use XRootD's own functions
   std::string localFileUrl = "file://localhost" + localDataPath + "/srv1" + filePath;
 
@@ -523,7 +529,12 @@ void FileTest::VectorReadTest()
   std::string fileUrl = address + "/";
   fileUrl += filePath;
   localDataPath += "/srv1";
-  localDataPath = realpath(localDataPath.c_str(), NULL);
+  {
+    char *resolved = realpath(localDataPath.c_str(), nullptr);
+    ASSERT_TRUE(resolved) << "LocalDataPath/srv1 not found: " << localDataPath;
+    localDataPath = resolved;
+    free(resolved);
+  }
 
   //----------------------------------------------------------------------------
   // Fetch some data and checksum

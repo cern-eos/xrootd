@@ -35,9 +35,12 @@
 #include "XrdCks/XrdCksData.hh"
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <unistd.h>
 
 using namespace XrdClTests;
 
@@ -148,6 +151,12 @@ void FileCopyTest::UploadTestFunc()
   EXPECT_TRUE( testEnv->GetString( "MainServerURL", address ) );
   EXPECT_TRUE( testEnv->GetString( "DataPath", dataPath ) );
   EXPECT_TRUE( testEnv->GetString( "LocalDataPath", localDataPath ) );
+  {
+    char *resolved = realpath(localDataPath.c_str(), nullptr);
+    ASSERT_TRUE(resolved) << "LocalDataPath not found: " << localDataPath;
+    localDataPath = resolved;
+    free(resolved);
+  }
   localFile = localDataPath + "/metaman/data/testFile.dat";
 
   URL url( address );
@@ -165,7 +174,8 @@ void FileCopyTest::UploadTestFunc()
   //----------------------------------------------------------------------------
   int fd = -1;
 
-  EXPECT_ERRNO_OK( (fd=open( localFile.c_str(), O_RDONLY )) > 0 );
+  ASSERT_TRUE( (fd=open( localFile.c_str(), O_RDONLY )) >= 0 )
+      << localFile << ": " << strerror(errno);
   EXPECT_XRDST_OK( f.Open( fileUrl, OpenFlags::Delete|OpenFlags::Update ) );
 
   //----------------------------------------------------------------------------
@@ -336,8 +346,13 @@ void FileCopyTest::CopyTestFunc( bool thirdParty )
   EXPECT_TRUE( testEnv->GetString( "DataPath",           dataPath ) );
   EXPECT_TRUE( testEnv->GetString( "LocalDataPath", relativeDataPath ) );
 
-  // getting the abs path to that it can work with the "file" protocol
-  localDataPath = realpath(relativeDataPath.c_str(), NULL);
+  // getting the abs path so that it can work with the "file" protocol
+  {
+    char *resolved = realpath(relativeDataPath.c_str(), nullptr);
+    ASSERT_TRUE(resolved) << "LocalDataPath not found: " << relativeDataPath;
+    localDataPath = resolved;
+    free(resolved);
+  }
 
   std::string sourceURL    = manager1 + "/" + sourceFile;
   std::string targetPath   = dataPath + "/tpcFile";

@@ -59,6 +59,7 @@ allocate_ports() {
 }
 
 write_ports_env() {
+       mkdir -p "${DATAFOLDER}"
        cat > "${PORTS_ENV}" <<EOF
 XRD_PORT_METAMAN=${XRD_PORT_METAMAN}
 CMSD_PORT_METAMAN=${CMSD_PORT_METAMAN}
@@ -221,8 +222,12 @@ formatfiles() {
 
 generate(){
 
-       # check if files are in the data directory already...
-       if [[ -e ${DATAFOLDER}/${i} ]]; then
+       # Skip only when the files XrdCl tests actually open are present.
+       # `${DATAFOLDER}/${i}` was the leftover loop variable (often empty), so
+       # `./data/` existing after mkdir — or after an interrupted 2GB rand —
+       # skipped the copy of metaman/data/testFile.dat.
+       if [[ -f "${DATAFOLDER}/metaman/data/testFile.dat" &&
+             -f "${DATAFOLDER}/srv1/data/cb4aacf1-6f28-42f2-b68a-90a73460f424.dat" ]]; then
               return
        fi
 
@@ -242,13 +247,20 @@ generate(){
               mkdir -p ${DATAFOLDER}/${i}/data
        done
 
-       # create large file for reading in one request with max size readv
-       ${OPENSSL} rand -out "${DATAFOLDER}/srv1/data/2GB.dat" $((2**31 - 1))
+       # Upload tests open this local path. Copy it before the 2GB rand so a
+       # killed generate cannot skip this file on the next cluster start.
+       cp ${TMPDATAFOLDER}/a048e67f-4397-4bb8-85eb-8d7e40d90763.dat \
+          ${DATAFOLDER}/metaman/data/testFile.dat
 
-       for i in ${datanodes[@]}; do
-              mkdir -p ${DATAFOLDER}/${i}/data/bigdir
-              cd ${DATAFOLDER}/${i}/data/bigdir
-              for i in `seq 1000`;
+       # create large file for reading in one request with max size readv
+       if [[ ! -f "${DATAFOLDER}/srv1/data/2GB.dat" ]]; then
+              ${OPENSSL} rand -out "${DATAFOLDER}/srv1/data/2GB.dat" $((2**31 - 1))
+       fi
+
+       for dn in ${datanodes[@]}; do
+              mkdir -p ${DATAFOLDER}/${dn}/data/bigdir
+              cd ${DATAFOLDER}/${dn}/data/bigdir
+              for n in `seq 1000`;
                      do touch `uuidgen`.dat;
               done
               cd - >/dev/null
