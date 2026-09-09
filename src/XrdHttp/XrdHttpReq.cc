@@ -1333,16 +1333,9 @@ int XrdHttpReq::processWritePayload()
       const long long endoff = writeFileOffset();
       if (endoff > filesize)
         filesize = endoff;
-      prot->fileCacheStore(*this, true);
-      if (prot->fileCacheKeepOpen(*this)) {
-        TRACEI(REQ, "Keeping cached open at end of PATCH");
-        std::string hdr;
-        addETagHeader(hdr);
-        prot->SendSimpleResp(204, NULL, hdr.c_str(), NULL, 0, keepalive);
-        const int rc = keepalive ? 1 : -1;
-        reset();
-        return rc;
-      }
+      // Always close the writable handle before 204. Keeping it open races
+      // the next connection's GET ("already opened by 1 writer"). Same-
+      // connection --next PATCHes wait for this close, then re-open.
       prot->fileCacheForget();
     }
 
@@ -1557,7 +1550,7 @@ int XrdHttpReq::ProcessHTTPReq() {
             }
             prot->fileCacheMarkVerifyPending();
             return 0;
-          } else if (prot->fileCacheCloseIfDifferent(*this)) {
+          } else if (prot->fileCacheCloseIfOpen()) {
             return 0;
           } else {
           memset(&xrdreq, 0, sizeof (ClientRequest));
@@ -2972,7 +2965,9 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
               prot->SendSimpleResp(204, NULL, hdr.c_str(), NULL, 0, keepalive);
             else
               prot->SendSimpleResp(201, NULL, hdr.c_str(), (char *)":-)", 0, keepalive);
-            return keepalive ? 1 : -1;
+            const int rc = keepalive ? 1 : -1;
+            reset();
+            return rc;
           } else {
             prot->SendSimpleResp(httpStatusCode, NULL, NULL, httpErrorBody.c_str(), httpErrorBody.length(), keepalive);
             return -1;

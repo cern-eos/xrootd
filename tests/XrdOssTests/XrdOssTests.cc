@@ -83,6 +83,8 @@ class FileSystem final : public XrdOssWrapper {
 
     int Create(const char *tid, const char *path, mode_t mode,
       XrdOucEnv &env, int opts=0) override {
+        if (!path)
+          return wrapPI.Create(tid, path, mode, env, opts);
         std::string path_str(path);
         auto const pos = path_str.find_last_of('/');
         const auto filename = path_str.substr(pos + 1);

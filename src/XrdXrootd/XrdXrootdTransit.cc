@@ -435,13 +435,14 @@ void XrdXrootdTransit::Recycle(XrdLink *lp, int consec, const char *reason)
        Sched->Cancel(&waitJob);
    }
 
-// First we need to recycle the real protocol
+// Close xrootd files before the wrapped protocol's Recycle(). HTTP Recycle
+// blocks in SSL_shutdown waiting for the peer; a new connection can arrive
+// while FTab still holds a cached open from this session.
+   XrdXrootdProtocol::Recycle(lp, consec, reason);
+
+// Recycle the real (HTTP) protocol last so TLS shutdown cannot delay FTab.
 //
    if (realProt) realProt->Recycle(lp, consec, reason);
-
-// Now we need to recycle our xrootd part
-//
-   XrdXrootdProtocol::Recycle(lp, consec, reason);
 
 // Release the argument buffer
 //
@@ -556,7 +557,7 @@ void XrdXrootdTransit::Redrive()
   
 const char *XrdXrootdTransit::ReqTable()
 {
-   static char rTab[kXR_truncate-kXR_auth+1];
+   static char rTab[kXR_REQFENCE-kXR_auth];
 
 // Initialize the table
 //
@@ -581,6 +582,7 @@ const char *XrdXrootdTransit::ReqTable()
    rTab[KXR_INDEX(kXR_sync)]      = 1;
    rTab[KXR_INDEX(kXR_truncate)]  = 1;
    rTab[KXR_INDEX(kXR_write)]     = 2;
+   rTab[KXR_INDEX(kXR_link)]      = 1;
 
 // Now return the address
 //
@@ -639,7 +641,7 @@ bool XrdXrootdTransit::Run(const char *xreqP, char *xdataP, int xdataL)
 //
    Request.header.requestid = ntohs(Request.header.requestid);
    if (Request.header.requestid & 0x8000
-   || Request.header.requestid > static_cast<kXR_unt16>(kXR_truncate)
+   || Request.header.requestid >= static_cast<kXR_unt16>(kXR_REQFENCE)
    || !reqTab[Request.header.requestid - kXR_auth])
       {TRACEP(REQ, "Unsupported bridge request");
        return Fail(kXR_Unsupported, "Unsupported bridge request");

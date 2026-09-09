@@ -102,10 +102,10 @@ function test_http() {
   # by the correct amount between the first and second upload.  The first upload was done with transfer encoding, meaning
   # XRootD doesn't know the final size of the object and hence doesn't append the '?oss.asize=' flag
   # Locate the bridge open request for each upload and compare the logged URL lengths.
-  uploadThread=$(grep 'open odm .*alphabet.txt$' "$XROOTD_SERVER_LOGFILE" | awk '{print $4}' | head -n 1)
+  uploadThread=$(grep -E 'open odm[^ ]* .*alphabet\.txt$' "$XROOTD_SERVER_LOGFILE" | awk '{print $4}' | head -n 1)
   firstUrlLength=$(grep " $uploadThread " "$XROOTD_SERVER_LOGFILE" | grep 'Xrootd_Protocol: 0000 Bridge req=3010' | head -n 1 | tr '=' ' ' | awk '{print $NF}')
   # Next, the addition of '.2?oss.asize=26' is an increase of 15 characters
-  uploadThread=$(grep 'open odm .*alphabet.txt.2$' "$XROOTD_SERVER_LOGFILE" | awk '{print $4}' | head -n 1)
+  uploadThread=$(grep -E 'open odm[^ ]* .*alphabet\.txt\.2$' "$XROOTD_SERVER_LOGFILE" | awk '{print $4}' | head -n 1)
   secondUrlLength=$(grep " $uploadThread " "$XROOTD_SERVER_LOGFILE" | grep 'Xrootd_Protocol: 0000 Bridge req=3010' | head -n 1 | tr '=' ' ' | awk '{print $NF}')
   assert_eq "$((firstUrlLength+15))" "$secondUrlLength" "PUT request is missing oss.asize argument"
 
@@ -249,8 +249,7 @@ if body2 != b"ABCDEFGHIJKLMNOPQRSTUVWXYZ":
   precondFilePath="${TMPDIR}/precond.bin"
   printf 'abcdefghijklmnopqrstuvwxyz' > "${TMPDIR}/precond-src"
   assert curl -s -T "${TMPDIR}/precond-src" "${HTTP_HOST}/${precondFilePath}"
-  etag=$(curl -sI "${HTTP_HOST}/${precondFilePath}" | tr -d '\r' \
-    | awk 'BEGIN{IGNORECASE=1} /^ETag:/{sub(/^[^:]+:[ \t]*/,""); print; exit}')
+  etag=$(curl -sI "${HTTP_HOST}/${precondFilePath}" | extract_etag)
   [ -n "${etag}" ] || error "HEAD should return an ETag"
   code=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH \
     -H "If-Match: ${etag}" -H 'Content-Range: bytes 4-7/*' --data-binary 'YYYY' \

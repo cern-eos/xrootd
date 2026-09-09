@@ -742,6 +742,9 @@ int XrdHttp2Session::drive(XrdHttpProtocol &prot, XrdLink *lp)
       if (appInFlight(prot))
         return 0;
     }
+    if (rc == 1 && !appInFlight(prot) && ready_queue_.empty() &&
+        prot.fileCacheCloseIfOpen())
+      return 0;
     return rc;
   }
 
@@ -756,6 +759,12 @@ int XrdHttp2Session::drive(XrdHttpProtocol &prot, XrdLink *lp)
 
   if (flushSend(prot) < 0)
     return -1;
+
+  // Close a cached GET/PATCH handle before parking the connection. A later
+  // connection's writer is denied while this reader (or writer) is held, and
+  // Recycle waits on SSL_shutdown before FTab can drop it.
+  if (prot.fileCacheCloseIfOpen())
+    return 0;
 
   // Wait for the next poll event. Returning 0 here busy-loops the scheduler
   // on keep-alive connections that have no Bridge work left.

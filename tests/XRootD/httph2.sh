@@ -162,8 +162,7 @@ function test_httph2() {
 	echo "Testing If-Match / If-None-Match"
 	printf 'abcdefghijklmnopqrstuvwxyz' > "${tmpdir}/precond-src"
 	assert h2 -s -T "${tmpdir}/precond-src" "${HTTPS_HOST}/h2-precond.bin"
-	etag=$(h2 -sI "${HTTPS_HOST}/h2-precond.bin" | tr -d '\r' \
-		| awk 'BEGIN{IGNORECASE=1} /^ETag:/{sub(/^[^:]+:[ \t]*/,""); print; exit}')
+	etag=$(h2 -sI "${HTTPS_HOST}/h2-precond.bin" | extract_etag)
 	[ -n "${etag}" ] || error "HEAD should return an ETag"
 	code=$(h2 -s -o /dev/null -w '%{http_code}' -X PATCH \
 		-H "If-Match: ${etag}" -H 'Content-Range: bytes 4-7/*' \

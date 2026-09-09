@@ -583,11 +583,11 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
     } else {
       bool skipInc = fileCacheHoldReqstate_;
       fileCacheHoldReqstate_ = false;
-#ifdef HAVE_NGHTTP2
-      if (!skipInc && wireMode_ == XrdHttpWireMode::kHttp2 &&
-          !CurrentReq.headerok && !DoingLogin)
+      // Bridge recall after a finished request (Done() already reset()):
+      // do not bump reqstate on an idle connection or HTTP/2 will treat the
+      // next pipelined stream as still in-flight and never dispatch it.
+      if (!skipInc && !CurrentReq.headerok && !DoingLogin)
         skipInc = true;
-#endif
       if (!skipInc)
         CurrentReq.reqstate++;
     }
@@ -618,6 +618,11 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
     }
   } else {
     DoingLogin = false;
+    // Login is finished. DoIt may immediately re-enter us with the original
+    // lp from a poll that already drained the HTTP/2 preface. Passing that lp
+    // into recvFrames() would SSL_read() a socket that is no longer readable and
+    // drop the connection before PUT/GET can run.
+    lp = nullptr;
   }
 
 #ifdef HAVE_NGHTTP2
@@ -960,6 +965,9 @@ int XrdHttpProtocol::processParsedRequest(XrdLink *lp)
     else
 #endif
       http1Session_.reset();
+  } else if (rc == 1 && !CurrentReq.headerok && BuffUsed() == 0 &&
+             fileCacheCloseIfOpen()) {
+    rc = 0;
   }
 
   TRACEI(REQ, "Process is exiting rc:" << rc);
@@ -1788,22 +1796,31 @@ int XrdHttpProtocol::RecvWireData(char *buf, int buflen, int timeout_ms)
   if (ishttps) {
     if (!ssl)
       return -1;
-    // The socket is blocking; SSL_read only returns without data when the
-    // caller has already established readability (poll) or SSL_pending().
-    // With a timeout and nothing pending, wait for the socket first.
-    if (timeout_ms > 0 && SSL_pending(ssl) <= 0 && Link) {
+    // Do not SSL_read() unless decrypted bytes are pending or poll says the
+    // socket is readable. After login, DoIt can re-enter with a stale lp from
+    // the poll that delivered the HTTP/2 preface; a blind SSL_read then fails
+    // and the client sees the connection drop (httph2 PUT in ~200ms).
+    if (SSL_pending(ssl) <= 0 && Link) {
       struct pollfd pfd = {Link->FDnum(), POLLIN | POLLRDNORM, 0};
+      const int wait = timeout_ms > 0 ? timeout_ms : 0;
       int prc;
-      do { prc = poll(&pfd, 1, timeout_ms); } while (prc < 0 && errno == EINTR);
+      do { prc = poll(&pfd, 1, wait); } while (prc < 0 && errno == EINTR);
       if (prc == 0)
         return 0;
-      if (prc < 0 || !(pfd.revents & (POLLIN | POLLRDNORM)))
+      if (prc < 0)
         return -1;
+      if (!(pfd.revents & (POLLIN | POLLRDNORM)))
+        return timeout_ms > 0 ? -1 : 0;
     }
     const int r = SSL_read(ssl, buf, buflen);
     if (r <= 0) {
       const int err = SSL_get_error(ssl, r);
       if (r < 0 && (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE))
+        return 0;
+      if (r < 0 && err == SSL_ERROR_SYSCALL &&
+          (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
+        return 0;
+      if (r == 0 && err == SSL_ERROR_ZERO_RETURN)
         return 0;
       ERR_print_errors(sslbio_err);
       CurrentReq.monState = XrdHttpMonState::ERR_NET;
@@ -2558,7 +2575,9 @@ bool XrdHttpProtocol::fileCacheBeginClose()
 
 bool XrdHttpProtocol::fileCacheCloseIfDifferent(const XrdHttpReq &req)
 {
-  if (!fileCache_.valid || fileCache_.switching)
+  if (fileCache_.switching)
+    return true;
+  if (!fileCache_.valid)
     return false;
   if (fileCache_.key == fileCacheKey(req))
     return false;
@@ -2567,7 +2586,11 @@ bool XrdHttpProtocol::fileCacheCloseIfDifferent(const XrdHttpReq &req)
 
 bool XrdHttpProtocol::fileCacheCloseIfOpen()
 {
-  if (!fileCache_.valid || fileCache_.switching)
+  // A close is already in flight: callers must wait instead of issuing a
+  // new open (OFS will deny a second writer).
+  if (fileCache_.switching)
+    return true;
+  if (!fileCache_.valid)
     return false;
   return fileCacheBeginClose();
 }

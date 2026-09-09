@@ -400,10 +400,11 @@ private:
 
   /// Connection-local kXR_open cache. One GET Range after another on the
   /// same path reuses the handle after a kXR_stat confirms size/mtime/flags
-  /// still match. PATCH keeps a writable handle the same way so successive
-  /// range writes (and later Range GETs) do not re-open. kXR_close waits
-  /// until a different path, a truncating PUT, another mutating verb, a
-  /// stale restat of a read-only handle, a failed I/O, or the session ending.
+  /// still match. PATCH always closes the writable handle before 204 so a
+  /// later GET on a new connection is not denied. Same-connection --next
+  /// PATCHes wait for that close, then re-open. kXR_close of a read-only
+  /// handle waits until a different path, a truncating PUT, another mutating
+  /// verb, a stale restat, a failed I/O, or the session ending.
   struct FileOpenCache {
     bool        valid{false};
     bool        switching{false};

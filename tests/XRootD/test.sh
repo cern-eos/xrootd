@@ -21,6 +21,12 @@ function assert_ne() {
   [[ "$1" != "$2" ]] || error "$3: expected $1 to not be equal to $2"
 }
 
+# HTTP/1 sends "Etag:"; HTTP/2 lowercases field names. BSD awk has no IGNORECASE.
+function extract_etag() {
+	tr -d '\r' | tr '[:upper:]' '[:lower:]' \
+		| awk '/^etag:/{sub(/^[^:]+:[ \t]*/,""); print; exit}'
+}
+
 function assert_failure() {
 	echo "$@"; "$@" && error "command \"$*\" did not fail";
 }
