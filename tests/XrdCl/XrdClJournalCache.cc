@@ -58,20 +58,21 @@ class JournalTest : public ::testing::Test {
 protected:
   void SetUp() override {
     char tmpl[] = "/tmp/xrdcl_journal_XXXXXX";
-    dir = mkdtemp(tmpl);
-    ASSERT_NE(dir, nullptr);
-    path = std::string(dir) + "/journal";
+    char *created = mkdtemp(tmpl);
+    ASSERT_NE(created, nullptr);
+    dir = created;
+    path = dir + "/journal";
   }
 
   void TearDown() override {
     Journal::sDefaultEnableCrc = false;
-    if (dir) {
+    if (!dir.empty()) {
       fs::remove_all(dir);
-      dir = nullptr;
+      dir.clear();
     }
   }
 
-  char *dir = nullptr;
+  std::string dir;
   std::string path;
 };
 
