@@ -4,6 +4,7 @@
 
 #include <cctype>
 #include <sstream>
+#include <utility>
 
 namespace JournalCache {
 namespace {
@@ -28,6 +29,36 @@ bool looksLikeUrlPattern(const std::string &pattern) {
 }
 
 } // namespace
+
+OriginAllowlist::OriginAllowlist(const OriginAllowlist &other)
+    : mPatterns(other.mPatterns) {}
+
+OriginAllowlist::OriginAllowlist(OriginAllowlist &&other) noexcept
+    : mPatterns(std::move(other.mPatterns)) {
+  other.clear();
+}
+
+OriginAllowlist &OriginAllowlist::operator=(const OriginAllowlist &other) {
+  if (this != &other) {
+    OriginAllowlist tmp(other);
+    swap(tmp);
+  }
+  return *this;
+}
+
+OriginAllowlist &OriginAllowlist::operator=(OriginAllowlist &&other) noexcept {
+  if (this != &other) {
+    swap(other);
+    other.clear();
+  }
+  return *this;
+}
+
+void OriginAllowlist::swap(OriginAllowlist &other) noexcept {
+  mPatterns.swap(other.mPatterns);
+  mCompiledPatterns.swap(other.mCompiledPatterns);
+  std::swap(mCompiled, other.mCompiled);
+}
 
 void OriginAllowlist::clear() {
   mPatterns.clear();

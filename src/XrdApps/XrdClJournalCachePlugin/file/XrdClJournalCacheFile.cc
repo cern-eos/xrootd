@@ -130,12 +130,8 @@ JournalCache::PolicySettings JournalCacheFile::activePolicySettings() {
   if (!runtime.policyPath().empty()) {
     return runtime.snapshot();
   }
-  JournalCache::PolicySettings settings;
-  settings.bypass = sEnableBypass;
-  settings.multiOriginUnwrap = sMultiOriginUnwrap;
-  settings.originAllowlist = sOriginAllowlist;
-  settings.externalRedirect = sExternalRedirect;
-  return settings;
+  return JournalCache::PolicySettings{sEnableBypass, sMultiOriginUnwrap,
+                                      sOriginAllowlist, sExternalRedirect};
 }
 
 bool JournalCacheFile::policyBypass() {
@@ -583,7 +579,7 @@ XRootDStatus JournalCacheFile::VectorRead(const ChunkList &chunks, void *buffer,
         VectorReadInfo *vReadInfo = new VectorReadInfo();
         vReadInfo->SetSize(len);
         ChunkList &vResp = vReadInfo->GetChunks();
-        vResp = chunks;
+        vResp.insert(vResp.end(), chunks.begin(), chunks.end());
         obj->Set(vReadInfo);
         handler->HandleResponse(ret_st, obj);
         return XRootDStatus(stOK, 0);

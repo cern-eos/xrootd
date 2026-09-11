@@ -9,6 +9,13 @@ namespace JournalCache {
 //! Regex allowlist for forwarded/chained upstream URLs.
 class OriginAllowlist {
 public:
+  OriginAllowlist() = default;
+  OriginAllowlist(const OriginAllowlist &other);
+  OriginAllowlist(OriginAllowlist &&other) noexcept;
+  OriginAllowlist &operator=(const OriginAllowlist &other);
+  OriginAllowlist &operator=(OriginAllowlist &&other) noexcept;
+
+  void swap(OriginAllowlist &other) noexcept;
   void clear();
   //! @return false if the pattern is empty or not a valid ECMAScript regex.
   bool addPattern(const std::string &pattern);

@@ -273,11 +273,11 @@ public:
         policyPoll = static_cast<unsigned>(std::stoul(v));
       }
 
-      JournalCache::PolicySettings bootstrap;
-      bootstrap.bypass = JournalCacheFile::sEnableBypass;
-      bootstrap.multiOriginUnwrap = JournalCacheFile::sMultiOriginUnwrap;
-      bootstrap.originAllowlist = JournalCacheFile::sOriginAllowlist;
-      bootstrap.externalRedirect = JournalCacheFile::sExternalRedirect;
+      const JournalCache::PolicySettings bootstrap{
+          JournalCacheFile::sEnableBypass,
+          JournalCacheFile::sMultiOriginUnwrap,
+          JournalCacheFile::sOriginAllowlist,
+          JournalCacheFile::sExternalRedirect};
       JournalCache::PolicyRuntime::instance().configure(policyPath, bootstrap);
       JournalCache::PolicyRuntime::instance().startWatcher(policyPoll);
 
