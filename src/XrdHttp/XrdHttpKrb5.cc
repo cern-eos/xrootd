@@ -118,11 +118,16 @@ bool XrdHttpKrb5::Init(XrdSysError &eDest, const char *keytab,
     return false;
   }
 
+  // Point GSS at the keytab before registering it. A leftover KRB5CCNAME
+  // from kinit (client TGT) can make gss_acquire_cred(ACCEPT) look at the
+  // ccache instead of the acceptor keytab.
+  setenv("KRB5_KTNAME", keytab, 1);
+  setenv("KRB5CCNAME", "MEMORY:xrdhttp_acceptor", 1);
+
   if (krb5_gss_register_acceptor_identity(keytab) != 0) {
     eDest.Emsg(TraceID, "Unable to register Kerberos acceptor keytab:", keytab);
     return false;
   }
-  setenv("KRB5_KTNAME", keytab, 1);
 
   gss_buffer_desc nameBuf;
   nameBuf.length = kprinc.size();
@@ -147,6 +152,13 @@ bool XrdHttpKrb5::Init(XrdSysError &eDest, const char *keytab,
   maj = gss_acquire_cred(&min, gssName, GSS_C_INDEFINITE, GSS_C_NO_OID_SET,
                          GSS_C_ACCEPT, &gssCreds, nullptr, nullptr);
   gss_release_name(&min, &gssName);
+
+  if (maj != GSS_S_COMPLETE) {
+    // Fall back to any acceptor identity in the keytab.
+    maj = gss_acquire_cred(&min, GSS_C_NO_NAME, GSS_C_INDEFINITE,
+                          GSS_C_NO_OID_SET, GSS_C_ACCEPT, &gssCreds,
+                          nullptr, nullptr);
+  }
 
   if (maj != GSS_S_COMPLETE) {
     eDest.Emsg(TraceID, "Unable to acquire Kerberos acceptor credentials for",

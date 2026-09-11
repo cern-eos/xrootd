@@ -18,7 +18,8 @@ setup() {
     # Start XRootD servers
     for srv in "${servernames[@]}"; do
         echo "Starting XRootD on ${srv}..."
-        ${XROOTD} -b -k fifo -n "${srv}" -l "${srv}"/xrootd.log -s "${srv}"/xrootd.pid -c "${srv}".cfg
+        ${XROOTD} -b -k fifo -n "${srv}" -l "${srv}"/xrootd.log -s "${srv}"/xrootd.pid -c "${srv}".cfg \
+            || { echo "failed to start ${srv}"; cat "${srv}/xrootd.log" >&2; exit 1; }
     done
 
     sleep 2

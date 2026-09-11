@@ -378,6 +378,28 @@ const char *sslCiphers = "ECDHE-ECDSA-AES128-GCM-SHA256:"
                          "DHE-RSA-AES128-GCM-SHA256:"
                          "DHE-RSA-AES256-GCM-SHA384";
 
+// TLS 1.3 ciphersuites are independent of SSL_CTX_set_cipher_list.
+// RHEL 9 crypto-policies can leave the inherited TLS 1.3 list empty.
+const char *sslCiphers13 = "TLS_AES_128_GCM_SHA256:"
+                           "TLS_AES_256_GCM_SHA384:"
+                           "TLS_CHACHA20_POLY1305_SHA256";
+
+bool SetTlsCiphers(SSL_CTX *ctx, const char *ciphers12)
+{
+   if (!SSL_CTX_set_cipher_list(ctx, ciphers12))
+      return false;
+#ifdef TLS1_3_VERSION
+   if (!SSL_CTX_set_ciphersuites(ctx, sslCiphers13))
+      SSL_CTX_set_ciphersuites(ctx, "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384");
+#endif
+#if OPENSSL_VERSION_NUMBER >= 0x10101000L
+   SSL_CTX_set1_sigalgs_list(ctx,
+      "ECDSA+SHA256:ECDSA+SHA384:rsa_pss_pss_sha256:rsa_pss_pss_sha384:"
+      "rsa_pss_rsae_sha256:rsa_pss_rsae_sha384:RSA+SHA256:RSA+SHA384");
+#endif
+   return true;
+}
+
 XrdSysMutex            dbgMutex, tlsMutex;
 XrdSys::RAtomic<bool>  initDbgDone{ false };
 bool                   initTlsDone{ false };
@@ -713,9 +735,9 @@ XrdTlsContext::XrdTlsContext(const char *cert,  const char *key,
       SSL_CTX_set_verify(pImpl->ctx, SSL_VERIFY_NONE, 0);
      }
 
-// Set cipher list
+// Set cipher list (TLS 1.2) and TLS 1.3 ciphersuites.
 //
-   if (!SSL_CTX_set_cipher_list(pImpl->ctx, sslCiphers))
+   if (!SetTlsCiphers(pImpl->ctx, sslCiphers))
       FATAL_SSL("Unable to set SSL cipher list; no supported ciphers.");
 
 // If we need to enable eliptic-curve support, do so now. Note that for
@@ -1024,7 +1046,7 @@ int XrdTlsContext::SessionCache(int opts, const char *id, int idlen)
 
 bool XrdTlsContext::SetContextCiphers(const char *ciphers)
 {
-   if (pImpl->ctx && SSL_CTX_set_cipher_list(pImpl->ctx, ciphers)) return true;
+   if (pImpl->ctx && SetTlsCiphers(pImpl->ctx, ciphers)) return true;
 
    char eBuff[2048];
    snprintf(eBuff,sizeof(eBuff),"Unable to set context ciphers '%s'",ciphers);

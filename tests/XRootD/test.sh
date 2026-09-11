@@ -129,7 +129,7 @@ test -r "${SCRIPT}" || error "test script not found"
 source  "${SCRIPT}" || error "failed to source ${SCRIPT}"
 
 function printlogs() {
-	tail -n "${MAXLINES:-50}" "${NAME}"/*.log 1>&2
+	tail -n "${MAXLINES:-200}" "${NAME}"/*.log 1>&2
 }
 
 function setup() {
@@ -148,7 +148,14 @@ function setup() {
 		error "failed to parse configuration file: ${CONF}"
 	fi
 
-	if ! xrootd -b -l xrootd.log -s xrootd.pid -c "${CONF}" -n "${NAME}"; then
+	# gsi.sh exports XrdSecPROTOCOL and X509_USER_* for later client tests.
+	# Those must not leak into the server process: they make GSI pick the
+	# client proxy instead of the host cert, and xrootd -b then fails after
+	# HTTPS init with no extra diagnostic.
+	if ! (
+		unset XrdSecPROTOCOL X509_USER_CERT X509_USER_KEY X509_USER_PROXY
+		xrootd -b -l xrootd.log -s xrootd.pid -c "${CONF}" -n "${NAME}"
+	); then
 		printlogs "${NAME}"
 		teardown "${NAME}"
 		error "failed to start XRootD server"
