@@ -33,10 +33,18 @@ function assert_failure() {
 
 function require_commands() {
 	for PROG in "$@"; do
-	       if [[ ! -x "$(command -v "${PROG}")" ]]; then
+	       resolved="$(type -P "${PROG}" 2>/dev/null || true)"
+	       if [[ ! -x "${resolved}" ]]; then
 		       error "'${PROG}': command not found"
 	       fi
 	done
+}
+
+# XrdHttp advertises ALPN h2. curl would then speak HTTP/2 on HTTPS and
+# break tests that are HTTP/1.1 (SciTokens, Kerberos, TPC, XrdClHttp).
+# HTTP/2 tests pass --http2 afterwards; curl uses the last --http* flag.
+curl() {
+	command curl --http1.1 "$@"
 }
 
 [[ -n "$1" ]] || error "missing configuration name"

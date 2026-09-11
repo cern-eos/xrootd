@@ -48,6 +48,10 @@ function assert_failure() {
 
 check_commands "${ADLER32}" "${CRC32C}" "${XRDCP}" "${XRDFS}" "${OPENSSL}" "${CURL}"
 
+# HTTPS curl negotiates HTTP/2 when the server advertises ALPN h2.
+# TPC and XrdHttpTpc are HTTP/1.1.
+curl_h1() { ${CURL} --http1.1 "$@"; }
+
 # Server host mappings
 declare -a hosts=(
     "root://localhost:10951"
@@ -149,7 +153,7 @@ upload_file() {
     if [[ -z "${protocol}" || "${protocol}" == "root" ]]; then
         ${XRDCP} "${local_file}" "${remote_file}"
     elif [[ "${protocol}" == "http" ]]; then
-        http_code=$(exec 3>&1; ${CURL} -X PUT -L -s -v -o /dev/null -w "%{http_code}" \
+        http_code=$(exec 3>&1; curl_h1 -X PUT -L -s -v -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer ${BEARER_TOKEN}" \
             -H "Transfer-Encoding: chunked" \
             --cacert "${BINARY_DIR}/tests/issuer/tlsca.pem" \
@@ -198,7 +202,7 @@ perform_http_tpc() {
 
     if [[ "$mode" == "push" ]]; then
         dst_file_http="${dst_file_http}_push"
-        http_code=$(${CURL} -X COPY -L -s -o >(cat >&2) -w "%{http_code}" \
+        http_code=$(curl_h1 -X COPY -L -s -o >(cat >&2) -w "%{http_code}" \
             -H "Destination: ${dst_file_http}" \
             -H "Authorization: Bearer ${token_dst}" \
             -H "TransferHeaderAuthorization: Bearer ${token_src}" \
@@ -206,7 +210,7 @@ perform_http_tpc() {
             "${src_file_http}")
     elif [[ "$mode" == "pull" ]]; then
         dst_file_http="${dst_file_http}_pull"
-        http_code=$(${CURL} -X COPY -L -s -o >(cat >&2) -w "%{http_code}" \
+        http_code=$(curl_h1 -X COPY -L -s -o >(cat >&2) -w "%{http_code}" \
             -H "Source: ${src_file_http}" \
             -H "Authorization: Bearer ${token_src}" \
             -H "TransferHeaderAuthorization: Bearer ${token_dst}" \
@@ -232,7 +236,7 @@ plain_http_tpc() {
 
     case "${mode}" in
     pull)
-        http_code=$(${CURL} -X COPY -L -s -o >(cat >&2) -w "%{http_code}" \
+        http_code=$(curl_h1 -X COPY -L -s -o >(cat >&2) -w "%{http_code}" \
             --cacert "${BINARY_DIR}/tests/issuer/tlsca.pem" \
             -H "Authorization: Bearer ${token_src}" \
             -H "TransferHeaderAuthorization: Bearer ${token_dst}" \
@@ -240,7 +244,7 @@ plain_http_tpc() {
     ;;
 
     push)
-        http_code=$(${CURL} -X COPY -L -s -o >(cat >&2) -w "%{http_code}" \
+        http_code=$(curl_h1 -X COPY -L -s -o >(cat >&2) -w "%{http_code}" \
             --cacert "${BINARY_DIR}/tests/issuer/tlsca.pem" \
             -H "Authorization: Bearer ${token_dst}" \
             -H "TransferHeaderAuthorization: Bearer ${token_src}" \
@@ -264,7 +268,7 @@ download_file() {
     if [[ -z "${protocol}" || "${protocol}" == "root" ]]; then
         ${XRDCP} "${src}" "${dest}"
     elif [[ "${protocol}" == "http" ]]; then
-        ${CURL} -X GET -L -s -v -o "${dest}" \
+        curl_h1 -X GET -L -s -v -o "${dest}" \
             -H "Authorization: Bearer ${BEARER_TOKEN}" \
             -H "Transfer-Encoding: chunked" \
             --cacert "${BINARY_DIR}/tests/issuer/tlsca.pem" \

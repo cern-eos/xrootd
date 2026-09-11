@@ -45,7 +45,7 @@ fi
 
 echo "Running $TEST_NAME - simple download"
 
-CONTENTS=$(curl --cacert "$X509_CA_FILE" -v -L --fail -H "@$HEADER_FILE" "$CACHE_URL/test/hello_world.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
+CONTENTS=$(curl --http1.1 --cacert "$X509_CA_FILE" -v -L --fail -H "@$HEADER_FILE" "$CACHE_URL/test/hello_world.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
 CURL_EXIT=$?
 
 if [ $CURL_EXIT -ne 0 ]; then
@@ -68,7 +68,7 @@ if false; then
 
 echo "Running $TEST_NAME - slow open"
 
-HTTP_CODE=$(curl -m 4 --cacert "$X509_CA_FILE" -v -L --write-out '%{http_code}' -H "@$HEADER_FILE" "$CACHE_URL/test/slow_open.txt?pelican.timeout=300ms" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log" | tail -n 1)
+HTTP_CODE=$(curl --http1.1 -m 4 --cacert "$X509_CA_FILE" -v -L --write-out '%{http_code}' -H "@$HEADER_FILE" "$CACHE_URL/test/slow_open.txt?pelican.timeout=300ms" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log" | tail -n 1)
 CURL_EXIT=$?
 
 if [ "$HTTP_CODE" != 500 ] && [ "$HTTP_CODE" != 504 ]; then
@@ -80,7 +80,7 @@ fi
 
 echo "Running $TEST_NAME - slow read"
 
-HTTP_CODE=$(curl -m 10 --raw --cacert "$X509_CA_FILE" -v -L -o "$BINARY_DIR/tests/$TEST_NAME/slow.log" --write-out '%{http_code}' -H "@$HEADER_FILE" -H "X-Transfer-Status: true" -H "TE: trailers" "$CACHE_URL/test/slow_read.txt?pelican.timeout=300ms" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
+HTTP_CODE=$(curl --http1.1 -m 10 --raw --cacert "$X509_CA_FILE" -v -L -o "$BINARY_DIR/tests/$TEST_NAME/slow.log" --write-out '%{http_code}' -H "@$HEADER_FILE" -H "X-Transfer-Status: true" -H "TE: trailers" "$CACHE_URL/test/slow_read.txt?pelican.timeout=300ms" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
 CURL_EXIT=$?
 
 if [ "$HTTP_CODE" != 200 ]; then
@@ -102,7 +102,7 @@ fi
 
 echo "Running $TEST_NAME - stalled read"
 
-HTTP_CODE=$(curl -m 10 --raw --cacert "$X509_CA_FILE" -v -L -o "$BINARY_DIR/tests/$TEST_NAME/slow.log" --write-out '%{http_code}' -H "@$HEADER_FILE" -H "X-Transfer-Status: true" -H "TE: trailers" "$CACHE_URL/test/stall_read.txt?pelican.timeout=300ms" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
+HTTP_CODE=$(curl --http1.1 -m 10 --raw --cacert "$X509_CA_FILE" -v -L -o "$BINARY_DIR/tests/$TEST_NAME/slow.log" --write-out '%{http_code}' -H "@$HEADER_FILE" -H "X-Transfer-Status: true" -H "TE: trailers" "$CACHE_URL/test/stall_read.txt?pelican.timeout=300ms" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
 CURL_EXIT=$?
 
 if [ "$HTTP_CODE" != 200 ]; then
@@ -124,7 +124,7 @@ fi
 
 echo "Running $TEST_NAME - checksum query"
 
-CONTENTS=$(curl -I --cacert "$X509_CA_FILE" -v -L --fail -H 'Want-Digest: md5' -H "@$HEADER_FILE" "$CACHE_URL/test/hello_world.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
+CONTENTS=$(curl --http1.1 -I --cacert "$X509_CA_FILE" -v -L --fail -H 'Want-Digest: md5' -H "@$HEADER_FILE" "$CACHE_URL/test/hello_world.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
 CURL_EXIT=$?
 
 if [ $CURL_EXIT -ne 0 ]; then
@@ -145,7 +145,7 @@ fi
 
 echo "Running $TEST_NAME - missing authz"
 
-HTTP_CODE=$(curl --output /dev/null --cacert "$X509_CA_FILE" -v -L --write-out '%{http_code}' -H "Authorization: Bearer missing" "$CACHE_URL/test/hello_world.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
+HTTP_CODE=$(curl --http1.1 --output /dev/null --cacert "$X509_CA_FILE" -v -L --write-out '%{http_code}' -H "Authorization: Bearer missing" "$CACHE_URL/test/hello_world.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
 if [ "$HTTP_CODE" -ne 403 ]; then
   cat "$BINARY_DIR/tests/$TEST_NAME/cache.log"
   cat  "$BINARY_DIR/tests/$TEST_NAME/client.log"
@@ -155,7 +155,7 @@ fi
 
 echo "Running $TEST_NAME - missing object"
 
-HTTP_CODE=$(curl --output /dev/null --cacert "$X509_CA_FILE" -v -L --write-out '%{http_code}' -H "@$HEADER_FILE" "$CACHE_URL/test/missin.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
+HTTP_CODE=$(curl --http1.1 --output /dev/null --cacert "$X509_CA_FILE" -v -L --write-out '%{http_code}' -H "@$HEADER_FILE" "$CACHE_URL/test/missin.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
 if [ "$HTTP_CODE" -ne 404 ]; then
   echo "Expected HTTP code is 404; actual was $HTTP_CODE"
   exit 1
@@ -163,7 +163,7 @@ fi
 
 echo "Running $TEST_NAME - download directory"
 
-HTTP_CODE=$(curl --output "$BINARY_DIR/tests/$TEST_NAME/directory.out" --cacert "$X509_CA_FILE" -v -L --write-out '%{http_code}' "$CACHE_URL/test-public/subdir" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
+HTTP_CODE=$(curl --http1.1 --output "$BINARY_DIR/tests/$TEST_NAME/directory.out" --cacert "$X509_CA_FILE" -v -L --write-out '%{http_code}' "$CACHE_URL/test-public/subdir" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
 # Depending on the xrootd version, it seems that either 409 or 500 are a possibility
 if [ "$HTTP_CODE" -ne 200 ]; then
   echo "Expected HTTP code is 200; actual was $HTTP_CODE"

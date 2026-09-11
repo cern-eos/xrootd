@@ -59,6 +59,9 @@ for PROG in ${ADLER32} ${CRC32C} ${XRDCP} ${XRDFS} ${XRDMAPC} ${OPENSSL} ${CURL}
        fi
 done
 
+# HTTPS curl negotiates HTTP/2 when the server advertises ALPN h2.
+curl_h1() { ${CURL} --http1.1 "$@"; }
+
 # This script assumes that ${host} exports an empty / as read/write.
 # It also assumes that any authentication required is already setup.
 
@@ -149,7 +152,7 @@ for ((i = 0; i < ${#host_names[@]}; i++)); do
        ${XRDCP} ${LCLDATADIR}/${host}.ref ${host_roots[i]}/${RMTDATADIR}/${host}.ref
 
        for suffix in "${HTTP_SUFFIX[@]}"; do
-              ${CURL} -v -L ${host_https[i]}/${RMTDATADIR}/${host}${suffix} -T ${LCLDATADIR}/${host}.ref
+              curl_h1 -v -L ${host_https[i]}/${RMTDATADIR}/${host}${suffix} -T ${LCLDATADIR}/${host}.ref
        done
 
 done
@@ -166,7 +169,7 @@ for ((i = 0; i < ${#host_names[@]}; i++)); do
        count=0
 
        for suffix in "${HTTP_SUFFIX[@]}"; do
-               ${CURL} -v -L ${host_https[i]}/${RMTDATADIR}/${host}${suffix} -o ${LCLDATADIR}/${host}.dat_http${count}
+               curl_h1 -v -L ${host_https[i]}/${RMTDATADIR}/${host}${suffix} -o ${LCLDATADIR}/${host}.dat_http${count}
                count=$((count + 1))
        done
 done
@@ -242,7 +245,7 @@ move_src_codes=(501 201 201)
 for ((i = 0; i < ${#move_src_names[@]}; i++)); do
     src="${move_src_names[i]}"
     src_idx=$(get_index_for_host "$src")
-    curl -s -S -L -v -T "${LCLDATADIR}/srv1.ref" \
+    curl_h1 -s -S -L -v -T "${LCLDATADIR}/srv1.ref" \
         "${host_https[$src_idx]}/${RMTDATADIR}/old_file_$src"
 done
 
@@ -251,7 +254,7 @@ for ((i = 0; i < ${#move_src_names[@]}; i++)); do
     src="${move_src_names[i]}"
     src_idx=$(get_index_for_host "$src")
     expected_code="${move_src_codes[i]}"
-    response_code=$(curl -s -v -S -L -o /dev/null -w "%{http_code}" -X MOVE \
+    response_code=$(curl_h1 -s -v -S -L -o /dev/null -w "%{http_code}" -X MOVE \
         -H "Destination: ${host_https[$src_idx]}/${RMTDATADIR}/new_file_$src" \
         "${host_https[$src_idx]}/${RMTDATADIR}/old_file_$src")
 

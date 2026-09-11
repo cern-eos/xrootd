@@ -118,7 +118,7 @@ perform_rename() {
     tmp_stderr=$(mktemp /tmp/rename_curl_stderr_XXXX)
 
     local http_code
-    http_code=$(${CURL} --location-trusted -v -s -S -L -X MOVE -o "$tmp_body" -w "%{http_code}" -v \
+    http_code=$(${CURL} --http1.1 --location-trusted -v -s -S -L -X MOVE -o "$tmp_body" -w "%{http_code}" -v \
         -H "Authorization: Bearer ${BEARER_TOKEN}" \
         -H "Destination: $dst_url" \
         "$src_url" 2>"$tmp_stderr")

@@ -122,6 +122,7 @@ bool XrdHttpKrb5::Init(XrdSysError &eDest, const char *keytab,
     eDest.Emsg(TraceID, "Unable to register Kerberos acceptor keytab:", keytab);
     return false;
   }
+  setenv("KRB5_KTNAME", keytab, 1);
 
   gss_buffer_desc nameBuf;
   nameBuf.length = kprinc.size();
@@ -129,7 +130,14 @@ bool XrdHttpKrb5::Init(XrdSysError &eDest, const char *keytab,
 
   gss_name_t gssName = GSS_C_NO_NAME;
   OM_uint32 maj, min;
-  maj = gss_import_name(&min, &nameBuf, GSS_C_NT_USER_NAME, &gssName);
+  // HTTP/host@REALM is a Kerberos principal, not a GSS user name. Importing
+  // it as GSS_C_NT_USER_NAME makes gss_acquire_cred fail and xrootd exits
+  // during httpkrb5 setup.
+  maj = gss_import_name(&min, &nameBuf,
+                        const_cast<gss_OID>(GSS_KRB5_NT_PRINCIPAL_NAME),
+                        &gssName);
+  if (maj != GSS_S_COMPLETE)
+    maj = gss_import_name(&min, &nameBuf, GSS_C_NT_USER_NAME, &gssName);
   if (maj != GSS_S_COMPLETE) {
     eDest.Emsg(TraceID, "Unable to import Kerberos principal:",
                kprinc.c_str(), gssErrMsg(maj, min).c_str());
