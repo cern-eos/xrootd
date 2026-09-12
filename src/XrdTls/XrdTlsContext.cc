@@ -436,6 +436,29 @@ bool SetTlsCiphers(SSL_CTX *ctx, const char *ciphers12)
    return true;
 }
 
+// RHEL crypto-policies omit rsa_pss_rsae_* from the client's
+// signature_algorithms. TLS 1.3 CertificateVerify then fails with
+// tls_choose_sigalg. SSL_CTX_set1_sigalgs* aborts this process after
+// HTTPS plugin init, so RSA server certs stay on TLS 1.2 (rsa_pkcs1).
+// ECDSA hosts keep TLS 1.3 (ecdsa_secp256r1_sha256).
+void LimitRsaServerToTls12(SSL_CTX *ctx)
+{
+#ifdef TLS1_2_VERSION
+   EVP_PKEY *pkey = SSL_CTX_get0_privatekey(ctx);
+   if (!pkey)
+      return;
+   const int id = EVP_PKEY_base_id(pkey);
+   if (id == EVP_PKEY_RSA
+#ifdef EVP_PKEY_RSA_PSS
+       || id == EVP_PKEY_RSA_PSS
+#endif
+      )
+      SSL_CTX_set_max_proto_version(ctx, TLS1_2_VERSION);
+#else
+   (void)ctx;
+#endif
+}
+
 XrdSysMutex            dbgMutex, tlsMutex;
 XrdSys::RAtomic<bool>  initDbgDone{ false };
 bool                   initTlsDone{ false };
@@ -823,6 +846,7 @@ XrdTlsContext::XrdTlsContext(const char *cert,  const char *key,
 //
    if (!SetTlsCiphers(pImpl->ctx, sslCiphers))
       FATAL_SSL("Unable to set SSL cipher list after loading certificate.");
+   LimitRsaServerToTls12(pImpl->ctx);
 
 // All went well, start the CRL refresh thread and keep the context.
 //
