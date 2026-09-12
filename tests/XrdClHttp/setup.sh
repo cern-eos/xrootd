@@ -105,10 +105,10 @@ if ! "$OPENSSL_BIN" req -x509 -key tlscakey.pem -config tlsca.ini -out tlsca.pem
   exit 1
 fi
 
-# Create the host certificate request. ECDSA P-256: RHEL crypto-policies
-# often omit rsa_pss_rsae_* so RSA 4096 host certs fail TLS 1.3, and
-# SSL_CTX_set1_sigalgs aborts this origin on OpenSSL 3.5.
-openssl ecparam -name prime256v1 -genkey -noout -out tls.key
+# RSA host cert: curl --http1.1 (TLS 1.2) needs ECDHE-RSA overlap.
+# httph2 uses host-ec.pem for TLS 1.3/HTTP/2; do not reuse ECDSA here.
+# SSL_CTX_set1_sigalgs* is not used (OpenSSL 3.5 malloc abort on this origin).
+"$OPENSSL_BIN" genrsa -out tls.key 2048
 chmod 0400 tls.key
 if ! "$OPENSSL_BIN" req -new -key tls.key -config tlsca.ini -out tls.csr -outform PEM -subj /CN=localhost 0<&-; then
   echo "Failed to generate host certificate request"

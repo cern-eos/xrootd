@@ -408,6 +408,12 @@ function test_httph2() {
 		echo "nghttp not available; skipping small-window flow control checks"
 	fi
 
+	# http.h2push fires on GET; upload the target before xiofscli so a
+	# 404 PUSH_PROMISE cannot RST that client.
+	echo "pushed payload" > "${tmpdir}/push-target.txt"
+	assert h2 --connect-timeout 5 --max-time 15 -s -T "${tmpdir}/push-target.txt" \
+		"${HTTPS_HOST}/h2-push-target.txt"
+
 	if command -v xiofscli >/dev/null 2>&1; then
 		echo "Testing XIOFS HTTP/2 client (xiofscli)"
 		xiofscli --cacert "${CURL_CA}" "${HTTPS_HOST}/h2-alphabet.txt" stat \
@@ -440,9 +446,6 @@ function test_httph2() {
 	fi
 
 	echo "Testing HTTP/2 server push"
-	echo "pushed payload" > "${tmpdir}/push-target.txt"
-	assert h2 --connect-timeout 5 --max-time 15 -s -T "${tmpdir}/push-target.txt" \
-		"${HTTPS_HOST}/h2-push-target.txt"
 	assert h2 --connect-timeout 5 --max-time 15 -s -o /dev/null \
 		"${HTTPS_HOST}/h2-alphabet.txt"
 	if command -v nghttp >/dev/null 2>&1; then

@@ -645,31 +645,28 @@ int Http2Session::request(const HttpRequest &req, HttpResponse &resp,
   resp = HttpResponse{};
   err.clear();
 
-  std::vector<nghttp2_nv> nva;
-  std::string method = req.method;
-  std::string path = req.path.empty() ? "/" : req.path;
-  std::string scheme = url_.tls ? "https" : "http";
-  nva.push_back(makeNv(":method", method));
-  nva.push_back(makeNv(":path", path));
-  nva.push_back(makeNv(":scheme", scheme));
-  nva.push_back(makeNv(":authority", url_.authority));
-  nva.push_back(makeNv("user-agent", "XIOFS/0.1"));
+  // nghttp2_nv stores pointers; every name/value must outlive submit_request().
+  std::vector<std::string> hdrstore;
+  auto addHdr = [&](const char *name, const std::string &value) {
+    hdrstore.emplace_back(name);
+    hdrstore.push_back(value);
+  };
+  addHdr(":method", req.method);
+  addHdr(":path", req.path.empty() ? "/" : req.path);
+  addHdr(":scheme", url_.tls ? "https" : "http");
+  addHdr(":authority", url_.authority);
+  addHdr("user-agent", "XIOFS/0.1");
   std::string auth;
   if (!opt_.bearer.empty()) {
     auth = "Bearer " + opt_.bearer;
-    nva.push_back(makeNv("authorization", auth));
+    addHdr("authorization", auth);
   }
-  std::vector<std::string> hdrstore;
-  hdrstore.reserve(req.headers.size() * 2);
   for (const auto &h : req.headers) {
     std::string name = h.first;
     for (char &c : name)
       c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    hdrstore.push_back(std::move(name));
-    hdrstore.push_back(h.second);
+    addHdr(name.c_str(), h.second);
   }
-  for (size_t i = 0; i + 1 < hdrstore.size(); i += 2)
-    nva.push_back(makeNv(hdrstore[i].c_str(), hdrstore[i + 1]));
 
   nghttp2_data_provider prd{};
   nghttp2_data_provider *prdptr = nullptr;
@@ -688,8 +685,13 @@ int Http2Session::request(const HttpRequest &req, HttpResponse &resp,
       return static_cast<ssize_t>(n);
     };
     prdptr = &prd;
-    nva.push_back(makeNv("content-length", std::to_string(st.body.size())));
+    addHdr("content-length", std::to_string(st.body.size()));
   }
+
+  std::vector<nghttp2_nv> nva;
+  nva.reserve(hdrstore.size() / 2);
+  for (size_t i = 0; i + 1 < hdrstore.size(); i += 2)
+    nva.push_back(makeNv(hdrstore[i].c_str(), hdrstore[i + 1]));
 
   auto *sess = static_cast<nghttp2_session *>(session_);
   int32_t sid = nghttp2_submit_request(sess, nullptr, nva.data(), nva.size(),
