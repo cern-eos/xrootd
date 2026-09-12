@@ -7,19 +7,44 @@ set -ex
 servernames=("srv1" "srv2")
 DATAFOLDER="./data"
 
+# -n NAME places logs/pids under ./NAME/. Opening NAME/xrootd.log as a relative
+# -l path either fails (parent dir missing) or lands at NAME/NAME/xrootd.log.
+dump_start_failure() {
+    local srv=$1
+    echo "failed to start ${srv}" >&2
+    echo "=== ${srv}.start.err ===" >&2
+    cat "${srv}.start.err" >&2 || true
+    echo "=== ${srv}/xrootd.log ===" >&2
+    if [[ -e "${srv}/xrootd.log" ]]; then
+        # -k fifo makes the log a pipe; a blocking cat would hang CTest.
+        timeout 2 cat "${srv}/xrootd.log" >&2 || true
+    else
+        echo "(missing)" >&2
+        ls -la "${srv}" . >&2 || true
+    fi
+}
+
+start_server() {
+    local srv=$1
+    if [[ -f "${srv}/xrootd.pid" ]]; then
+        kill -TERM "$(cat "${srv}/xrootd.pid")" || true
+    fi
+    rm -rf "${srv}"
+    mkdir -p "${srv}" "${DATAFOLDER}/${srv}"
+    echo "Starting XRootD on ${srv}..."
+    if ! ${XROOTD} -b -k fifo -n "${srv}" -l xrootd.log -s xrootd.pid -c "${srv}.cfg" \
+            >"${srv}.start.err" 2>&1; then
+        dump_start_failure "${srv}"
+        exit 1
+    fi
+}
+
 setup() {
     echo "Setting up XRootD with ${servernames[*]}"
 
     mkdir -p "${DATAFOLDER}"
     for srv in "${servernames[@]}"; do
-        mkdir -p "${DATAFOLDER}/${srv}"
-    done
-
-    # Start XRootD servers
-    for srv in "${servernames[@]}"; do
-        echo "Starting XRootD on ${srv}..."
-        ${XROOTD} -b -k fifo -n "${srv}" -l "${srv}"/xrootd.log -s "${srv}"/xrootd.pid -c "${srv}".cfg \
-            || { echo "failed to start ${srv}"; cat "${srv}/xrootd.log" >&2; exit 1; }
+        start_server "${srv}"
     done
 
     sleep 2

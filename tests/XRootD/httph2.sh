@@ -6,7 +6,7 @@ function setup_httph2() {
 
 function test_httph2() {
 	export HTTPS_HOST="https://localhost:${XRD_PORT}"
-	export CURL_CA="${PWD}/../tls/ca.pem"
+	export CURL_CA="${BINARY_DIR}/tests/tls/ca.pem"
 	local tmpdir body out code alphabet outputFilePath
 	local alphabetadler32 alphabetcrc32c alphabetmd5sumb64 alphabetadlerb64
 	local code1 code2 expectedDigest receivedDigest expectedHeader receivedHeader

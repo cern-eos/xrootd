@@ -11,7 +11,8 @@ function setup_httpkrb5() {
 
 function test_httpkrb5() {
 	export HTTPS_HOST="https://localhost:${XRD_PORT}"
-	export CURL_CA="${SOURCE_DIR}/../tls/ca.pem"
+	# TLS fixture writes certs into the build tree, not the source tree.
+	export CURL_CA="${BINARY_DIR}/tests/tls/ca.pem"
 
 	echo
 	echo "client: XRootD $(xrdcp --version 2>&1)"
