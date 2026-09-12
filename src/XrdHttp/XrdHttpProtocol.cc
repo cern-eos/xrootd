@@ -161,6 +161,8 @@ int AlpnSelectCb(SSL * /*ssl*/,
                  unsigned int inlen,
                  void * /*arg*/)
 {
+  if (!in || inlen == 0)
+    return SSL_TLSEXT_ERR_NOACK;
   if (SSL_select_next_proto(const_cast<unsigned char **>(out), outlen,
                             kServerAlpn, sizeof(kServerAlpn),
                             in, inlen) == OPENSSL_NPN_NEGOTIATED)
@@ -476,6 +478,10 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
 
       if (!ssl) {
           sbio = CreateBIO(Link);
+          if (!sbio) {
+            TRACEI(DEBUG, " CreateBIO returned NULL");
+            return -1;
+          }
           BIO_set_nbio(sbio, 1);
           ssl = (SSL*)xrdctx->Session();
         }
@@ -493,11 +499,8 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
 
       SSL_set_bio(ssl, sbio, sbio);
       SSL_set_accept_state(ssl);
-#ifdef HAVE_NGHTTP2
-      // xrd.tls shares a context that does not advertise h2; install ALPN
-      // on the CTX actually used for this handshake.
-      installHttpAlpn(SSL_get_SSL_CTX(ssl));
-#endif
+      // ALPN is installed once in InitTLS() on this context. Do not reset
+      // the shared SSL_CTX callback on every handshake.
 
       //SSL_set_fd(ssl, Link->FDnum());
       struct timeval tv;

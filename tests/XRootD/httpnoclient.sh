@@ -11,6 +11,9 @@ function setup_httpnoclient() {
 function test_httpnoclient() {
 	export HOST="https://localhost:${XRD_PORT}"
 
-	assert curl --cert ../issuer/tls.crt --key ../issuer/tls.key --cacert ../issuer/tlsca.pem -o /dev/null -w "%{http_code}" "$HOST/protected/hello_world.txt" > "${NAME}/curl_output.txt"
+	# tlsclientauth is off; a client cert is neither required nor expected.
+	# The previous command passed the server cert as a client cert, which
+	# aborted the handshake (curl SSL_ERROR_ZERO_RETURN) before the 403.
+	assert curl --cacert ../issuer/tlsca.pem -o /dev/null -w "%{http_code}" "$HOST/protected/hello_world.txt" > "${NAME}/curl_output.txt"
 	assert_eq 403 "$(tail -n 1 < "${NAME}/curl_output.txt")"
 }

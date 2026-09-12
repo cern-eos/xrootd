@@ -414,30 +414,14 @@ bool SetTlsCiphers(SSL_CTX *ctx, const char *ciphers12)
 
    SetTls13Ciphersuites(ctx);
 
-   // Do not call SSL_CTX_set1_sigalgs_list(). That replaces OpenSSL's
-   // default signature-algorithm list. A custom list that includes
-   // rsa_pss_pss_* (or mixed legacy names) makes tls_choose_sigalg fail
-   // for ordinary rsaEncryption certs, and applying it to client
-   // contexts leaves xrdcp with no TLS handshake for ztn.
+   // Leave OpenSSL's default groups, protocol versions, and signature
+   // algorithms in place. Replacing them here applied to *every* context
+   // (including xrdcp/ztn clients) and made TLS 1.3 handshakes fail:
+   // tls_choose_sigalg for RSA server certs, and "no protocols left" for ztn.
 
-#if OPENSSL_VERSION_NUMBER >= 0x10101000L && !defined(LIBRESSL_VERSION_NUMBER)
-   SSL_CTX_set1_groups_list(ctx, "X25519:prime256v1:secp384r1:secp521r1");
-#elif defined(SSL_CTX_set1_curves_list)
-   SSL_CTX_set1_curves_list(ctx, "X25519:prime256v1:secp384r1:secp521r1");
-#endif
-
-#if OPENSSL_VERSION_NUMBER >= 0x10100000L
-#ifdef TLS1_2_VERSION
-   SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
-#endif
-#ifdef TLS1_3_VERSION
-   SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION);
-#endif
-#endif
-
-   // OpenSSL 3.2+ refuses SSL_new when the max protocol (TLS 1.3) has no
-   // enabled suites. Probe and, if needed, drop the security level so the
-   // suites we just installed are actually usable.
+   // OpenSSL 3.2+ refuses SSL_new when TLS 1.3 has no enabled suites.
+   // Probe and, if needed, drop the security level so the suites we just
+   // installed are actually usable.
    SSL *probe = SSL_new(ctx);
    if (!probe) {
 #if OPENSSL_VERSION_NUMBER >= 0x10100000L
@@ -450,6 +434,24 @@ bool SetTlsCiphers(SSL_CTX *ctx, const char *ciphers12)
       SSL_free(probe);
 
    return true;
+}
+
+void SetServerSigAlgs(SSL_CTX *ctx)
+{
+   // Server-only. Do not apply this to client contexts: a restricted list
+   // leaves xrdcp with no overlapping signature algorithms for ztn.
+   // rsa_pss_rsae_* matches ordinary rsaEncryption certs. Do not list
+   // rsa_pss_pss_* (those names are for RSA-PSS keys only).
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+   SSL_CTX_set_security_level(ctx, 1);
+#endif
+#if OPENSSL_VERSION_NUMBER >= 0x10101000L && !defined(LIBRESSL_VERSION_NUMBER)
+   SSL_CTX_set1_sigalgs_list(ctx,
+      "rsa_pss_rsae_sha256:rsa_pss_rsae_sha384:rsa_pss_rsae_sha512:"
+      "ecdsa_secp256r1_sha256:ecdsa_secp384r1_sha384:ecdsa_secp521r1_sha512:"
+      "ed25519:rsa_pkcs1_sha256:rsa_pkcs1_sha384:rsa_pkcs1_sha512");
+#endif
+   (void)ctx;
 }
 
 XrdSysMutex            dbgMutex, tlsMutex;
@@ -833,10 +835,12 @@ XrdTlsContext::XrdTlsContext(const char *cert,  const char *key,
       FATAL_SSL("Unable to create TLS context; cert-key mismatch.");
 
 // Re-apply ciphers after the cert is loaded. OpenSSL 3.x may filter
-// TLS 1.3 suites against the key type.
+// TLS 1.3 suites against the key type. Then set server-only signature
+// algorithms so RSA host certs can complete TLS 1.3 (httph2).
 //
    if (!SetTlsCiphers(pImpl->ctx, sslCiphers))
       FATAL_SSL("Unable to set SSL cipher list after loading certificate.");
+   SetServerSigAlgs(pImpl->ctx);
 
 // All went well, start the CRL refresh thread and keep the context.
 //

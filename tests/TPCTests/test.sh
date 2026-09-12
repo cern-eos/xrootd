@@ -133,6 +133,9 @@ setup_scitokens
 export BEARER_TOKEN_FILE="$PWD/generated_tokens/token"
 BEARER_TOKEN=$(cat "$BEARER_TOKEN_FILE")
 export BEARER_TOKEN
+# Servers advertise only ztn. Pin the client so leftover XrdSecPROTOCOL
+# from other fixtures cannot skip the token protocol.
+export XrdSecPROTOCOL=ztn
 
 generate_file() {
     local local_file=$1
