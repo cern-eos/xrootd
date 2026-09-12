@@ -382,6 +382,7 @@ export XRD_HTTPSLOWRATEBYTESSEC=1024
 export XRD_HTTPSTALLTIMEOUT=2
 export XRD_HTTPCERTFILE=$CA_DIR/tlsca.pem
 export XRD_LOGLEVEL=Debug
+export XRDCLHTTP_TLSMAX=1.2
 set -x
 exec "$XROOTD_BIN" "\$@"
 EOF
@@ -463,6 +464,23 @@ while [ -z "$CACHE_PORT" ]; do
   fi
 done
 echo "Cache started at port $CACHE_PORT"
+
+# Same TLS 1.2 health check as the origin. A TLS 1.3 ClientHello against
+# this RSA cache previously aborted SSL_accept and left the port dead.
+if ! curl --http1.1 --tls-max 1.2 --max-time 5 --cacert "$CA_DIR/tlsca.pem" \
+    "https://localhost:${CACHE_PORT}/" -o /dev/null; then
+  echo "Cache is not serving HTTPS on port ${CACHE_PORT}"
+  cat "$BINARY_DIR/tests/$TEST_NAME/cache.log"
+  kill "$CACHE_PID" 2>/dev/null || true
+  kill "$ORIGIN_PID" 2>/dev/null || true
+  exit 1
+fi
+if ! kill -0 "$CACHE_PID" 2>/dev/null; then
+  echo "Cache crashed during HTTPS health check"
+  cat "$BINARY_DIR/tests/$TEST_NAME/cache.log"
+  kill "$ORIGIN_PID" 2>/dev/null || true
+  exit 1
+fi
 
 if ! "$BINARY_DIR/bin/xrdscitokens-create-token" \
     issuer_public.pem issuer_private.pem test_key \

@@ -469,38 +469,18 @@ bool PkeyIsRsa(EVP_PKEY *pkey)
 // tls_choose_sigalg. SSL_CTX_set1_sigalgs* aborts after HTTPS plugin
 // init. Cap RSA at TLS 1.2 (rsa_pkcs1). Do not raise the floor for
 // ECDSA: curl --http1.1 on this platform still sends TLS 1.2.
+//
+// Do not also set SSL_OP_NO_TLSv1_3 or mutate the SSL* after SSL_new:
+// SSL_set_options(SSL_OP_NO_TLSv1_3) on the session aborted OpenSSL 3.5
+// during SSL_accept of a TLS 1.3 ClientHello (XrdClHttp cache died;
+// origin health checks used --tls-max 1.2 and never hit that path).
 void LimitServerProtoByKey(SSL_CTX *ctx)
 {
 #ifdef TLS1_2_VERSION
-   if (PkeyIsRsa(ServerPkey(ctx))) {
+   if (PkeyIsRsa(ServerPkey(ctx)))
       SSL_CTX_set_max_proto_version(ctx, TLS1_2_VERSION);
-#ifdef SSL_OP_NO_TLSv1_3
-      SSL_CTX_set_options(ctx, SSL_OP_NO_TLSv1_3);
-#endif
-   }
 #else
    (void)ctx;
-#endif
-}
-
-void LimitSessionProtoByKey(SSL *ssl)
-{
-#ifdef TLS1_2_VERSION
-   if (!ssl)
-      return;
-   EVP_PKEY *pkey = SSL_get_privatekey(ssl);
-   if (!pkey) {
-      X509 *x = SSL_get_certificate(ssl);
-      pkey = x ? X509_get0_pubkey(x) : nullptr;
-   }
-   if (PkeyIsRsa(pkey)) {
-      SSL_set_max_proto_version(ssl, TLS1_2_VERSION);
-#ifdef SSL_OP_NO_TLSv1_3
-      SSL_set_options(ssl, SSL_OP_NO_TLSv1_3);
-#endif
-   }
-#else
-   (void)ssl;
 #endif
 }
 
@@ -1027,7 +1007,6 @@ void *XrdTlsContext::Session()
    if (!(pImpl->ctxnew))
       {ssl = SSL_new(pImpl->ctx);
        pImpl->crlMutex.UnLock();
-       LimitSessionProtoByKey(ssl);
        return ssl;
       }
 
@@ -1042,7 +1021,6 @@ void *XrdTlsContext::Session()
    if (!(pImpl->ctxnew))
       {ssl = SSL_new(pImpl->ctx);
        pImpl->crlMutex.UnLock();
-       LimitSessionProtoByKey(ssl);
        return ssl;
       }
 
@@ -1091,7 +1069,6 @@ void *XrdTlsContext::Session()
 //
    pImpl->crlMutex.UnLock();
    delete ctxold;
-   LimitSessionProtoByKey(ssl);
    return ssl;
 }
   

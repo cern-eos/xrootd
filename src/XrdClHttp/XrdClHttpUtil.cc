@@ -49,6 +49,8 @@
 #include <unistd.h>
 
 #include <charconv>
+#include <cstdlib>
+#include <cstring>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -640,6 +642,20 @@ XrdClHttp::GetHandle(bool verbose) {
     // XrdClHttp parses HTTP/1.1. After XrdHttp started advertising h2 via ALPN,
     // libcurl would otherwise upgrade HTTPS and the plugin would mis-parse.
     curl_easy_setopt(result, CURLOPT_HTTP_VERSION, (long)CURL_HTTP_VERSION_1_1);
+    // RHEL crypto-policies omit rsa_pss_rsae_* so TLS 1.3 to an RSA server
+    // fails tls_choose_sigalg. A TLS 1.3 ClientHello against an RSA server
+    // capped at TLS 1.2 also aborted OpenSSL 3.5 in SSL_accept. Tests set
+    // XRDCLHTTP_TLSMAX=1.2 so libcurl matches curl --tls-max 1.2.
+    if (const char *tlsmax = std::getenv("XRDCLHTTP_TLSMAX")) {
+        if (std::strcmp(tlsmax, "1.2") == 0) {
+#ifdef CURL_SSLVERSION_MAX_TLSv1_2
+            curl_easy_setopt(result, CURLOPT_SSLVERSION,
+                             (long)(CURL_SSLVERSION_TLSv1_2 | CURL_SSLVERSION_MAX_TLSv1_2));
+#else
+            curl_easy_setopt(result, CURLOPT_SSLVERSION, (long)CURL_SSLVERSION_TLSv1_2);
+#endif
+        }
+    }
     curl_easy_setopt(result, CURLOPT_CONNECTTIMEOUT, 10L);
     if (verbose)
         curl_easy_setopt(result, CURLOPT_VERBOSE, 1L);
