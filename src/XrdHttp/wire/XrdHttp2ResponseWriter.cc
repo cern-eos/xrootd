@@ -63,9 +63,17 @@ void markEof(nghttp2_session *session, XrdHttp2PendingResponse &resp,
                    reinterpret_cast<uint8_t *>(const_cast<char *>(kv.second.data())),
                    kv.first.size(), kv.second.size(), NGHTTP2_NV_FLAG_NONE});
   }
-  if (nghttp2_submit_trailer(session, resp.stream_id, nva.data(),
-                             nva.size()) == 0)
+  const int trc = nghttp2_submit_trailer(session, resp.stream_id, nva.data(),
+                                          nva.size());
+  if (trc == 0) {
     *data_flags |= NGHTTP2_DATA_FLAG_NO_END_STREAM;
+    for (const auto &kv : resp.trailers)
+      TRACE(ALL, "HTTP/2 trailer submitted stream=" << resp.stream_id
+            << " " << kv.first << ": " << kv.second);
+  } else {
+    TRACE(ALL, "HTTP/2 nghttp2_submit_trailer failed stream="
+          << resp.stream_id << " rc=" << trc);
+  }
 }
 
 ssize_t readResponse(nghttp2_session *session, int32_t stream_id,
@@ -276,7 +284,10 @@ int XrdHttp2ResponseWriter::sendSimple(XrdHttpProtocol &prot, int code,
                                  XrdHttpProtocol::h2pushPaths());
   }
 
-  XrdHttpMon::Record(prot.CurrentReq, code);
+  // Unknown-length (chunked / trailers) responses are still sending DATA.
+  // Recording DONE here made later trailers look like a double-close.
+  if (!unknown_length)
+    XrdHttpMon::Record(prot.CurrentReq, code);
   (void)desc;
   return 0;
 }
@@ -336,8 +347,16 @@ int XrdHttp2ResponseWriter::addTrailers(XrdHttpProtocol &prot,
 {
   XrdHttp2PendingResponse *pending = prot.http2Session_.pendingFor(
       prot.http2Session_.activeStreamId());
-  if (!pending || !pending->active || !pending->streaming)
-    return -1;
+  if (!pending)
+    pending = &prot.http2Session_.pendingResponse();
+  if (!pending || !pending->active || !pending->streaming) {
+    TRACE(ALL, "HTTP/2 addTrailers skipped stream="
+          << prot.http2Session_.activeStreamId()
+          << " pending=" << (pending ? 1 : 0)
+          << " active=" << (pending ? pending->active : 0)
+          << " streaming=" << (pending ? pending->streaming : 0));
+    return 0;
+  }
   if (!header_lines || !header_lines[0])
     return 0;
 

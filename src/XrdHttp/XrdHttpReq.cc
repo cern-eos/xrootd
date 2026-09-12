@@ -480,6 +480,10 @@ int XrdHttpReq::parseLine(char *line, int len) {
     } else if (!strcasecmp(key, "x-transfer-status") && strstr(val, "true")) {
       m_transfer_encoding_chunked = true;
       m_status_trailer = true;
+      // HTTP/2 always allows trailers; clients often omit TE (and some
+      // curl builds drop it as a connection-specific header).
+      if (prot && prot->isHttp2())
+        m_trailer_headers = true;
     } else if (!strcasecmp(key, "scitag")) {
       if(prot->pmarkHandle != nullptr) {
         parseScitag(val);

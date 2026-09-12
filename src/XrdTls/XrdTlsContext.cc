@@ -20,7 +20,6 @@
 #include <openssl/bio.h>
 #include <openssl/crypto.h>
 #include <openssl/err.h>
-#include <openssl/evp.h>
 #include <openssl/ssl.h>
 #include <openssl/opensslv.h>
 #include <sys/stat.h>
@@ -437,29 +436,6 @@ bool SetTlsCiphers(SSL_CTX *ctx, const char *ciphers12)
    return true;
 }
 
-// Server-only. Do not apply this to client contexts: a restricted list
-// leaves xrdcp with no overlapping signature algorithms for ztn.
-// Use the NID pair API, not SSL_CTX_set1_sigalgs_list(): the string form
-// overwrites OpenSSL defaults and has aborted in malloc on OpenSSL 3.5
-// after loading EC certs. EVP_PKEY_RSA+SHA256 is rsa_pss_rsae_sha256 in
-// TLS 1.3 (ordinary rsaEncryption certs), which RHEL crypto-policies often
-// omit in favor of rsa_pss_pss_* (PSS keys only).
-void SetServerSigAlgs(SSL_CTX *ctx)
-{
-#if OPENSSL_VERSION_NUMBER >= 0x10101000L && !defined(LIBRESSL_VERSION_NUMBER)
-   static const int sigalgs[] = {
-      NID_sha256, EVP_PKEY_EC,
-      NID_sha384, EVP_PKEY_EC,
-      NID_sha256, EVP_PKEY_RSA,
-      NID_sha384, EVP_PKEY_RSA,
-      NID_sha512, EVP_PKEY_RSA
-   };
-   SSL_CTX_set1_sigalgs(ctx, sigalgs,
-                         (int)(sizeof(sigalgs) / sizeof(sigalgs[0])));
-#endif
-   (void)ctx;
-}
-
 XrdSysMutex            dbgMutex, tlsMutex;
 XrdSys::RAtomic<bool>  initDbgDone{ false };
 bool                   initTlsDone{ false };
@@ -841,12 +817,12 @@ XrdTlsContext::XrdTlsContext(const char *cert,  const char *key,
       FATAL_SSL("Unable to create TLS context; cert-key mismatch.");
 
 // Re-apply ciphers after the cert is loaded. OpenSSL 3.x may filter
-// TLS 1.3 suites against the key type. Then set server-only signature
-// algorithms so RSA host certs can complete TLS 1.3.
+// TLS 1.3 suites against the key type. Do not replace signature algorithms:
+// SSL_CTX_set1_sigalgs() and SSL_CTX_set1_sigalgs_list() have aborted in
+// malloc on OpenSSL 3.5 after HTTPS init (RSA host cert + HTTP plugins).
 //
    if (!SetTlsCiphers(pImpl->ctx, sslCiphers))
       FATAL_SSL("Unable to set SSL cipher list after loading certificate.");
-   SetServerSigAlgs(pImpl->ctx);
 
 // All went well, start the CRL refresh thread and keep the context.
 //

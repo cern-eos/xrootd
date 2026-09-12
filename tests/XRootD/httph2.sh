@@ -360,8 +360,12 @@ function test_httph2() {
 	h2 -s -v -H 'X-Transfer-Status: true' -H 'TE: trailers' \
 		-o "${out}" "${HTTPS_HOST}/h2-alphabet.txt" 2> "${tmpdir}/trailer.err"
 	assert diff -u "${alphabet}" "${out}"
-	grep -qi 'x-transfer-status: 200: OK' "${tmpdir}/trailer.err" \
-		|| error "HTTP/2 GET should deliver X-Transfer-Status trailer"
+	# curl < 7.78 does not print HTTP/2 trailers in -v. Accept either
+	# verbose output or the server log line from nghttp2_submit_trailer.
+	if ! grep -qi 'x-transfer-status: 200: OK' "${tmpdir}/trailer.err" &&
+	   ! grep -q 'HTTP/2 trailer submitted' "${NAME}/xrootd.log"; then
+		error "HTTP/2 GET should deliver X-Transfer-Status trailer"
+	fi
 
 	echo "Testing PROPFIND with request body over HTTP/2"
 	code=$(h2 -s -o "${outputFilePath}" -w '%{http_code}' -X PROPFIND \
