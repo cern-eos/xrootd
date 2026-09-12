@@ -397,7 +397,11 @@ echo > "$BINARY_DIR/tests/$TEST_NAME/client.log"
 # Launch XRootD services. #
 ###########################
 echo > "$BINARY_DIR/tests/$TEST_NAME/origin.log"
-"$BINDIR/xrootd" -n origin -c "$ORIGIN_CONFIG" 0<&- >"$BINARY_DIR/tests/$TEST_NAME/origin.log" 2>&1 &
+# Cap RSA at TLS 1.2 on the origin. curl --tls-max 1.2 still offers TLS 1.3
+# here; without the cap, SSL_accept fails tls_choose_sigalg. Do not set
+# this on the cache: SSL_CTX_set_max_proto_version there segfaulted OpenSSL
+# 3.5 during SSL_accept (libcurl is in-process).
+XRD_TLSMAXPROTO=1.2 "$BINDIR/xrootd" -n origin -c "$ORIGIN_CONFIG" 0<&- >"$BINARY_DIR/tests/$TEST_NAME/origin.log" 2>&1 &
 ORIGIN_PID=$!
 echo "Origin PID: $ORIGIN_PID"
 
@@ -425,10 +429,19 @@ while [ -z "$ORIGIN_PORT" ]; do
 done
 echo "Origin started at port $ORIGIN_PORT"
 
+# openssl s_client -tls1_2 actually negotiates TLS 1.2. curl --tls-max 1.2
+# on this host still sends a TLS 1.3 ClientHello.
+tls12_handshake() {
+  local port="$1"
+  "$OPENSSL_BIN" s_client -connect "localhost:${port}" -tls1_2 \
+    -CAfile "$CA_DIR/tlsca.pem" -servername localhost </dev/null 2>&1 \
+    | grep -qE 'Protocol[[:space:]]*:[[:space:]]*TLSv1.2|Protocol version: TLSv1.2'
+}
+
 # Confirm origin is accepting HTTPS before starting the cache. If this
 # fails the cache Stat of https://127.0.0.1:9443 becomes connection-refused
 # and checksum tests hang dumping a growing log.
-if ! curl --http1.1 --tls-max 1.2 --max-time 5 --cacert "$CA_DIR/tlsca.pem" \
+if ! curl --http1.1 --tlsv1.2 --tls-max 1.2 --max-time 5 --cacert "$CA_DIR/tlsca.pem" \
     "https://localhost:${ORIGIN_PORT}/.well-known/openid-configuration" \
     -o /dev/null; then
   echo "Origin is not serving HTTPS on port ${ORIGIN_PORT}"
@@ -466,11 +479,10 @@ while [ -z "$CACHE_PORT" ]; do
 done
 echo "Cache started at port $CACHE_PORT"
 
-# Same TLS 1.2 health check as the origin. A TLS 1.3 ClientHello against
-# this RSA cache previously aborted SSL_accept and left the port dead.
-if ! curl --http1.1 --tls-max 1.2 --max-time 5 --cacert "$CA_DIR/tlsca.pem" \
-    "https://localhost:${CACHE_PORT}/" -o /dev/null; then
-  echo "Cache is not serving HTTPS on port ${CACHE_PORT}"
+# Cache is not capped at TLS 1.2 (that segfaulted SSL_accept). Probe with
+# openssl s_client -tls1_2 so we do not send a TLS 1.3 ClientHello.
+if ! tls12_handshake "$CACHE_PORT"; then
+  echo "Cache is not serving TLS 1.2 HTTPS on port ${CACHE_PORT}"
   cat "$BINARY_DIR/tests/$TEST_NAME/cache.log"
   kill "$CACHE_PID" 2>/dev/null || true
   kill "$ORIGIN_PID" 2>/dev/null || true

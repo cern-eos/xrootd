@@ -17,6 +17,8 @@
 //------------------------------------------------------------------------------
 
 #include <cstdio>
+#include <cstring>
+#include <cstdlib>
 #include <openssl/bio.h>
 #include <openssl/crypto.h>
 #include <openssl/err.h>
@@ -438,6 +440,51 @@ bool SetTlsCiphers(SSL_CTX *ctx, const char *ciphers12)
    return true;
 }
 
+EVP_PKEY *ServerPkey(SSL_CTX *ctx)
+{
+   if (!ctx)
+      return nullptr;
+   if (EVP_PKEY *pkey = SSL_CTX_get0_privatekey(ctx))
+      return pkey;
+   X509 *x = SSL_CTX_get0_certificate(ctx);
+   return x ? X509_get0_pubkey(x) : nullptr;
+}
+
+bool PkeyIsRsa(EVP_PKEY *pkey)
+{
+   if (!pkey)
+      return false;
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+   if (EVP_PKEY_is_a(pkey, "RSA") || EVP_PKEY_is_a(pkey, "RSA-PSS"))
+      return true;
+#endif
+   const int id = EVP_PKEY_base_id(pkey);
+   return id == EVP_PKEY_RSA
+#ifdef EVP_PKEY_RSA_PSS
+          || id == EVP_PKEY_RSA_PSS
+#endif
+          ;
+}
+
+// RHEL crypto-policies omit rsa_pss_rsae_* so TLS 1.3 with an RSA host
+// cert fails tls_choose_sigalg. curl --tls-max 1.2 on this host still
+// offers TLS 1.3; without a server cap the origin handshake fails even
+// for that "TLS 1.2" health check. Cap RSA at TLS 1.2 (rsa_pkcs1).
+// Do not also set SSL_OP_NO_TLSv1_3 or mutate SSL* after SSL_new, and
+// do not apply this to the XrdClHttp cache (see XRD_TLSMAXPROTO).
+void LimitServerProtoByKey(SSL_CTX *ctx)
+{
+#ifdef TLS1_2_VERSION
+   const char *maxproto = getenv("XRD_TLSMAXPROTO");
+   if (!maxproto || strcmp(maxproto, "1.2") != 0)
+      return;
+   if (PkeyIsRsa(ServerPkey(ctx)))
+      SSL_CTX_set_max_proto_version(ctx, TLS1_2_VERSION);
+#else
+   (void)ctx;
+#endif
+}
+
 XrdSysMutex            dbgMutex, tlsMutex;
 XrdSys::RAtomic<bool>  initDbgDone{ false };
 bool                   initTlsDone{ false };
@@ -825,11 +872,7 @@ XrdTlsContext::XrdTlsContext(const char *cert,  const char *key,
 //
    if (!SetTlsCiphers(pImpl->ctx, sslCiphers))
       FATAL_SSL("Unable to set SSL cipher list after loading certificate.");
-   // Do not call SSL_CTX_set_max_proto_version / SSL_OP_NO_TLSv1_3 here.
-   // Those calls, like SSL_CTX_set1_sigalgs*, have aborted or segfaulted
-   // OpenSSL 3.5 during SSL_accept (XrdClHttp cache in the same process as
-   // libcurl). RSA TLS 1.3 still fails tls_choose_sigalg on RHEL; tests
-   // force TLS 1.2 on the client instead.
+   LimitServerProtoByKey(pImpl->ctx);
 
 // All went well, start the CRL refresh thread and keep the context.
 //
