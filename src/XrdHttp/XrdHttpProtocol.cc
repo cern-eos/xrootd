@@ -1458,12 +1458,30 @@ int XrdHttpProtocol::getDataOneShot(int blen, bool wait) {
 #endif
 
   if (ishttps) {
+    if (!ssl) {
+      Link->setEtext("link SSL not initialized");
+      return -1;
+    }
+
     int sslavail = maxread;
 
     if (!wait) {
       const int pending = SSL_pending(ssl);
       if (pending > 0)
         sslavail = std::min(maxread, pending);
+      else {
+        // SSL_pending() only counts already-decrypted bytes. The HTTP BIO
+        // reads the socket with a blocking Recv(), so SSL_read() of the
+        // remaining buffer would stall until SO_RCVTIMEO. If the socket
+        // is not readable, treat that as "no data" for wait=false.
+        struct pollfd pfd;
+        pfd.fd = Link->FDnum();
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        const int pr = poll(&pfd, 1, 0);
+        if (pr <= 0 || !(pfd.revents & (POLLIN | POLLRDNORM)))
+          return 0;
+      }
     }
 
     if (sslavail < 0) {

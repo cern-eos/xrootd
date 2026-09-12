@@ -407,39 +407,18 @@ bool SetTls13Ciphersuites(SSL_CTX *ctx)
 #endif
 }
 
-bool SetTlsSigalgs(SSL_CTX *ctx)
-{
-#if OPENSSL_VERSION_NUMBER >= 0x10101000L
-   // IANA TLS 1.3 names. Mixed legacy names (ECDSA+SHA256) can succeed on
-   // OpenSSL 3.5 while replacing the default list with algorithms that
-   // tls_choose_sigalg will not select for RSA-PSS or P-256 certs.
-   static const char *sigalgs[] = {
-      "ecdsa_secp256r1_sha256:ecdsa_secp384r1_sha384:ecdsa_secp521r1_sha512:"
-      "rsa_pss_rsae_sha256:rsa_pss_rsae_sha384:rsa_pss_rsae_sha512:"
-      "rsa_pss_pss_sha256:rsa_pss_pss_sha384:"
-      "rsa_pkcs1_sha256:rsa_pkcs1_sha384:rsa_pkcs1_sha512:"
-      "ed25519",
-      "rsa_pss_rsae_sha256:rsa_pss_rsae_sha384:"
-      "ecdsa_secp256r1_sha256:ecdsa_secp384r1_sha384:"
-      "rsa_pkcs1_sha256",
-      0
-   };
-   for (int i = 0; sigalgs[i]; i++) {
-      if (SSL_CTX_set1_sigalgs_list(ctx, sigalgs[i]))
-         return true;
-   }
-#endif
-   (void)ctx;
-   return false;
-}
-
 bool SetTlsCiphers(SSL_CTX *ctx, const char *ciphers12)
 {
    if (ciphers12 && *ciphers12 && !SSL_CTX_set_cipher_list(ctx, ciphers12))
       return false;
 
    SetTls13Ciphersuites(ctx);
-   SetTlsSigalgs(ctx);
+
+   // Do not call SSL_CTX_set1_sigalgs_list(). That replaces OpenSSL's
+   // default signature-algorithm list. A custom list that includes
+   // rsa_pss_pss_* (or mixed legacy names) makes tls_choose_sigalg fail
+   // for ordinary rsaEncryption certs, and applying it to client
+   // contexts leaves xrdcp with no TLS handshake for ztn.
 
 #if OPENSSL_VERSION_NUMBER >= 0x10101000L && !defined(LIBRESSL_VERSION_NUMBER)
    SSL_CTX_set1_groups_list(ctx, "X25519:prime256v1:secp384r1:secp521r1");
@@ -465,7 +444,6 @@ bool SetTlsCiphers(SSL_CTX *ctx, const char *ciphers12)
       SSL_CTX_set_security_level(ctx, 1);
 #endif
       SetTls13Ciphersuites(ctx);
-      SetTlsSigalgs(ctx);
       probe = SSL_new(ctx);
    }
    if (probe)
@@ -854,8 +832,8 @@ XrdTlsContext::XrdTlsContext(const char *cert,  const char *key,
    if (SSL_CTX_check_private_key(pImpl->ctx) != 1 )
       FATAL_SSL("Unable to create TLS context; cert-key mismatch.");
 
-// Re-apply ciphers/sigalgs after the cert is loaded. OpenSSL 3.x may filter
-// TLS 1.3 suites and signature algorithms against the key type.
+// Re-apply ciphers after the cert is loaded. OpenSSL 3.x may filter
+// TLS 1.3 suites against the key type.
 //
    if (!SetTlsCiphers(pImpl->ctx, sslCiphers))
       FATAL_SSL("Unable to set SSL cipher list after loading certificate.");
