@@ -9,15 +9,16 @@ DATAFOLDER="./data"
 
 # -n NAME places logs/pids under ./NAME/. Opening NAME/xrootd.log as a relative
 # -l path either fails (parent dir missing) or lands at NAME/NAME/xrootd.log.
+# Do not use -k fifo here: an unread log pipe can make xrootd -b fail or
+# truncate the init log before "initialization completed/failed".
 dump_start_failure() {
     local srv=$1
     echo "failed to start ${srv}" >&2
     echo "=== ${srv}.start.err ===" >&2
     cat "${srv}.start.err" >&2 || true
     echo "=== ${srv}/xrootd.log ===" >&2
-    if [[ -e "${srv}/xrootd.log" ]]; then
-        # -k fifo makes the log a pipe; a blocking cat would hang CTest.
-        timeout 2 cat "${srv}/xrootd.log" >&2 || true
+    if [[ -f "${srv}/xrootd.log" ]]; then
+        cat "${srv}/xrootd.log" >&2 || true
     else
         echo "(missing)" >&2
         ls -la "${srv}" . >&2 || true
@@ -32,8 +33,12 @@ start_server() {
     rm -rf "${srv}"
     mkdir -p "${srv}" "${DATAFOLDER}/${srv}"
     echo "Starting XRootD on ${srv}..."
-    if ! ${XROOTD} -b -k fifo -n "${srv}" -l xrootd.log -s xrootd.pid -c "${srv}.cfg" \
+    if ! ${XROOTD} -b -n "${srv}" -l xrootd.log -s xrootd.pid -c "${srv}.cfg" \
             >"${srv}.start.err" 2>&1; then
+        dump_start_failure "${srv}"
+        exit 1
+    fi
+    if [[ ! -f "${srv}/xrootd.pid" ]] || ! kill -0 "$(cat "${srv}/xrootd.pid")" 2>/dev/null; then
         dump_start_failure "${srv}"
         exit 1
     fi

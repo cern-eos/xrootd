@@ -50,7 +50,7 @@ check_commands "${ADLER32}" "${CRC32C}" "${XRDCP}" "${XRDFS}" "${OPENSSL}" "${CU
 
 # HTTPS curl negotiates HTTP/2 when the server advertises ALPN h2.
 # TPC and XrdHttpTpc are HTTP/1.1.
-curl_h1() { ${CURL} --http1.1 "$@"; }
+curl_h1() { ${CURL} --http1.1 --connect-timeout 10 --max-time 120 "$@"; }
 
 # Server host mappings
 declare -a hosts=(

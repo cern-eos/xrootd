@@ -380,23 +380,97 @@ const char *sslCiphers = "ECDHE-ECDSA-AES128-GCM-SHA256:"
 
 // TLS 1.3 ciphersuites are independent of SSL_CTX_set_cipher_list.
 // RHEL 9 crypto-policies can leave the inherited TLS 1.3 list empty.
+// Prefer GCM-only first: a combined list that includes ChaCha20 is rejected
+// wholesale when that suite is disabled (FIPS / crypto-policies).
 const char *sslCiphers13 = "TLS_AES_128_GCM_SHA256:"
                            "TLS_AES_256_GCM_SHA384:"
                            "TLS_CHACHA20_POLY1305_SHA256";
 
+bool SetTls13Ciphersuites(SSL_CTX *ctx)
+{
+#ifdef TLS1_3_VERSION
+   static const char *suites[] = {
+      "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384",
+      sslCiphers13,
+      "TLS_AES_128_GCM_SHA256",
+      "TLS_AES_256_GCM_SHA384",
+      0
+   };
+   for (int i = 0; suites[i]; i++) {
+      if (SSL_CTX_set_ciphersuites(ctx, suites[i]))
+         return true;
+   }
+   return false;
+#else
+   (void)ctx;
+   return true;
+#endif
+}
+
+bool SetTlsSigalgs(SSL_CTX *ctx)
+{
+#if OPENSSL_VERSION_NUMBER >= 0x10101000L
+   // IANA TLS 1.3 names. Mixed legacy names (ECDSA+SHA256) can succeed on
+   // OpenSSL 3.5 while replacing the default list with algorithms that
+   // tls_choose_sigalg will not select for RSA-PSS or P-256 certs.
+   static const char *sigalgs[] = {
+      "ecdsa_secp256r1_sha256:ecdsa_secp384r1_sha384:ecdsa_secp521r1_sha512:"
+      "rsa_pss_rsae_sha256:rsa_pss_rsae_sha384:rsa_pss_rsae_sha512:"
+      "rsa_pss_pss_sha256:rsa_pss_pss_sha384:"
+      "rsa_pkcs1_sha256:rsa_pkcs1_sha384:rsa_pkcs1_sha512:"
+      "ed25519",
+      "rsa_pss_rsae_sha256:rsa_pss_rsae_sha384:"
+      "ecdsa_secp256r1_sha256:ecdsa_secp384r1_sha384:"
+      "rsa_pkcs1_sha256",
+      0
+   };
+   for (int i = 0; sigalgs[i]; i++) {
+      if (SSL_CTX_set1_sigalgs_list(ctx, sigalgs[i]))
+         return true;
+   }
+#endif
+   (void)ctx;
+   return false;
+}
+
 bool SetTlsCiphers(SSL_CTX *ctx, const char *ciphers12)
 {
-   if (!SSL_CTX_set_cipher_list(ctx, ciphers12))
+   if (ciphers12 && *ciphers12 && !SSL_CTX_set_cipher_list(ctx, ciphers12))
       return false;
+
+   SetTls13Ciphersuites(ctx);
+   SetTlsSigalgs(ctx);
+
+#if OPENSSL_VERSION_NUMBER >= 0x10101000L && !defined(LIBRESSL_VERSION_NUMBER)
+   SSL_CTX_set1_groups_list(ctx, "X25519:prime256v1:secp384r1:secp521r1");
+#elif defined(SSL_CTX_set1_curves_list)
+   SSL_CTX_set1_curves_list(ctx, "X25519:prime256v1:secp384r1:secp521r1");
+#endif
+
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+#ifdef TLS1_2_VERSION
+   SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+#endif
 #ifdef TLS1_3_VERSION
-   if (!SSL_CTX_set_ciphersuites(ctx, sslCiphers13))
-      SSL_CTX_set_ciphersuites(ctx, "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384");
+   SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION);
 #endif
-#if OPENSSL_VERSION_NUMBER >= 0x10101000L
-   SSL_CTX_set1_sigalgs_list(ctx,
-      "ECDSA+SHA256:ECDSA+SHA384:rsa_pss_pss_sha256:rsa_pss_pss_sha384:"
-      "rsa_pss_rsae_sha256:rsa_pss_rsae_sha384:RSA+SHA256:RSA+SHA384");
 #endif
+
+   // OpenSSL 3.2+ refuses SSL_new when the max protocol (TLS 1.3) has no
+   // enabled suites. Probe and, if needed, drop the security level so the
+   // suites we just installed are actually usable.
+   SSL *probe = SSL_new(ctx);
+   if (!probe) {
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+      SSL_CTX_set_security_level(ctx, 1);
+#endif
+      SetTls13Ciphersuites(ctx);
+      SetTlsSigalgs(ctx);
+      probe = SSL_new(ctx);
+   }
+   if (probe)
+      SSL_free(probe);
+
    return true;
 }
 
@@ -779,6 +853,12 @@ XrdTlsContext::XrdTlsContext(const char *cert,  const char *key,
 //
    if (SSL_CTX_check_private_key(pImpl->ctx) != 1 )
       FATAL_SSL("Unable to create TLS context; cert-key mismatch.");
+
+// Re-apply ciphers/sigalgs after the cert is loaded. OpenSSL 3.x may filter
+// TLS 1.3 suites and signature algorithms against the key type.
+//
+   if (!SetTlsCiphers(pImpl->ctx, sslCiphers))
+      FATAL_SSL("Unable to set SSL cipher list after loading certificate.");
 
 // All went well, start the CRL refresh thread and keep the context.
 //

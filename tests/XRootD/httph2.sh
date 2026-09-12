@@ -15,7 +15,7 @@ function test_httph2() {
 	local expectedDelimiters receivedDelimiters
 
 	h2() {
-		curl --http2 --cacert "${CURL_CA}" "$@"
+		curl --http2 --connect-timeout 10 --max-time 60 --cacert "${CURL_CA}" "$@"
 	}
 
 	# HTTP/2 responses lowercase field names; compare headers case-insensitively.
