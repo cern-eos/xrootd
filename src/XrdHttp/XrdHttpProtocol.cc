@@ -1320,9 +1320,9 @@ int XrdHttpProtocol::Config(const char *ConfigFN, XrdOucEnv *myEnv) {
 //
    sslbio_err = BIO_new_fp(stderr, BIO_NOCLOSE);
 
-// Now we can configure HTTPS. We will not reuse the passed context as we will
-// be setting our own options specific to out implementation. One day we will.
-//
+// Now we can configure HTTPS. Reuse the xrd.tls context when present:
+// creating a second SSL_CTX after libcurl has initialized OpenSSL (PSS
+// loading libXrdClHttp) segfaults SSL_accept on OpenSSL 3.5.
    const char *how = "completed.";
    eDest.Say("++++++ HTTPS initialization started.");
    if (!InitTLS()) {NoGo = 1; how = "failed.";}
@@ -2344,27 +2344,26 @@ int XrdHttpProtocol::parseHeader2CGI(XrdOucStream &Config, XrdSysError & err,std
 bool XrdHttpProtocol::InitTLS() {
 
    std::string eMsg;
-   uint64_t opts = XrdTlsContext::servr | XrdTlsContext::logVF |
-                   XrdTlsContext::artON | XrdTlsContext::rfCRL;
+   const bool reuse = (xrdctx && xrdctx->isOK());
 
-  if (allowMissingCRL) {
-    opts |= XrdTlsContext::crlAM;
-  }
+   if (!reuse) {
+     uint64_t opts = XrdTlsContext::servr | XrdTlsContext::logVF |
+                     XrdTlsContext::artON | XrdTlsContext::rfCRL;
 
-// Create a new TLS context
-//
-   if (sslverifydepth > 255) sslverifydepth = 255;
-   opts = TLS_SET_VDEPTH(opts, sslverifydepth);
-   //TLS_SET_REFINT will set the refresh interval in minutes, hence the division by 60
-   opts = TLS_SET_REFINT(opts, crlRefIntervalSec/60);
-   xrdctx = new XrdTlsContext(sslcert,sslkey,sslcadir,sslcafile,opts,&eMsg);
+     if (allowMissingCRL) {
+       opts |= XrdTlsContext::crlAM;
+     }
 
-// Make sure the context was created
-//
-   if (!xrdctx->isOK())
-      {eDest.Say("Config failure: ", eMsg.c_str());
-       return false;
-      }
+     if (sslverifydepth > 255) sslverifydepth = 255;
+     opts = TLS_SET_VDEPTH(opts, sslverifydepth);
+     opts = TLS_SET_REFINT(opts, crlRefIntervalSec/60);
+     xrdctx = new XrdTlsContext(sslcert,sslkey,sslcadir,sslcafile,opts,&eMsg);
+
+     if (!xrdctx->isOK())
+        {eDest.Say("Config failure: ", eMsg.c_str());
+         return false;
+        }
+   }
 
 // Setup session cache (this is controversial). The default is off but many
 // programs expect it being enabled and break when it is disabled. In such
