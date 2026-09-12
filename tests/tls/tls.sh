@@ -20,11 +20,10 @@ function setup() {
 	openssl ca -batch -config tls.conf -in host.csr -extensions xrootd_crt_ext -notext -out host.pem
 	openssl verify -CAfile ca.pem host.pem
 
-	# ECDSA P-256 host cert for HTTP/2. curl --http2 negotiates TLS 1.3, and
-	# RHEL crypto-policies often omit rsa_pss_rsae_* so RSA 4096 host certs
-	# fail SSL_accept with tls_choose_sigalg.
+	# ECDSA P-256 host cert for HTTP/2. Distinct CN: openssl ca refuses a
+	# second /CN=localhost. SAN still has DNS:localhost from xrootd_crt_ext.
 	openssl ecparam -name prime256v1 -genkey -noout -out host-ec.key
-	openssl req -new -key host-ec.key -outform PEM -out host-ec.csr -subj '/CN=localhost'
+	openssl req -new -key host-ec.key -outform PEM -out host-ec.csr -subj '/CN=localhost-ec'
 	openssl ca -batch -config tls.conf -in host-ec.csr -extensions xrootd_crt_ext -notext -out host-ec.pem
 	openssl verify -CAfile ca.pem host-ec.pem
 
