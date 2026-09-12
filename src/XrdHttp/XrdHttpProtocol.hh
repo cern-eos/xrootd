@@ -296,6 +296,7 @@ private:
   static int xtlsclientauth(XrdOucStream &Config);
   static int xmaxdelay(XrdOucStream &Config);
   static int xh2push(XrdOucStream &Config);
+  static int xh2(XrdOucStream &Config);
 
   static bool isRequiredXtractor; // If true treat secxtractor errors as fatal
   static XrdHttpSecXtractor *secxtractor;

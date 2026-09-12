@@ -268,6 +268,7 @@ xrd.protocol http:any libXrdHttp.so
 xrd.tls $CA_DIR/tls.crt $CA_DIR/tls.key
 xrd.tlsca certfile $CA_DIR/tlsca.pem
 http.tlsclientauth off
+http.h2 off
 sec.protbind * none
 
 http.header2cgi Authorization authz strip-on-redirect

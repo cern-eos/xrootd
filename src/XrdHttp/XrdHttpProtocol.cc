@@ -149,10 +149,14 @@ namespace
 const char *TraceID = "Protocol";
 
 #ifdef HAVE_NGHTTP2
-const unsigned char kServerAlpn[] = {
+const unsigned char kServerAlpnH2[] = {
   2, 'h','2',
   8, 'h','t','t','p','/','1','.','1'
 };
+const unsigned char kServerAlpnHttp11[] = {
+  8, 'h','t','t','p','/','1','.','1'
+};
+bool gHttp2Alpn = true;
 
 int AlpnSelectCb(SSL * /*ssl*/,
                  const unsigned char **out,
@@ -163,9 +167,11 @@ int AlpnSelectCb(SSL * /*ssl*/,
 {
   if (!in || inlen == 0)
     return SSL_TLSEXT_ERR_NOACK;
+  const unsigned char *list = gHttp2Alpn ? kServerAlpnH2 : kServerAlpnHttp11;
+  unsigned int listlen = gHttp2Alpn ? sizeof(kServerAlpnH2)
+                                     : sizeof(kServerAlpnHttp11);
   if (SSL_select_next_proto(const_cast<unsigned char **>(out), outlen,
-                            kServerAlpn, sizeof(kServerAlpn),
-                            in, inlen) == OPENSSL_NPN_NEGOTIATED)
+                            list, listlen, in, inlen) == OPENSSL_NPN_NEGOTIATED)
     return SSL_TLSEXT_ERR_OK;
   return SSL_TLSEXT_ERR_NOACK;
 }
@@ -356,6 +362,10 @@ int BIO_XrdLink_write(BIO *bio, const char *data, int datal)
 
   errno = 0;
   XrdLink *lp = static_cast<XrdLink *>(BIO_get_data(bio));
+  if (!lp) {
+    errno = EIO;
+    return -1;
+  }
   int ret = lp->Send(data, datal);
   BIO_clear_retry_flags(bio);
   if (ret <= 0) {
@@ -374,6 +384,10 @@ static int BIO_XrdLink_read(BIO *bio, char *data, int datal)
 
   errno = 0;
   XrdLink *lp = static_cast<XrdLink *>(BIO_get_data(bio));
+  if (!lp) {
+    errno = EIO;
+    return -1;
+  }
   int ret = lp->Recv(data, datal);
   BIO_clear_retry_flags(bio);
   if (ret <= 0) {
@@ -1150,6 +1164,7 @@ int XrdHttpProtocol::Config(const char *ConfigFN, XrdOucEnv *myEnv) {
       else if TS_Xeq("tlsclientauth", xtlsclientauth);
       else if TS_Xeq("maxdelay", xmaxdelay);
       else if TS_Xeq("h2push", xh2push);
+      else if TS_Xeq("h2", xh2);
       else {
         eDest.Say("Config warning: ignoring unknown directive '", var, "'.");
         Config.Echo();
@@ -3659,6 +3674,33 @@ int XrdHttpProtocol::xtlsclientauth(XrdOucStream &Config) {
      }
 
   eDest.Emsg("config", "invalid tlsclientauth parameter -", val);
+  return 1;
+}
+
+int XrdHttpProtocol::xh2(XrdOucStream &Config) {
+  auto val = Config.GetWord();
+  if (!val || !val[0])
+     {eDest.Emsg("Config", "h2 argument not specified"); return 1;}
+
+  if (!strcmp(val, "off")) {
+#ifdef HAVE_NGHTTP2
+     gHttp2Alpn = false;
+#endif
+     eDest.Say("Config http.h2 off");
+     return 0;
+  }
+  if (!strcmp(val, "on")) {
+#ifdef HAVE_NGHTTP2
+     gHttp2Alpn = true;
+     eDest.Say("Config http.h2 on");
+     return 0;
+#else
+     eDest.Emsg("Config", "http.h2 on requires nghttp2");
+     return 1;
+#endif
+  }
+
+  eDest.Emsg("config", "invalid h2 parameter -", val);
   return 1;
 }
 

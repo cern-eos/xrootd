@@ -438,52 +438,6 @@ bool SetTlsCiphers(SSL_CTX *ctx, const char *ciphers12)
    return true;
 }
 
-EVP_PKEY *ServerPkey(SSL_CTX *ctx)
-{
-   if (!ctx)
-      return nullptr;
-   if (EVP_PKEY *pkey = SSL_CTX_get0_privatekey(ctx))
-      return pkey;
-   X509 *x = SSL_CTX_get0_certificate(ctx);
-   return x ? X509_get0_pubkey(x) : nullptr;
-}
-
-bool PkeyIsRsa(EVP_PKEY *pkey)
-{
-   if (!pkey)
-      return false;
-#if OPENSSL_VERSION_NUMBER >= 0x30000000L
-   if (EVP_PKEY_is_a(pkey, "RSA") || EVP_PKEY_is_a(pkey, "RSA-PSS"))
-      return true;
-#endif
-   const int id = EVP_PKEY_base_id(pkey);
-   return id == EVP_PKEY_RSA
-#ifdef EVP_PKEY_RSA_PSS
-          || id == EVP_PKEY_RSA_PSS
-#endif
-          ;
-}
-
-// RHEL crypto-policies omit rsa_pss_rsae_* from the client's
-// signature_algorithms, so TLS 1.3 with an RSA host cert fails
-// tls_choose_sigalg. SSL_CTX_set1_sigalgs* aborts after HTTPS plugin
-// init. Cap RSA at TLS 1.2 (rsa_pkcs1). Do not raise the floor for
-// ECDSA: curl --http1.1 on this platform still sends TLS 1.2.
-//
-// Do not also set SSL_OP_NO_TLSv1_3 or mutate the SSL* after SSL_new:
-// SSL_set_options(SSL_OP_NO_TLSv1_3) on the session aborted OpenSSL 3.5
-// during SSL_accept of a TLS 1.3 ClientHello (XrdClHttp cache died;
-// origin health checks used --tls-max 1.2 and never hit that path).
-void LimitServerProtoByKey(SSL_CTX *ctx)
-{
-#ifdef TLS1_2_VERSION
-   if (PkeyIsRsa(ServerPkey(ctx)))
-      SSL_CTX_set_max_proto_version(ctx, TLS1_2_VERSION);
-#else
-   (void)ctx;
-#endif
-}
-
 XrdSysMutex            dbgMutex, tlsMutex;
 XrdSys::RAtomic<bool>  initDbgDone{ false };
 bool                   initTlsDone{ false };
@@ -871,7 +825,11 @@ XrdTlsContext::XrdTlsContext(const char *cert,  const char *key,
 //
    if (!SetTlsCiphers(pImpl->ctx, sslCiphers))
       FATAL_SSL("Unable to set SSL cipher list after loading certificate.");
-   LimitServerProtoByKey(pImpl->ctx);
+   // Do not call SSL_CTX_set_max_proto_version / SSL_OP_NO_TLSv1_3 here.
+   // Those calls, like SSL_CTX_set1_sigalgs*, have aborted or segfaulted
+   // OpenSSL 3.5 during SSL_accept (XrdClHttp cache in the same process as
+   // libcurl). RSA TLS 1.3 still fails tls_choose_sigalg on RHEL; tests
+   // force TLS 1.2 on the client instead.
 
 // All went well, start the CRL refresh thread and keep the context.
 //
