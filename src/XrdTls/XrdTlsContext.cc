@@ -436,24 +436,6 @@ bool SetTlsCiphers(SSL_CTX *ctx, const char *ciphers12)
    return true;
 }
 
-void SetServerSigAlgs(SSL_CTX *ctx)
-{
-   // Server-only. Do not apply this to client contexts: a restricted list
-   // leaves xrdcp with no overlapping signature algorithms for ztn.
-   // rsa_pss_rsae_* matches ordinary rsaEncryption certs. Do not list
-   // rsa_pss_pss_* (those names are for RSA-PSS keys only).
-#if OPENSSL_VERSION_NUMBER >= 0x10100000L
-   SSL_CTX_set_security_level(ctx, 1);
-#endif
-#if OPENSSL_VERSION_NUMBER >= 0x10101000L && !defined(LIBRESSL_VERSION_NUMBER)
-   SSL_CTX_set1_sigalgs_list(ctx,
-      "rsa_pss_rsae_sha256:rsa_pss_rsae_sha384:rsa_pss_rsae_sha512:"
-      "ecdsa_secp256r1_sha256:ecdsa_secp384r1_sha384:ecdsa_secp521r1_sha512:"
-      "ed25519:rsa_pkcs1_sha256:rsa_pkcs1_sha384:rsa_pkcs1_sha512");
-#endif
-   (void)ctx;
-}
-
 XrdSysMutex            dbgMutex, tlsMutex;
 XrdSys::RAtomic<bool>  initDbgDone{ false };
 bool                   initTlsDone{ false };
@@ -835,12 +817,12 @@ XrdTlsContext::XrdTlsContext(const char *cert,  const char *key,
       FATAL_SSL("Unable to create TLS context; cert-key mismatch.");
 
 // Re-apply ciphers after the cert is loaded. OpenSSL 3.x may filter
-// TLS 1.3 suites against the key type. Then set server-only signature
-// algorithms so RSA host certs can complete TLS 1.3 (httph2).
+// TLS 1.3 suites against the key type. Do not replace signature algorithms
+// here: SSL_CTX_set1_sigalgs_list() overwrites OpenSSL defaults and has
+// crashed (glibc malloc assert) on OpenSSL 3.5 after loading EC certs.
 //
    if (!SetTlsCiphers(pImpl->ctx, sslCiphers))
       FATAL_SSL("Unable to set SSL cipher list after loading certificate.");
-   SetServerSigAlgs(pImpl->ctx);
 
 // All went well, start the CRL refresh thread and keep the context.
 //

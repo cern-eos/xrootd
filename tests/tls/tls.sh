@@ -14,11 +14,19 @@ function setup() {
 	openssl ca -batch -selfsign -config tls.conf -in ca.csr -extensions xrootd_ca_ext -notext -out ca.pem
 	openssl verify -CAfile ca.pem ca.pem
 
-	# Create private key and certificate for the XRootD server
+	# Create private key and certificate for the XRootD server (RSA for GSI)
 	openssl genrsa -out host.key 4096
 	openssl req -new -key host.key -outform PEM -out host.csr -subj '/CN=localhost'
 	openssl ca -batch -config tls.conf -in host.csr -extensions xrootd_crt_ext -notext -out host.pem
 	openssl verify -CAfile ca.pem host.pem
+
+	# ECDSA P-256 host cert for HTTP/2. curl --http2 negotiates TLS 1.3, and
+	# RHEL crypto-policies often omit rsa_pss_rsae_* so RSA 4096 host certs
+	# fail SSL_accept with tls_choose_sigalg.
+	openssl ecparam -name prime256v1 -genkey -noout -out host-ec.key
+	openssl req -new -key host-ec.key -outform PEM -out host-ec.csr -subj '/CN=localhost'
+	openssl ca -batch -config tls.conf -in host-ec.csr -extensions xrootd_crt_ext -notext -out host-ec.pem
+	openssl verify -CAfile ca.pem host-ec.pem
 
 	# Create private key and certificate for the XRootD client
 	openssl genrsa -out client.key 4096
@@ -93,8 +101,8 @@ function setup() {
 
   # XRootD client/server expect restricted permissions on CA directory
   chmod 750 .
-  chmod 600 ca.key host.key client.key invalid.key revoked.key
-  chmod 644 ca.pem host.pem client.crt invalid.crt revoked.crt root.crl
+  chmod 600 ca.key host.key host-ec.key client.key invalid.key revoked.key
+  chmod 644 ca.pem host.pem host-ec.pem client.crt invalid.crt revoked.crt root.crl
 }
 
 function teardown() {
