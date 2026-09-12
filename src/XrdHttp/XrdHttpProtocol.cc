@@ -3690,13 +3690,24 @@ int XrdHttpProtocol::xauth(XrdOucStream &Config) {
       }
 #ifdef HAVE_HTTP_KRB5
     } else if(!strcmp("krb5", val)) {
+      // GetWord() returns a pointer into a reused substitution buffer
+      // (vSubs). Copy the keytab before reading the principal or both
+      // arguments become HTTP/host@REALM and GSS looks for that "keytab".
       char *keytab = Config.GetWord();
-      char *principal = Config.GetWord();
-      if (!keytab || !*keytab || !principal || !*principal) {
+      if (!keytab || !*keytab) {
         eDest.Emsg("Config", "http.auth krb5 requires a keytab and principal.");
         return 1;
       }
-      if (!XrdHttpKrb5::Init(eDest, keytab, principal))
+      char *kt = strdup(keytab);
+      char *principal = Config.GetWord();
+      if (!principal || !*principal) {
+        free(kt);
+        eDest.Emsg("Config", "http.auth krb5 requires a keytab and principal.");
+        return 1;
+      }
+      bool ok = XrdHttpKrb5::Init(eDest, kt, principal);
+      free(kt);
+      if (!ok)
         return 1;
 #endif
     } else {
