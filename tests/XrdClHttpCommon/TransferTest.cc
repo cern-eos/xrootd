@@ -26,8 +26,14 @@
 #include <XrdCl/XrdClConstants.hh>
 #include <XrdCl/XrdClDefaultEnv.hh>
 #include <XrdCl/XrdClLog.hh>
+#include <XrdCl/XrdClXRootDResponses.hh>
 
+#include <cerrno>
+#include <chrono>
+#include <csignal>
 #include <fstream>
+#include <string>
+#include <unistd.h>
 
 std::once_flag TransferFixture::m_init;
 bool TransferFixture::m_initialized = false;
@@ -95,6 +101,15 @@ void TransferFixture::SetUp() {
         pthread_atfork(nullptr, nullptr, ForkChild);
     });
     ASSERT_TRUE(m_initialized) << "Environment initialization failed";
+
+    auto origin_pid = GetEnv("ORIGIN_PID");
+    if (!origin_pid.empty()) {
+        errno = 0;
+        if (kill(std::stoi(origin_pid), 0) != 0 && errno == ESRCH) {
+            FAIL() << "Origin PID " << origin_pid
+                   << " is not running; cache cannot Stat https://localhost:9443";
+        }
+    }
 }
 
 void
@@ -240,10 +255,13 @@ TransferFixture::SyncResponseHandler::HandleResponse( XrdCl::XRootDStatus *statu
     m_cv.notify_one();
 }
 
-void
-TransferFixture::SyncResponseHandler::Wait() {
+void TransferFixture::SyncResponseHandler::Wait(std::chrono::seconds timeout) {
     std::unique_lock lock(m_mutex);
-    m_cv.wait(lock, [&]{return m_status.get() != nullptr;});
+    if (!m_cv.wait_for(lock, timeout, [&]{return m_status.get() != nullptr;})) {
+        m_status.reset(new XrdCl::XRootDStatus(
+            XrdCl::stError, XrdCl::errOperationExpired, 0,
+            "SyncResponseHandler wait timed out"));
+    }
 }
 
 std::tuple<std::unique_ptr<XrdCl::XRootDStatus>, std::unique_ptr<XrdCl::AnyObject>>

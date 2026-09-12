@@ -93,6 +93,8 @@ subjectAltName = @alt_names
 [alt_names]
 DNS.1 = localhost
 DNS.2 = blah-cache.example.com
+IP.1 = 127.0.0.1
+IP.2 = ::1
 
 EOF
 
@@ -111,7 +113,7 @@ if ! "$OPENSSL_BIN" req -new -key tls.key -config tlsca.ini -out tls.csr -outfor
   exit 1
 fi
 
-if ! "$OPENSSL_BIN" ca -config tlsca.ini -batch -policy signing_policy -extensions cert_extensions -out tls.crt -infiles tls.csr 0<&-; then
+if ! "$OPENSSL_BIN" ca -config tlsca.ini -batch -notext -policy signing_policy -extensions cert_extensions -out tls.crt -infiles tls.csr 0<&-; then
   echo "Failed to sign host certificate request"
   exit 1
 fi
@@ -209,6 +211,7 @@ xrd.protocol http:9443 libXrdHttp.so
 
 xrd.tls $CA_DIR/tls.crt $CA_DIR/tls.key
 xrd.tlsca certfile $CA_DIR/tlsca.pem
+http.tlsclientauth off
 sec.protbind * none
 
 http.header2cgi Authorization authz strip-on-redirect
@@ -233,7 +236,7 @@ xrootd.chksum max 2 md5 adler32 crc32 crc32c
 xrootd.trace debug
 ofs.trace all
 oss.trace all
-xrd.trace all
+xrd.trace conn
 cms.trace debug
 http.trace all
 xrootd.tls all
@@ -262,6 +265,7 @@ xrd.protocol http:any libXrdHttp.so
   
 xrd.tls $CA_DIR/tls.crt $CA_DIR/tls.key
 xrd.tlsca certfile $CA_DIR/tlsca.pem
+http.tlsclientauth off
 sec.protbind * none
 
 http.header2cgi Authorization authz strip-on-redirect
@@ -298,7 +302,9 @@ pfc.diskusage 0.90 0.95 purgeinterval 300s
 
 xrootd.fslib ++ throttle
 
-pss.origin https://localhost:9443
+# Use 127.0.0.1 so the cache does not wait on an IPv6 localhost connect
+# that origin never accepted (connection refused, then a 20s client hang).
+pss.origin https://127.0.0.1:9443
 oss.localroot $XROOTD_CACHEDIR/namespace
 pfc.spaces data meta
 oss.space data $XROOTD_CACHEDIR/data
@@ -309,8 +315,8 @@ pfc.trace debug
 pss.setopt DebugLevel 4
 pss.trace on
 ofs.trace all
-xrd.trace all
-xrootd.trace all
+xrd.trace conn
+xrootd.trace emsg login stall redirect
 scitokens.trace debug info warning error
 http.trace all
 
@@ -415,10 +421,22 @@ while [ -z "$ORIGIN_PORT" ]; do
 done
 echo "Origin started at port $ORIGIN_PORT"
 
+# Confirm origin is accepting HTTPS before starting the cache. If this
+# fails the cache Stat of https://127.0.0.1:9443 becomes connection-refused
+# and checksum tests hang dumping a growing log.
+if ! curl --http1.1 --max-time 5 --cacert "$CA_DIR/tlsca.pem" \
+    "https://localhost:${ORIGIN_PORT}/.well-known/openid-configuration" \
+    -o /dev/null; then
+  echo "Origin is not serving HTTPS on port ${ORIGIN_PORT}"
+  cat "$BINARY_DIR/tests/$TEST_NAME/origin.log"
+  kill "$ORIGIN_PID" 2>/dev/null || true
+  exit 1
+fi
+
 echo > "$BINARY_DIR/tests/$TEST_NAME/cache.log"
 "$BINDIR/xrootd" -n cache -c "$CACHE_CONFIG" 0<&- >"$BINARY_DIR/tests/$TEST_NAME/cache.log" 2>&1 &
 CACHE_PID=$!
-echo "Cache PID: $ORIGIN_PID"
+echo "Cache PID: $CACHE_PID"
 
 echo "Cache logs are available at $BINARY_DIR/tests/$TEST_NAME/cache.log"
 

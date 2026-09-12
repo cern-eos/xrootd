@@ -42,27 +42,38 @@ private:
 void
 CurlChecksumFixture::PrintFileEnd(const std::string &log_file_path)
 {
-    // Read and print last 500 lines of the server log
-    std::ifstream log_file(log_file_path);
-
+    // Read at most the last 256 KiB / 200 non-empty lines. A full scan of a
+    // log that is still growing (xrd.trace all, a busy-looping server) never
+    // reaches EOF and looks like an infinite stream of empty ctest lines.
+    std::ifstream log_file(log_file_path, std::ios::ate);
     if (!log_file.is_open()) {
         std::cerr << "Failed to open log file: " << log_file_path << std::endl;
-    } else {
-        std::deque<std::string> lines;
-        std::string line;
-        while (std::getline(log_file, line)) {
-            lines.push_back(line);
-            if (lines.size() > 500) {
-                lines.pop_front();
-            }
-        }
-
-        std::cerr << "\n--- Last 500 lines of " << log_file_path << " ---\n";
-        for (const auto &line : lines) {
-            std::cerr << line << std::endl;
-        }
-        std::cerr << "--------------------------------------------------\n";
+        return;
     }
+
+    const std::streamoff cap = 256 * 1024;
+    const auto end = log_file.tellg();
+    const std::streamoff start =
+        (end > cap) ? static_cast<std::streamoff>(end) - cap : 0;
+    log_file.seekg(start);
+
+    std::deque<std::string> lines;
+    std::string line;
+    if (start > 0)
+        std::getline(log_file, line);
+    while (std::getline(log_file, line)) {
+        if (line.empty())
+            continue;
+        lines.push_back(line);
+        if (lines.size() > 200)
+            lines.pop_front();
+    }
+
+    std::cerr << "\n--- Last " << lines.size() << " lines of "
+              << log_file_path << " ---\n";
+    for (const auto &l : lines)
+        std::cerr << l << '\n';
+    std::cerr << "--------------------------------------------------\n";
 }
 
 void

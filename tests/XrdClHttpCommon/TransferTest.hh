@@ -25,8 +25,9 @@
 
 #include <gtest/gtest.h>
 
-#include <mutex>
+#include <chrono>
 #include <condition_variable>
+#include <mutex>
 
 namespace XrdClHttp {
     class Factory;
@@ -88,7 +89,7 @@ class TransferFixture : public testing::Test {
             
                 virtual void HandleResponse( XrdCl::XRootDStatus *status, XrdCl::AnyObject *response );
             
-                void Wait();
+                void Wait(std::chrono::seconds timeout = std::chrono::seconds(60));
             
                 std::tuple<std::unique_ptr<XrdCl::XRootDStatus>, std::unique_ptr<XrdCl::AnyObject>> Status();
             

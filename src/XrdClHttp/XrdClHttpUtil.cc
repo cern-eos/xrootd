@@ -640,6 +640,7 @@ XrdClHttp::GetHandle(bool verbose) {
     // XrdClHttp parses HTTP/1.1. After XrdHttp started advertising h2 via ALPN,
     // libcurl would otherwise upgrade HTTPS and the plugin would mis-parse.
     curl_easy_setopt(result, CURLOPT_HTTP_VERSION, (long)CURL_HTTP_VERSION_1_1);
+    curl_easy_setopt(result, CURLOPT_CONNECTTIMEOUT, 10L);
     if (verbose)
         curl_easy_setopt(result, CURLOPT_VERBOSE, 1L);
 

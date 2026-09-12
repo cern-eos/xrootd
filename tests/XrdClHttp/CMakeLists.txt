@@ -48,6 +48,8 @@ set_tests_properties(${CurlTests} ${CurlClOnlyTests}
       "${CMAKE_BINARY_DIR}/tests/curl"
     ENVIRONMENT
       "ENV_FILE=${CMAKE_BINARY_DIR}/tests/curl/setup.sh;XRD_PLUGINCONFDIR=${CMAKE_BINARY_DIR}/tests/curl/client.plugins.d;X509_USER_PROXY=/dev/null/x509"
+    TIMEOUT
+      120
 )
 
 ######################################
