@@ -22,6 +22,8 @@
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <openssl/opensslv.h>
+#include <openssl/evp.h>
+#include <openssl/x509.h>
 #include <sys/stat.h>
 
 #include "XrdOuc/XrdOucUtils.hh"
@@ -436,26 +438,89 @@ bool SetTlsCiphers(SSL_CTX *ctx, const char *ciphers12)
    return true;
 }
 
+EVP_PKEY *ServerPkey(SSL_CTX *ctx)
+{
+   if (!ctx)
+      return nullptr;
+   if (EVP_PKEY *pkey = SSL_CTX_get0_privatekey(ctx))
+      return pkey;
+   X509 *x = SSL_CTX_get0_certificate(ctx);
+   return x ? X509_get0_pubkey(x) : nullptr;
+}
+
+bool PkeyIsRsa(EVP_PKEY *pkey)
+{
+   if (!pkey)
+      return false;
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+   if (EVP_PKEY_is_a(pkey, "RSA") || EVP_PKEY_is_a(pkey, "RSA-PSS"))
+      return true;
+#endif
+   const int id = EVP_PKEY_base_id(pkey);
+   return id == EVP_PKEY_RSA
+#ifdef EVP_PKEY_RSA_PSS
+          || id == EVP_PKEY_RSA_PSS
+#endif
+          ;
+}
+
+bool PkeyIsEc(EVP_PKEY *pkey)
+{
+   if (!pkey)
+      return false;
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+   if (EVP_PKEY_is_a(pkey, "EC"))
+      return true;
+#endif
+   return EVP_PKEY_base_id(pkey) == EVP_PKEY_EC;
+}
+
 // RHEL crypto-policies omit rsa_pss_rsae_* from the client's
-// signature_algorithms. TLS 1.3 CertificateVerify then fails with
-// tls_choose_sigalg. SSL_CTX_set1_sigalgs* aborts this process after
-// HTTPS plugin init, so RSA server certs stay on TLS 1.2 (rsa_pkcs1).
-// ECDSA hosts keep TLS 1.3 (ecdsa_secp256r1_sha256).
-void LimitRsaServerToTls12(SSL_CTX *ctx)
+// signature_algorithms, so TLS 1.3 with an RSA host cert fails
+// tls_choose_sigalg. SSL_CTX_set1_sigalgs* aborts after HTTPS plugin
+// init. Cap RSA at TLS 1.2 (rsa_pkcs1). ECDSA hosts require TLS 1.3
+// so curl --http1.1 cannot fall back to a TLS 1.2 cipher mismatch.
+void LimitServerProtoByKey(SSL_CTX *ctx)
 {
 #ifdef TLS1_2_VERSION
-   EVP_PKEY *pkey = SSL_CTX_get0_privatekey(ctx);
-   if (!pkey)
-      return;
-   const int id = EVP_PKEY_base_id(pkey);
-   if (id == EVP_PKEY_RSA
-#ifdef EVP_PKEY_RSA_PSS
-       || id == EVP_PKEY_RSA_PSS
-#endif
-      )
+   EVP_PKEY *pkey = ServerPkey(ctx);
+   if (PkeyIsRsa(pkey)) {
       SSL_CTX_set_max_proto_version(ctx, TLS1_2_VERSION);
+#ifdef SSL_OP_NO_TLSv1_3
+      SSL_CTX_set_options(ctx, SSL_OP_NO_TLSv1_3);
+#endif
+   }
+#ifdef TLS1_3_VERSION
+   else if (PkeyIsEc(pkey))
+      SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
+#endif
 #else
    (void)ctx;
+#endif
+}
+
+void LimitSessionProtoByKey(SSL *ssl)
+{
+#ifdef TLS1_2_VERSION
+   if (!ssl)
+      return;
+   EVP_PKEY *pkey = SSL_get_privatekey(ssl);
+   if (!pkey) {
+      X509 *x = SSL_get_certificate(ssl);
+      pkey = x ? X509_get0_pubkey(x) : nullptr;
+   }
+   if (PkeyIsRsa(pkey)) {
+      SSL_set_max_proto_version(ssl, TLS1_2_VERSION);
+#ifdef SSL_OP_NO_TLSv1_3
+      SSL_set_options(ssl, SSL_OP_NO_TLSv1_3);
+#endif
+   }
+#ifdef TLS1_3_VERSION
+   else if (PkeyIsEc(pkey))
+      SSL_set_min_proto_version(ssl, TLS1_3_VERSION);
+#endif
+#else
+   (void)ssl;
 #endif
 }
 
@@ -846,7 +911,7 @@ XrdTlsContext::XrdTlsContext(const char *cert,  const char *key,
 //
    if (!SetTlsCiphers(pImpl->ctx, sslCiphers))
       FATAL_SSL("Unable to set SSL cipher list after loading certificate.");
-   LimitRsaServerToTls12(pImpl->ctx);
+   LimitServerProtoByKey(pImpl->ctx);
 
 // All went well, start the CRL refresh thread and keep the context.
 //
@@ -982,6 +1047,7 @@ void *XrdTlsContext::Session()
    if (!(pImpl->ctxnew))
       {ssl = SSL_new(pImpl->ctx);
        pImpl->crlMutex.UnLock();
+       LimitSessionProtoByKey(ssl);
        return ssl;
       }
 
@@ -996,6 +1062,7 @@ void *XrdTlsContext::Session()
    if (!(pImpl->ctxnew))
       {ssl = SSL_new(pImpl->ctx);
        pImpl->crlMutex.UnLock();
+       LimitSessionProtoByKey(ssl);
        return ssl;
       }
 
@@ -1044,6 +1111,7 @@ void *XrdTlsContext::Session()
 //
    pImpl->crlMutex.UnLock();
    delete ctxold;
+   LimitSessionProtoByKey(ssl);
    return ssl;
 }
   

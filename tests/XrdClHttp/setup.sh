@@ -105,10 +105,11 @@ if ! "$OPENSSL_BIN" req -x509 -key tlscakey.pem -config tlsca.ini -out tlsca.pem
   exit 1
 fi
 
-# RSA host cert: curl --http1.1 (TLS 1.2) needs ECDHE-RSA overlap.
-# httph2 uses host-ec.pem for TLS 1.3/HTTP/2; do not reuse ECDSA here.
-# SSL_CTX_set1_sigalgs* is not used (OpenSSL 3.5 malloc abort on this origin).
-"$OPENSSL_BIN" genrsa -out tls.key 2048
+# ECDSA P-256 host cert: TLS 1.3 uses ecdsa_secp256r1_sha256 (works on
+# this RHEL policy). RSA host certs fail TLS 1.3 tls_choose_sigalg.
+# The server requires TLS 1.3 for EC keys so curl --http1.1 cannot
+# fall back to a TLS 1.2 cipher mismatch.
+"$OPENSSL_BIN" ecparam -name prime256v1 -genkey -noout -out tls.key
 chmod 0400 tls.key
 if ! "$OPENSSL_BIN" req -new -key tls.key -config tlsca.ini -out tls.csr -outform PEM -subj /CN=localhost 0<&-; then
   echo "Failed to generate host certificate request"
@@ -426,7 +427,7 @@ echo "Origin started at port $ORIGIN_PORT"
 # Confirm origin is accepting HTTPS before starting the cache. If this
 # fails the cache Stat of https://127.0.0.1:9443 becomes connection-refused
 # and checksum tests hang dumping a growing log.
-if ! curl --http1.1 --max-time 5 --cacert "$CA_DIR/tlsca.pem" \
+if ! curl --http1.1 --tlsv1.3 --max-time 5 --cacert "$CA_DIR/tlsca.pem" \
     "https://localhost:${ORIGIN_PORT}/.well-known/openid-configuration" \
     -o /dev/null; then
   echo "Origin is not serving HTTPS on port ${ORIGIN_PORT}"
