@@ -464,36 +464,20 @@ bool PkeyIsRsa(EVP_PKEY *pkey)
           ;
 }
 
-bool PkeyIsEc(EVP_PKEY *pkey)
-{
-   if (!pkey)
-      return false;
-#if OPENSSL_VERSION_NUMBER >= 0x30000000L
-   if (EVP_PKEY_is_a(pkey, "EC"))
-      return true;
-#endif
-   return EVP_PKEY_base_id(pkey) == EVP_PKEY_EC;
-}
-
 // RHEL crypto-policies omit rsa_pss_rsae_* from the client's
 // signature_algorithms, so TLS 1.3 with an RSA host cert fails
 // tls_choose_sigalg. SSL_CTX_set1_sigalgs* aborts after HTTPS plugin
-// init. Cap RSA at TLS 1.2 (rsa_pkcs1). ECDSA hosts require TLS 1.3
-// so curl --http1.1 cannot fall back to a TLS 1.2 cipher mismatch.
+// init. Cap RSA at TLS 1.2 (rsa_pkcs1). Do not raise the floor for
+// ECDSA: curl --http1.1 on this platform still sends TLS 1.2.
 void LimitServerProtoByKey(SSL_CTX *ctx)
 {
 #ifdef TLS1_2_VERSION
-   EVP_PKEY *pkey = ServerPkey(ctx);
-   if (PkeyIsRsa(pkey)) {
+   if (PkeyIsRsa(ServerPkey(ctx))) {
       SSL_CTX_set_max_proto_version(ctx, TLS1_2_VERSION);
 #ifdef SSL_OP_NO_TLSv1_3
       SSL_CTX_set_options(ctx, SSL_OP_NO_TLSv1_3);
 #endif
    }
-#ifdef TLS1_3_VERSION
-   else if (PkeyIsEc(pkey))
-      SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
-#endif
 #else
    (void)ctx;
 #endif
@@ -515,10 +499,6 @@ void LimitSessionProtoByKey(SSL *ssl)
       SSL_set_options(ssl, SSL_OP_NO_TLSv1_3);
 #endif
    }
-#ifdef TLS1_3_VERSION
-   else if (PkeyIsEc(pkey))
-      SSL_set_min_proto_version(ssl, TLS1_3_VERSION);
-#endif
 #else
    (void)ssl;
 #endif
