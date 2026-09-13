@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JournalCache for XRootD</title>
+<style>
+  :root {
+    --bg: #070707;
+    --panel: #161416;
+    --ink: #f7f4ef;
+    --muted: #c9bfb6;
+    --line: rgba(184, 146, 58, 0.32);
+    --gold: #b8923a;
+    --gold2: #c4a04a;
+    --pink: #e8a0bf;
+    --pink2: #f4c1d4;
+    --ok: #b8923a;
+    --warn: #e8a0bf;
+    --accent: #b8923a;
+    --cyan: #e8a0bf;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; color: var(--ink); font-family: var(--sans); }
+  body {
+    overflow: hidden;
+    background:
+      radial-gradient(ellipse 90% 55% at 12% -10%, rgba(184,146,58,0.10), transparent 52%),
+      radial-gradient(ellipse 70% 50% at 100% 110%, rgba(232,160,191,0.10), transparent 50%),
+      repeating-linear-gradient(90deg, rgba(255,255,255,0.035) 0 1px, transparent 1px 7px),
+      linear-gradient(165deg, #2a2a2e 0%, #121214 28%, #070707 62%, #0c0a0c 100%);
+  }
+  .deck { height: 100%; display: flex; flex-direction: column; }
+  .chrome {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0.55rem 1.35rem 0.45rem; border-bottom: 1px solid var(--line);
+    min-height: 3.4rem;
+  }
+  .logo-xrd { height: 52px; width: auto; display: block; }
+  .logo-cern { height: 48px; width: 48px; display: block; }
+  footer.nav {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0.7rem 1.5rem; font-size: 0.85rem; color: var(--ink);
+    border-top: 1px solid var(--gold); gap: 0.9rem;
+    background: #000;
+  }
+  #pos { color: var(--gold); letter-spacing: 0.08em; font-weight: 650; min-width: 4.5rem; text-align: right; }
+  .slides { flex: 1; position: relative; }
+  .slide { display: none; position: absolute; inset: 0; padding: 1.7rem 3rem 1.8rem; overflow: auto; }
+  .slide.on { display: block; }
+  .slide.title { display: none; }
+  .slide.title.on { display: flex; flex-direction: column; justify-content: center; padding: 2rem 4rem 3rem; }
+  .rule { width: 7.5rem; height: 2px; margin: 1.15rem 0 1.25rem;
+    background: linear-gradient(90deg, var(--gold), var(--pink)); }
+  .author { font-size: 1.18rem; color: var(--pink); margin: 0 0 0.45rem; }
+  .event { font-size: 0.92rem; color: var(--gold); letter-spacing: 0.14em; text-transform: uppercase; margin: 0; }
+  h1 { font-size: 2.4rem; font-weight: 650; margin: 0 0 0.4rem; letter-spacing: -0.03em; color: var(--ink); }
+  .slide.title h1 { font-size: 2.85rem; max-width: 44rem; line-height: 1.15; }
+  h2 { font-size: 1.65rem; font-weight: 650; margin: 0 0 0.7rem; letter-spacing: -0.02em; }
+  .kicker { color: var(--pink); font-size: 0.78rem; letter-spacing: 0.12em;
+    text-transform: uppercase; margin-bottom: 0.4rem; }
+  p.lead { font-size: 1.08rem; color: var(--muted); max-width: 50rem; line-height: 1.4; margin: 0 0 1rem; }
+  .cols { display: grid; gap: 0.85rem; }
+  .cols.two { grid-template-columns: 1fr 1fr; }
+  .cols.three { grid-template-columns: 1fr 1fr 1fr; }
+  .card { background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(0,0,0,0.22));
+    border: 1px solid var(--line); border-radius: 8px; padding: 0.85rem 1rem; }
+  .card h3 { margin: 0 0 0.4rem; font-size: 0.95rem; color: var(--gold); }
+  .card p, .card li { font-size: 0.92rem; line-height: 1.38; }
+  ul.tight { margin: 0; padding-left: 1.05rem; }
+  ul.tight li { margin: 0.22rem 0; }
+  code { font-family: var(--mono); font-size: 0.86em; color: var(--pink2); }
+  table.cmp { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  table.cmp th, table.cmp td { text-align: left; padding: 0.38rem 0.5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.cmp th { color: var(--gold); font-weight: 600; font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; }
+  table.cmp td.m { color: var(--muted); }
+  .note { font-size: 0.8rem; color: var(--muted); margin-top: 0.75rem; }
+  .prog { flex: 1; height: 10px; background: #3a3a3a; border: 1px solid var(--gold); border-radius: 2px; }
+  .prog > i { display: block; height: 100%; background: linear-gradient(90deg, var(--gold), var(--pink)); width: 0; }
+  button { background: transparent; color: var(--ink); border: 1px solid var(--gold);
+    border-radius: 4px; padding: 0.26rem 0.7rem; cursor: pointer; font: inherit; }
+  button:hover { border-color: var(--gold); color: var(--gold); }
+  .agenda { list-style: none; padding: 0; margin: 0; max-width: 42rem; }
+  .agenda li { display: flex; gap: 0.9rem; padding: 0.5rem 0; border-bottom: 1px solid var(--line); font-size: 1.08rem; }
+  .agenda .n { color: var(--gold); font-family: var(--mono); width: 1.6rem; }
+  .lbl { font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 0.25rem; }
+  .lbl.now { color: var(--gold); }
+  .lbl.later { color: var(--pink); }
+  .lbl.why { color: var(--pink); }
+  .figwrap { background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(0,0,0,0.28));
+    border: 1px solid var(--line); border-radius: 8px; padding: 0.5rem 0.35rem; }
+  svg.fig { width: 100%; height: auto; display: block; }
+  @media (max-width: 980px) {
+    .slide { padding: 1.1rem; }
+    .cols.two, .cols.three { grid-template-columns: 1fr; }
+    h1, .slide.title h1 { font-size: 1.6rem; } h2 { font-size: 1.28rem; }
+  }
+  @media print {
+    body { overflow: visible; background: #111; color: #fff; }
+    .chrome, footer.nav { display: none; }
+    .slide { display: block !important; position: static; page-break-after: always; }
+  }
+</style>
+</head>
+<body>
+<div class="deck">
+  <div class="chrome">
+    <img class="logo-xrd" src="slides-assets/xrootd-logo.png" alt="XRootD">
+    <img class="logo-cern" src="slides-assets/cern-logo.svg" alt="CERN">
+  </div>
+  <div class="slides">
+
+    <section class="slide title on">
+      <h1>JournalCache for XRootD</h1>
+      <div class="rule"></div>
+      <p class="author">Dr. Andreas-Joachim Peters — CERN IT-SD-PSS</p>
+      <p class="event">XRootD Workshop Lyon 2026</p>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">XRootD</div>
+      <h1>A client read cache, distinct from XCache</h1>
+      <p class="lead">JournalCache records only the byte ranges an application reads,
+      in an append-only per-file journal. There is no block size and no
+      read amplification beyond the request.</p>
+      <div class="cols three" style="margin-top:1.2rem">
+        <div class="card"><div class="lbl now">Where</div><h3>Client or proxy</h3>
+          <p>An XrdCl file plugin for <code>xrdcp</code>, ROOT, or any XrdCl application. The same plugin can run under PSS or XrdHttp. <code>xjcd</code> installs a forwarding proxy.</p></div>
+        <div class="card"><div class="lbl now">What</div><h3>Exact ranges</h3>
+          <p>A hit requires the full request in the journal. A miss is fetched from the origin and appended. A write resets that file’s journal.</p></div>
+        <div class="card"><div class="lbl later">Scope</div><h3>Not XCache</h3>
+          <p>XCache (XrdPfc) is a shared, server-side block cache with prefetch. JournalCache is a client journal. The two are complementary.</p></div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Talk</div>
+      <h2>Contents</h2>
+      <ol class="agenda">
+        <li><span class="n">1</span> Deployments: client and forwarding proxy</li>
+        <li><span class="n">2</span> Read path, journal format, HTTP freshness</li>
+        <li><span class="n">3</span> Origin allowlist and the xjc / xjcd / xjccleand tools</li>
+        <li><span class="n">4</span> XCache (XrdPfc) in brief</li>
+        <li><span class="n">5</span> Comparison and recommended use</li>
+        <li><span class="n">6</span> Limits and status</li>
+      </ol>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Deployments</div>
+      <h2>One plugin, two deployments</h2>
+      <p class="lead">The file plugin is the cache. The HTTP extension and
+      <code>xjcd</code> are optional: they expose the same journal as a
+      forwarding proxy for browsers and HTTP clients.</p>
+      <div class="figwrap">
+        <svg class="fig" viewBox="0 0 980 280" xmlns="http://www.w3.org/2000/svg">
+          <style>
+            .t { fill:#eef3f8; font: 600 13px sans-serif; }
+            .s { fill:#9aabba; font: 12px sans-serif; }
+            .now { fill:#1e2a36; stroke:#b8923a; stroke-width:1.5; }
+            .nxt { fill:#1e2a36; stroke:#e8a0bf; stroke-width:1.5; }
+            .g { fill:#1e2a36; stroke:#2b3a4a; stroke-width:1.2; }
+            .ln { stroke:#e8a0bf; stroke-width:1.4; fill:none; }
+          </style>
+          <rect class="now" x="20" y="16" width="440" height="248" rx="8"/>
+          <text class="t" x="240" y="42" text-anchor="middle">Laptop / analysis job</text>
+          <rect class="g" x="50" y="58" width="380" height="36" rx="6"/>
+          <text class="s" x="240" y="81" text-anchor="middle">xrdcp · ROOT · any XrdCl app</text>
+          <rect class="nxt" x="50" y="108" width="380" height="44" rx="6"/>
+          <text class="t" x="240" y="127" text-anchor="middle">libXrdClJournalCachePlugin</text>
+          <text class="s" x="240" y="144" text-anchor="middle">XRD_PLUGIN · cache=/var/tmp/journalcache/</text>
+          <rect class="g" x="50" y="168" width="180" height="76" rx="6"/>
+          <text class="t" x="140" y="200" text-anchor="middle">journal</text>
+          <text class="s" x="140" y="220" text-anchor="middle">local disk</text>
+          <rect class="g" x="250" y="168" width="180" height="76" rx="6"/>
+          <text class="t" x="340" y="200" text-anchor="middle">origin</text>
+          <text class="s" x="340" y="220" text-anchor="middle">root:// or http://</text>
+
+          <rect class="now" x="520" y="16" width="440" height="248" rx="8"/>
+          <text class="t" x="740" y="42" text-anchor="middle">Forwarding proxy (xjcd)</text>
+          <rect class="g" x="550" y="58" width="380" height="36" rx="6"/>
+          <text class="s" x="740" y="81" text-anchor="middle">browser · curl · GET /https://origin/path</text>
+          <rect class="nxt" x="550" y="108" width="380" height="44" rx="6"/>
+          <text class="t" x="740" y="127" text-anchor="middle">XrdHttp + HTTP ext + PSS + plugin</text>
+          <text class="s" x="740" y="144" text-anchor="middle">304 · CGI · allow_origin · journals</text>
+          <rect class="g" x="550" y="168" width="180" height="76" rx="6"/>
+          <text class="t" x="640" y="200" text-anchor="middle">journal tree</text>
+          <text class="s" x="640" y="220" text-anchor="middle">$journal/.xjc/</text>
+          <rect class="g" x="750" y="168" width="180" height="76" rx="6"/>
+          <text class="t" x="840" y="200" text-anchor="middle">allowed origin</text>
+          <text class="s" x="840" y="220" text-anchor="middle">empty list = deny</text>
+        </svg>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Read path</div>
+      <h2>A hit requires the full request</h2>
+      <p class="lead">Partial coverage is a miss. The origin is read and the
+      bytes are appended. There is no block size and no prefetch.</p>
+      <div class="figwrap">
+        <svg class="fig" viewBox="0 0 980 255" xmlns="http://www.w3.org/2000/svg">
+          <style>
+            .t { fill:#eef3f8; font: 600 13px sans-serif; }
+            .s { fill:#9aabba; font: 12px sans-serif; }
+            .box { fill:#1e2a36; stroke:#2b3a4a; stroke-width:1.2; }
+            .hi { fill:#1e2a36; stroke:#e8a0bf; stroke-width:1.5; }
+            .ok { fill:#1e2a36; stroke:#b8923a; stroke-width:1.5; }
+            .ln { stroke:#e8a0bf; stroke-width:1.4; fill:none; }
+          </style>
+          <rect class="box" x="20" y="16" width="220" height="56" rx="8"/>
+          <text class="t" x="130" y="40" text-anchor="middle">Read / ReadV</text>
+          <text class="s" x="130" y="58" text-anchor="middle">offset + length</text>
+          <line class="ln" x1="240" y1="44" x2="300" y2="44"/>
+          <rect class="hi" x="300" y="16" width="280" height="56" rx="8"/>
+          <text class="t" x="440" y="40" text-anchor="middle">interval tree</text>
+          <text class="s" x="440" y="58" text-anchor="middle">does [off, off+len) exist?</text>
+          <line class="ln" x1="440" y1="72" x2="220" y2="118"/>
+          <line class="ln" x1="440" y1="72" x2="700" y2="118"/>
+          <rect class="ok" x="40" y="118" width="360" height="120" rx="8"/>
+          <text class="t" x="220" y="148" text-anchor="middle">Hit — serve from journal</text>
+          <text class="s" x="220" y="172" text-anchor="middle">pread fragments · optional crc32c</text>
+          <text class="s" x="220" y="192" text-anchor="middle">no origin request</text>
+          <text class="s" x="220" y="212" text-anchor="middle">HTTP: honour no-cache / validators</text>
+          <rect class="hi" x="580" y="118" width="360" height="120" rx="8"/>
+          <text class="t" x="760" y="148" text-anchor="middle">Miss — fetch, then append</text>
+          <text class="s" x="760" y="172" text-anchor="middle">XrdCl File / HTTP GET</text>
+          <text class="s" x="760" y="192" text-anchor="middle">pwrite journal · update filesize</text>
+          <text class="s" x="760" y="212" text-anchor="middle">the next full-range read can hit</text>
+        </svg>
+      </div>
+      <p class="note"><code>PgRead</code> always goes to the origin (page checksums are not stored). Successful pages are still journaled for later <code>Read</code>. Write and Truncate reset that file’s journal.</p>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">I/O</div>
+      <h2>What is cached</h2>
+      <table class="cmp">
+        <tr><th>Operation</th><th>Behaviour</th></tr>
+        <tr><td><code>Read</code> / <code>ReadV</code></td><td>Served only if the <em>entire</em> request is present; otherwise origin and append</td></tr>
+        <tr><td><code>PgRead</code></td><td>Always the origin. Pages are journaled for later <code>Read</code></td></tr>
+        <tr><td>Write / Truncate / <code>PgWrite</code></td><td>Passed through; the journal for that file is reset</td></tr>
+        <tr><td>DirList / Stat</td><td>Optional filesystem plugin (<code>system = true</code>)</td></tr>
+        <tr><td>Identity</td><td>On-disk path, not the client URL. The first process takes an exclusive flock</td></tr>
+        <tr><td>Further processes, same file</td><td>Read from the origin (no shared writer)</td></tr>
+      </table>
+      <p class="note">Recursive, chunked, and ZIP listings are never cached. <code>Rm</code>, <code>MkDir</code>, and <code>Mv</code> invalidate listing and stat files.</p>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">On disk</div>
+      <h2>Append-only fragments, not blocks</h2>
+      <div class="cols two">
+        <div class="card">
+          <h3>Layout</h3>
+          <p>Default: <code>&lt;cache&gt;/&lt;host&gt;:&lt;port&gt;/&lt;path&gt;/journal</code></p>
+          <ul class="tight">
+            <li><code>flat = true</code> — SHA256 directory per file</li>
+            <li><code>basepath = /store/</code> — omit the host; start at the federation prefix</li>
+            <li>Listings: <code>.journalcache_list*</code></li>
+            <li>Stat: <code>.journalcache_stat</code></li>
+            <li>Runtime state: <code>$journal/.xjc/</code> (never evicted)</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Journal file</h3>
+          <p>Little-endian header, then fragments:</p>
+          <ul class="tight">
+            <li><code>jheader_t</code> — magic, mtime, filesize, version</li>
+            <li><code>header_t { offset, size }</code> + data</li>
+            <li>v2: <code>uint32 crc32c</code> trailer per fragment</li>
+            <li>HTTP freshness in xattrs (<code>etag</code>, <code>cache-control</code>, …)</li>
+            <li>Symlink journals are refused (<code>O_NOFOLLOW</code>)</li>
+          </ul>
+        </div>
+      </div>
+      <div class="figwrap" style="margin-top:0.85rem">
+        <svg class="fig" viewBox="0 0 980 92" xmlns="http://www.w3.org/2000/svg">
+          <style>
+            .t { fill:#111; font: 600 12px sans-serif; }
+            .s { fill:#c9bfb6; font: 11px sans-serif; }
+            .a { fill:#b8923a; } .b { fill:#c4a04a; } .c { fill:#e8a0bf; } .d { fill:#f4c1d4; }
+          </style>
+          <rect class="a" x="16" y="18" width="160" height="40" rx="4"/>
+          <text class="t" x="96" y="43" text-anchor="middle">jheader_t</text>
+          <rect class="b" x="184" y="18" width="110" height="40" rx="4"/>
+          <text class="t" x="239" y="43" text-anchor="middle">off,size</text>
+          <rect class="c" x="302" y="18" width="220" height="40" rx="4"/>
+          <text class="t" x="412" y="43" text-anchor="middle">bytes [64, 192)</text>
+          <rect class="b" x="530" y="18" width="110" height="40" rx="4"/>
+          <text class="t" x="585" y="43" text-anchor="middle">off,size</text>
+          <rect class="d" x="648" y="18" width="220" height="40" rx="4"/>
+          <text class="t" x="758" y="43" text-anchor="middle">bytes [1024, 1152)</text>
+          <rect class="a" x="876" y="18" width="88" height="40" rx="4"/>
+          <text class="t" x="920" y="43" text-anchor="middle">…</text>
+          <text class="s" x="16" y="80">Gaps are not filled. A later Read of [64, 1152) misses until that span is complete.</text>
+        </svg>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">HTTP</div>
+      <h2>Freshness is stored with the journal</h2>
+      <p class="lead">CGI and the HTTP extension pass origin validators into
+      XrdCl. A matching <code>If-None-Match</code> or <code>If-Modified-Since</code>
+      can return <strong>304</strong> before the file is opened.</p>
+      <div class="cols two">
+        <div class="card">
+          <h3>Cache-Control</h3>
+          <ul class="tight">
+            <li><code>no-store</code> — do not journal</li>
+            <li><code>no-cache</code> — Stat this session before serving</li>
+            <li><code>private</code> — do not write the shared journal</li>
+            <li><code>max-age</code> / <code>s-maxage</code> / <code>Expires</code> — expire from <code>cached-at</code></li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>HTTP ext (<code>libXrdClJournalCacheHttpExt</code>)</h3>
+          <ul class="tight">
+            <li>Maps request headers to CGI</li>
+            <li>Optional HEAD to <code>http_origin</code></li>
+            <li>304 when a validator still matches</li>
+            <li>Emits stored ETag / Last-Modified on continue</li>
+            <li>Enforces <code>allow_origin</code> even in bypass</li>
+          </ul>
+        </div>
+      </div>
+      <p class="note">Requires <code>BUILD_HTTP=ON</code>. Outbound HEAD does not follow redirects. <code>http.header2cgi</code> maps <code>If-None-Match</code> and <code>If-Modified-Since</code>.</p>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Forwarding</div>
+      <h2>The proxy stays closed until an origin is allowed</h2>
+      <p class="lead"><code>xjcd init</code> writes configuration only. An empty
+      <code>allow_origin</code> denies every chained URL
+      (<code>/https://…</code>, <code>/root://…</code>, including N-hop unwrap).</p>
+      <div class="figwrap">
+        <svg class="fig" viewBox="0 0 980 200" xmlns="http://www.w3.org/2000/svg">
+          <style>
+            .t { fill:#eef3f8; font: 600 13px sans-serif; }
+            .s { fill:#9aabba; font: 12px sans-serif; }
+            .box { fill:#1e2a36; stroke:#2b3a4a; stroke-width:1.2; }
+            .hi { fill:#1e2a36; stroke:#e8a0bf; stroke-width:1.5; }
+            .ok { fill:#1e2a36; stroke:#b8923a; stroke-width:1.5; }
+            .ln { stroke:#e8a0bf; stroke-width:1.4; fill:none; }
+          </style>
+          <rect class="box" x="20" y="24" width="200" height="64" rx="8"/>
+          <text class="t" x="120" y="50" text-anchor="middle">GET /https://cdn/…</text>
+          <text class="s" x="120" y="70" text-anchor="middle">or chained root://</text>
+          <line class="ln" x1="220" y1="56" x2="280" y2="56"/>
+          <rect class="hi" x="280" y="24" width="240" height="64" rx="8"/>
+          <text class="t" x="400" y="50" text-anchor="middle">unwrap + allowlist</text>
+          <text class="s" x="400" y="70" text-anchor="middle">regex or exact host</text>
+          <line class="ln" x1="400" y1="88" x2="280" y2="128"/>
+          <line class="ln" x1="400" y1="88" x2="620" y2="128"/>
+          <rect class="hi" x="160" y="128" width="240" height="56" rx="8"/>
+          <text class="t" x="280" y="152" text-anchor="middle">deny — 403</text>
+          <text class="s" x="280" y="172" text-anchor="middle">empty list, or no match</text>
+          <rect class="ok" x="500" y="128" width="240" height="56" rx="8"/>
+          <text class="t" x="620" y="152" text-anchor="middle">open + journal</text>
+          <text class="s" x="620" y="172" text-anchor="middle">xjc allow-origin add</text>
+          <rect class="box" x="770" y="128" width="190" height="56" rx="8"/>
+          <text class="t" x="865" y="152" text-anchor="middle">external redirect</text>
+          <text class="s" x="865" y="172" text-anchor="middle">302 / errRedirect</text>
+        </svg>
+      </div>
+      <p class="note">Enable <code>pss.permit</code> in the generated <code>xrootd.cf</code>. Invalid regex is rejected by <code>xjc allow-origin add</code>.</p>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Tools</div>
+      <h2>Three tools, one cache tree</h2>
+      <div class="cols three">
+        <div class="card"><div class="lbl now">Policy</div><h3>xjc</h3>
+          <ul class="tight">
+            <li>bypass, multi-origin, allowlist</li>
+            <li>external redirects</li>
+            <li>cleaner watermarks</li>
+            <li>Reloads <code>policy.conf</code> on change</li>
+          </ul>
+        </div>
+        <div class="card"><div class="lbl now">Bootstrap</div><h3>xjcd</h3>
+          <ul class="tight">
+            <li><code>init</code> — state, units, TLS ports</li>
+            <li><code>render</code> / <code>validate</code> / <code>show</code></li>
+            <li>No <code>xjcd run</code>; systemd starts xrootd</li>
+            <li><code>--install-systemd</code> installs the units</li>
+          </ul>
+        </div>
+        <div class="card"><div class="lbl later">Evict</div><h3>xjccleand</h3>
+          <ul class="tight">
+            <li>mtime eviction, skip <code>.xjc/</code></li>
+            <li>Disabled until <code>xjc cleaner enable on</code></li>
+            <li>Do not run together with in-plugin <code>size=</code></li>
+            <li>Removes journal, list, and stat files only</li>
+          </ul>
+        </div>
+      </div>
+      <p class="note"><code>XRD_LOGLEVEL=Info</code> logs attach paths and hit rates. On exit (and with <code>stats=N</code>) the process reports hit rate, unique files, and the fraction of each dataset read.</p>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">XCache</div>
+      <h2>XCache is the XRootD site cache</h2>
+      <p class="lead">XCache is <code>XrdPfc</code> (Proxy File Cache) in front of
+      PSS. It is a shared <em>server</em>: files are stored in fixed-size blocks
+      (default 256&nbsp;KiB) and neighbouring blocks can be prefetched.</p>
+      <div class="figwrap">
+        <svg class="fig" viewBox="0 0 980 210" xmlns="http://www.w3.org/2000/svg">
+          <style>
+            .t { fill:#eef3f8; font: 600 13px sans-serif; }
+            .s { fill:#9aabba; font: 12px sans-serif; }
+            .box { fill:#1e2a36; stroke:#2b3a4a; stroke-width:1.2; }
+            .hi { fill:#1e2a36; stroke:#b8923a; stroke-width:1.5; }
+            .ln { stroke:#e8a0bf; stroke-width:1.4; fill:none; }
+          </style>
+          <rect class="box" x="20" y="70" width="150" height="70" rx="8"/>
+          <text class="t" x="95" y="100" text-anchor="middle">clients</text>
+          <text class="s" x="95" y="120" text-anchor="middle">xrdcp · ROOT</text>
+          <line class="ln" x1="170" y1="105" x2="230" y2="105"/>
+          <rect class="hi" x="230" y="40" width="360" height="130" rx="8"/>
+          <text class="t" x="410" y="70" text-anchor="middle">XCache node</text>
+          <text class="s" x="410" y="92" text-anchor="middle">xrootd · pss · XrdPfc</text>
+          <text class="s" x="410" y="112" text-anchor="middle">blocks + .cinfo · RAM + disk</text>
+          <text class="s" x="410" y="132" text-anchor="middle">prefetch · purge · many readers</text>
+          <text class="s" x="410" y="152" text-anchor="middle">pfc.httpcc · ResourceMonitor</text>
+          <line class="ln" x1="590" y1="105" x2="650" y2="105"/>
+          <rect class="box" x="650" y="70" width="300" height="70" rx="8"/>
+          <text class="t" x="800" y="100" text-anchor="middle">origin / federation</text>
+          <text class="s" x="800" y="120" text-anchor="middle">WAN or disk server</text>
+        </svg>
+      </div>
+      <p class="note">XCache is the appropriate choice for a shared disk cache in front of a remote namespace. It is not a per-process client plugin.</p>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Side by side</div>
+      <h2>Where data is stored</h2>
+      <div class="figwrap">
+        <svg class="fig" viewBox="0 0 980 300" xmlns="http://www.w3.org/2000/svg">
+          <style>
+            .t { fill:#eef3f8; font: 600 13px sans-serif; }
+            .s { fill:#9aabba; font: 12px sans-serif; }
+            .now { fill:#1e2a36; stroke:#b8923a; stroke-width:1.5; }
+            .nxt { fill:#1e2a36; stroke:#e8a0bf; stroke-width:1.5; }
+            .g { fill:#1e2a36; stroke:#2b3a4a; stroke-width:1.2; }
+          </style>
+          <rect class="now" x="20" y="12" width="460" height="276" rx="8"/>
+          <text class="t" x="250" y="40" text-anchor="middle">JournalCache</text>
+          <rect class="g" x="48" y="58" width="404" height="40" rx="6"/>
+          <text class="s" x="250" y="83" text-anchor="middle">in the client, or on a small xjcd proxy</text>
+          <rect class="nxt" x="48" y="112" width="404" height="70" rx="6"/>
+          <text class="t" x="250" y="140" text-anchor="middle">exact ranges that were read</text>
+          <text class="s" x="250" y="162" text-anchor="middle">append-only journal · no prefetch</text>
+          <rect class="g" x="48" y="196" width="404" height="70" rx="6"/>
+          <text class="s" x="250" y="224" text-anchor="middle">one flock writer per file</text>
+          <text class="s" x="250" y="244" text-anchor="middle">HTTP 304 · closed allowlist</text>
+
+          <rect class="now" x="500" y="12" width="460" height="276" rx="8"/>
+          <text class="t" x="730" y="40" text-anchor="middle">XCache (XrdPfc)</text>
+          <rect class="g" x="528" y="58" width="404" height="40" rx="6"/>
+          <text class="s" x="730" y="83" text-anchor="middle">dedicated xrootd cache node</text>
+          <rect class="nxt" x="528" y="112" width="404" height="70" rx="6"/>
+          <text class="t" x="730" y="140" text-anchor="middle">fixed blocks (256 KiB default)</text>
+          <text class="s" x="730" y="162" text-anchor="middle">prefetch adjacent blocks · .cinfo map</text>
+          <rect class="g" x="528" y="196" width="404" height="70" rx="6"/>
+          <text class="s" x="730" y="224" text-anchor="middle">many clients, shared files</text>
+          <text class="s" x="730" y="244" text-anchor="middle">purge by age / usage / plugin</text>
+        </svg>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">1 : 1</div>
+      <h2>JournalCache and XCache</h2>
+      <table class="cmp">
+        <tr><th></th><th>JournalCache</th><th>XCache (XrdPfc)</th></tr>
+        <tr><td>Role</td><td>XrdCl file plugin, optional HTTP extension</td><td class="m">Server OSS cache in front of PSS</td></tr>
+        <tr><td>Sharing</td><td>One process holds the journal lock</td><td class="m">Many clients on one cache node</td></tr>
+        <tr><td>Unit of storage</td><td>Exact read ranges (journal fragments)</td><td class="m">Fixed blocks (default 256 KiB)</td></tr>
+        <tr><td>Prefetch</td><td>None</td><td class="m">Adjacent blocks</td></tr>
+        <tr><td>Read amplification</td><td>Only the requested range</td><td class="m">Rounded up to a block, plus prefetch</td></tr>
+        <tr><td>Partial file</td><td>Only the bytes that were read</td><td class="m">Sparse blocks, still block-aligned</td></tr>
+        <tr><td>Writes</td><td>Passed through; that journal is reset</td><td class="m">Optional write-through (<code>pfc.writethrough</code>)</td></tr>
+        <tr><td>HTTP freshness</td><td>CGI, extension 304, xattrs</td><td class="m"><code>pfc.httpcc</code>, Fsctl only-if-cached</td></tr>
+        <tr><td>Forwarding / allowlist</td><td>Closed by default; managed with <code>xjc</code></td><td class="m">Site proxy configuration</td></tr>
+        <tr><td>Eviction</td><td><code>xjccleand</code> by mtime, or in-plugin <code>size=</code></td><td class="m">ResourceMonitor, age, usage, purge plugin</td></tr>
+        <tr><td>Deployment</td><td><code>XRD_PLUGIN</code> or <code>xjcd init</code></td><td class="m">Dedicated xrootd cache node (<code>pfc.*</code> / <code>pss.*</code>)</td></tr>
+      </table>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Choice</div>
+      <h2>Recommended use</h2>
+      <div class="cols two">
+        <div class="card">
+          <div class="lbl now">JournalCache</div>
+          <ul class="tight">
+            <li>A laptop or worker that rereads the same sparse ranges</li>
+            <li>ROOT or analysis that touches only selected branches or events</li>
+            <li>A compact HTTP forwarder for <code>/https://origin/path</code></li>
+            <li>Workloads that must not fetch a whole file or a 256&nbsp;KiB block</li>
+            <li>A closed origin allowlist and a hot-reloadable policy (<code>xjc</code>)</li>
+          </ul>
+        </div>
+        <div class="card">
+          <div class="lbl why">XCache</div>
+          <ul class="tight">
+            <li>A site or campus cache in front of a federation</li>
+            <li>Many jobs reading the same files from one node</li>
+            <li>Sequential or wide reads, where prefetch is useful</li>
+            <li>An existing PSS deployment that needs a shared disk pool</li>
+            <li>Production purge, gstream monitoring, and multi-reader files</li>
+          </ul>
+        </div>
+      </div>
+      <p class="lead" style="margin-top:1rem">The two can run together. A site may operate XCache,
+      while a client or <code>xjcd</code> instance still journals the ranges that client read.</p>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Quick start</div>
+      <h2>Client setup, then a closed proxy</h2>
+      <div class="cols two">
+        <div class="card">
+          <h3>Laptop</h3>
+          <p><code>mkdir -p /var/tmp/journalcache/</code></p>
+          <p><code>export XRD_PLUGIN=libXrdClJournalCachePlugin-5.so</code></p>
+          <p><code>export XRD_JOURNALCACHE_CACHE=/var/tmp/journalcache/</code></p>
+          <p><code>xrdcp root://host:1094//store/file.root /tmp/out</code></p>
+        </div>
+        <div class="card">
+          <h3>xjcd proxy</h3>
+          <p><code>xjcd init --journal /var/tmp/journalcache \</code></p>
+          <p><code>&nbsp;&nbsp;--xroot-port 1094 --https-port 8443 \</code></p>
+          <p><code>&nbsp;&nbsp;--tls-cert … --tls-key … --install-systemd</code></p>
+          <p><code>xjc allow-origin add '^https://.*\.example\.org/'</code></p>
+          <p><code>xjc cleaner enable on</code></p>
+        </div>
+      </div>
+      <p class="note">Alternatively, <code>/etc/xrootd/client.plugins.d/journalcache.conf</code> with <code>url=*</code>, <code>lib=…</code>, and <code>cache=…/</code>. See <code>src/XrdApps/XrdClJournalCachePlugin/README.md</code>.</p>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Limits</div>
+      <h2>Current limits</h2>
+      <table class="cmp">
+        <tr><th>Constraint</th><th>Implication</th></tr>
+        <tr><td>Full-range hits only</td><td>Any gap in the request is a miss, even if most bytes are local</td></tr>
+        <tr><td>One flock per journal</td><td>A second process on the same file does not share the writer; it reads the origin</td></tr>
+        <tr><td>No prefetch</td><td>The next uncached range always requires an origin read</td></tr>
+        <tr><td>Empty allowlist denies</td><td>After <code>xjcd init</code>, add <code>allow_origin</code> before chained GETs succeed</td></tr>
+        <tr><td><code>xjccleand</code> starts disabled</td><td>Enable it, or the tree grows until the disk is full</td></tr>
+        <tr><td><code>listttl=0</code></td><td>Listing and stat entries do not expire; only mutations invalidate them</td></tr>
+        <tr><td>Public HTTP ABI</td><td>Extension methods use <code>prot-&gt;CurrentReq</code>; <code>XrdHttpExtReq</code> layout is unchanged</td></tr>
+      </table>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Outlook</div>
+      <h2>Status</h2>
+      <div class="cols three">
+        <div class="card">
+          <div class="lbl now">Done</div>
+          <ul class="tight">
+            <li>XrdCl file + optional FS plugin</li>
+            <li>Range journal, crc32c, symlink rejection</li>
+            <li>HTTP extension: 304, CGI, HEAD</li>
+            <li>Closed allowlist and redirects</li>
+            <li>xjc, xjcd, xjccleand</li>
+          </ul>
+        </div>
+        <div class="card">
+          <div class="lbl later">Not done</div>
+          <ul class="tight">
+            <li>Partial-range hits (serve the covered subset)</li>
+            <li>A shared multi-process journal writer</li>
+            <li>Prefetch (intentionally out of scope)</li>
+            <li>A replacement for site-wide XCache</li>
+            <li>An open-by-default forwarding proxy</li>
+          </ul>
+        </div>
+        <div class="card">
+          <div class="lbl why">Next</div>
+          <ul class="tight">
+            <li>Propose the plugin for xrootd/master</li>
+            <li>Keep XCache as the shared site cache</li>
+            <li>Use JournalCache on clients and compact HTTP proxies</li>
+            <li>Documentation: <code>html/index.html</code>, <code>xjcd(1)</code></li>
+          </ul>
+        </div>
+      </div>
+      <p class="lead" style="margin-top:1rem">JournalCache stores the bytes a client has read, on that client.
+      XCache remains the shared block cache in front of a federation.</p>
+    </section>
+
+  </div>
+  <footer class="nav">
+    <button type="button" id="prev">Prev</button>
+    <div class="prog"><i id="bar"></i></div>
+    <div id="pos">1 / 16</div>
+    <button type="button" id="next">Next</button>
+  </footer>
+</div>
+<script>
+(function () {
+  const slides = Array.from(document.querySelectorAll(".slide"));
+  const pos = document.getElementById("pos");
+  const bar = document.getElementById("bar");
+  let i = 0;
+  function show(n) {
+    i = (n + slides.length) % slides.length;
+    slides.forEach((s, k) => s.classList.toggle("on", k === i));
+    pos.textContent = (i + 1) + " / " + slides.length;
+    bar.style.width = ((i + 1) / slides.length * 100) + "%";
+  }
+  document.getElementById("prev").onclick = () => show(i - 1);
+  document.getElementById("next").onclick = () => show(i + 1);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowRight" || e.key === " " || e.key === "PageDown") { e.preventDefault(); show(i + 1); }
+    if (e.key === "ArrowLeft" || e.key === "PageUp") { e.preventDefault(); show(i - 1); }
+    if (e.key === "Home") show(0);
+    if (e.key === "End") show(slides.length - 1);
+  });
+  show(0);
+})();
+</script>
+</body>
+</html>
