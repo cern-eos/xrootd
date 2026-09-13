@@ -11,6 +11,7 @@ import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 XRD = os.path.join(HERE, "slides-assets", "xrootd-logo.png")
+JC = os.path.join(HERE, "slides-assets", "journalcache-logo.png")
 CERN = os.path.join(HERE, "slides-assets", "cern-logo.svg.png")
 OUT = os.path.join(HERE, "JournalCache-architecture-slides.pptx")
 
@@ -64,6 +65,8 @@ def bg(slide):
 def logos(slide, prs):
     if os.path.isfile(XRD):
         slide.shapes.add_picture(XRD, Inches(0.35), Inches(0.18), Inches(0.55), Inches(0.55))
+    if os.path.isfile(JC):
+        slide.shapes.add_picture(JC, Inches(1.05), Inches(0.12), height=Inches(0.62))
     if os.path.isfile(CERN):
         slide.shapes.add_picture(CERN, Inches(12.45), Inches(0.18), Inches(0.52), Inches(0.52))
     bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0), Inches(0.82), prs.slide_width, Pt(1.5))
@@ -166,11 +169,15 @@ def main():
     T = 16
 
     s = new_slide(prs, 1, T)
-    add_tb(s, 0.9, 2.4, 11.5, 1.4, "JournalCache for XRootD", size=36, color=INK, bold=True)
-    rule = s.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0.9), Inches(3.85), Inches(1.6), Pt(3))
+    if os.path.isfile(JC):
+        s.shapes.add_picture(JC, Inches(0.9), Inches(1.25), height=Inches(2.07))
+    add_tb(s, 3.7, 1.55, 8.6, 1.15, "JournalCache for XRootD", size=36, color=INK, bold=True)
+    rule = s.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(3.7), Inches(2.85), Inches(1.6), Pt(3))
     fill_shape(rule, GOLD)
-    add_tb(s, 0.9, 4.1, 11, 0.4, "Dr. Andreas-Joachim Peters — CERN IT-SD-PSS", size=20, color=PINK)
-    add_tb(s, 0.9, 4.55, 11, 0.35, "XROOTD WORKSHOP LYON 2026", size=14, color=GOLD, bold=True)
+    add_tb(s, 3.7, 3.15, 8.6, 0.4, "Dr. Andreas-Joachim Peters - CERN IT-SD-PSS", size=20, color=PINK)
+    add_tb(s, 3.7, 3.6, 8.6, 0.35, "XROOTD WORKSHOP LYON 2026", size=14, color=GOLD, bold=True)
+    repo = add_tb(s, 3.7, 4.15, 8.6, 0.35, "github.com/cern-eos/xrootd - XrdClJournalCachePlugin", size=16, color=GOLD)
+    repo.text_frame.paragraphs[0].runs[0].hyperlink.address = "https://github.com/cern-eos/xrootd/tree/XrdClJournalCachePlugin"
 
     s = new_slide(prs, 2, T)
     kicker(s, "XRootD")
@@ -213,13 +220,13 @@ def main():
     kicker(s, "Read path")
     title(s, "A hit requires the full request")
     lead(s, "Partial coverage is a miss. The origin is read and the bytes are appended. There is no block size and no prefetch.", y=1.9, h=0.7)
-    card(s, 0.55, 2.75, 6.0, 3.8, "Hit — serve from journal", [
+    card(s, 0.55, 2.75, 6.0, 3.8, "Hit - serve from journal", [
         "Interval tree: does [off, off+len) exist?",
         "pread fragments; optional crc32c",
         "No origin request",
         "HTTP: honour no-cache / validators",
     ])
-    card(s, 6.8, 2.75, 6.0, 3.8, "Miss — fetch, then append", [
+    card(s, 6.8, 2.75, 6.0, 3.8, "Miss - fetch, then append", [
         "XrdCl File or HTTP GET",
         "pwrite journal; update filesize",
         "The next full-range read can hit",
@@ -244,13 +251,13 @@ def main():
     title(s, "Append-only fragments, not blocks")
     card(s, 0.55, 2.05, 6.0, 3.5, "Layout", [
         "Default: <cache>/<host>:<port>/<path>/journal",
-        "flat = true — SHA256 directory per file",
-        "basepath = /store/ — omit the host; start at the federation prefix",
+        "flat = true - SHA256 directory per file",
+        "basepath = /store/ - omit the host; start at the federation prefix",
         "Listings .journalcache_list* · Stat .journalcache_stat",
         "$journal/.xjc/ is never evicted",
     ])
     card(s, 6.8, 2.05, 6.0, 3.5, "Journal file", [
-        "jheader_t — magic, mtime, filesize, version",
+        "jheader_t - magic, mtime, filesize, version",
         "header_t { offset, size } + data",
         "v2: uint32 crc32c trailer per fragment",
         "HTTP freshness in xattrs (etag, cache-control)",
@@ -263,10 +270,10 @@ def main():
     title(s, "Freshness is stored with the journal")
     lead(s, "CGI and the HTTP extension pass origin validators into XrdCl. A matching If-None-Match or If-Modified-Since can return 304 before the file is opened.", y=1.9, h=0.8)
     card(s, 0.55, 2.85, 6.0, 3.7, "Cache-Control", [
-        "no-store — do not journal",
-        "no-cache — Stat this session before serving",
-        "private — do not write the shared journal",
-        "max-age / s-maxage / Expires — expire from cached-at",
+        "no-store - do not journal",
+        "no-cache - Stat this session before serving",
+        "private - do not write the shared journal",
+        "max-age / s-maxage / Expires - expire from cached-at",
     ])
     card(s, 6.8, 2.85, 6.0, 3.7, "HTTP extension", [
         "Maps request headers to CGI",
@@ -284,7 +291,7 @@ def main():
         "Regex against the full URL, or exact hostname",
         "Invalid regex is rejected when added",
     ])
-    card(s, 4.7, 2.85, 4.0, 3.7, "Deny — 403", [
+    card(s, 4.7, 2.85, 4.0, 3.7, "Deny - 403", [
         "Empty list, or no match",
         "xjcd init default",
     ], None, PINK)
@@ -304,7 +311,7 @@ def main():
         "Reloads policy.conf on change",
     ], "Policy", GOLD)
     card(s, 4.7, 2.1, 3.9, 4.4, "xjcd", [
-        "init — state, units, TLS ports",
+        "init - state, units, TLS ports",
         "render / validate / show",
         "No xjcd run; systemd starts xrootd",
         "--install-systemd installs the units",

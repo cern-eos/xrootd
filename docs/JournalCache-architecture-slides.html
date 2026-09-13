@@ -39,7 +39,20 @@
     min-height: 3.4rem;
   }
   .logo-xrd { height: 52px; width: auto; display: block; }
+  .logo-jc { height: 64px; width: auto; display: block; border-radius: 6px; }
   .logo-cern { height: 48px; width: 48px; display: block; }
+  .logo-jc-hero {
+    height: min(38vh, 16rem);
+    width: auto;
+    max-width: 22rem;
+    aspect-ratio: 1393 / 1129;
+    object-fit: contain;
+    flex: 0 0 auto;
+    align-self: flex-start;
+    display: block;
+    margin: 0 0 0.85rem;
+    border-radius: 10px;
+  }
   footer.nav {
     display: flex; align-items: center; justify-content: space-between;
     padding: 0.7rem 1.5rem; font-size: 0.85rem; color: var(--ink);
@@ -51,11 +64,14 @@
   .slide { display: none; position: absolute; inset: 0; padding: 1.7rem 3rem 1.8rem; overflow: auto; }
   .slide.on { display: block; }
   .slide.title { display: none; }
-  .slide.title.on { display: flex; flex-direction: column; justify-content: center; padding: 2rem 4rem 3rem; }
+  .slide.title.on { display: flex; flex-direction: column; justify-content: center; align-items: flex-start; padding: 2rem 4rem 3rem; }
   .rule { width: 7.5rem; height: 2px; margin: 1.15rem 0 1.25rem;
     background: linear-gradient(90deg, var(--gold), var(--pink)); }
   .author { font-size: 1.18rem; color: var(--pink); margin: 0 0 0.45rem; }
   .event { font-size: 0.92rem; color: var(--gold); letter-spacing: 0.14em; text-transform: uppercase; margin: 0; }
+  .repo { font-size: 0.95rem; margin: 0.85rem 0 0; }
+  .repo a { color: var(--gold); text-decoration: none; }
+  .repo a:hover { color: var(--pink); }
   h1 { font-size: 2.4rem; font-weight: 650; margin: 0 0 0.4rem; letter-spacing: -0.03em; color: var(--ink); }
   .slide.title h1 { font-size: 2.85rem; max-width: 44rem; line-height: 1.15; }
   h2 { font-size: 1.65rem; font-weight: 650; margin: 0 0 0.7rem; letter-spacing: -0.02em; }
@@ -108,15 +124,18 @@
 <div class="deck">
   <div class="chrome">
     <img class="logo-xrd" src="slides-assets/xrootd-logo.png" alt="XRootD">
+    <img class="logo-jc" src="slides-assets/journalcache-logo.png" alt="JournalCache">
     <img class="logo-cern" src="slides-assets/cern-logo.svg" alt="CERN">
   </div>
   <div class="slides">
 
     <section class="slide title on">
+      <img class="logo-jc-hero" src="slides-assets/journalcache-logo.png" alt="JournalCache">
       <h1>JournalCache for XRootD</h1>
       <div class="rule"></div>
-      <p class="author">Dr. Andreas-Joachim Peters — CERN IT-SD-PSS</p>
+      <p class="author">Dr. Andreas-Joachim Peters - CERN IT-SD-PSS</p>
       <p class="event">XRootD Workshop Lyon 2026</p>
+      <p class="repo"><a href="https://github.com/cern-eos/xrootd/tree/XrdClJournalCachePlugin">github.com/cern-eos/xrootd - XrdClJournalCachePlugin</a></p>
     </section>
 
     <section class="slide">
@@ -220,12 +239,12 @@
           <line class="ln" x1="440" y1="72" x2="220" y2="118"/>
           <line class="ln" x1="440" y1="72" x2="700" y2="118"/>
           <rect class="ok" x="40" y="118" width="360" height="120" rx="8"/>
-          <text class="t" x="220" y="148" text-anchor="middle">Hit — serve from journal</text>
+          <text class="t" x="220" y="148" text-anchor="middle">Hit - serve from journal</text>
           <text class="s" x="220" y="172" text-anchor="middle">pread fragments · optional crc32c</text>
           <text class="s" x="220" y="192" text-anchor="middle">no origin request</text>
           <text class="s" x="220" y="212" text-anchor="middle">HTTP: honour no-cache / validators</text>
           <rect class="hi" x="580" y="118" width="360" height="120" rx="8"/>
-          <text class="t" x="760" y="148" text-anchor="middle">Miss — fetch, then append</text>
+          <text class="t" x="760" y="148" text-anchor="middle">Miss - fetch, then append</text>
           <text class="s" x="760" y="172" text-anchor="middle">XrdCl File / HTTP GET</text>
           <text class="s" x="760" y="192" text-anchor="middle">pwrite journal · update filesize</text>
           <text class="s" x="760" y="212" text-anchor="middle">the next full-range read can hit</text>
@@ -257,8 +276,8 @@
           <h3>Layout</h3>
           <p>Default: <code>&lt;cache&gt;/&lt;host&gt;:&lt;port&gt;/&lt;path&gt;/journal</code></p>
           <ul class="tight">
-            <li><code>flat = true</code> — SHA256 directory per file</li>
-            <li><code>basepath = /store/</code> — omit the host; start at the federation prefix</li>
+            <li><code>flat = true</code> - SHA256 directory per file</li>
+            <li><code>basepath = /store/</code> - omit the host; start at the federation prefix</li>
             <li>Listings: <code>.journalcache_list*</code></li>
             <li>Stat: <code>.journalcache_stat</code></li>
             <li>Runtime state: <code>$journal/.xjc/</code> (never evicted)</li>
@@ -268,7 +287,7 @@
           <h3>Journal file</h3>
           <p>Little-endian header, then fragments:</p>
           <ul class="tight">
-            <li><code>jheader_t</code> — magic, mtime, filesize, version</li>
+            <li><code>jheader_t</code> - magic, mtime, filesize, version</li>
             <li><code>header_t { offset, size }</code> + data</li>
             <li>v2: <code>uint32 crc32c</code> trailer per fragment</li>
             <li>HTTP freshness in xattrs (<code>etag</code>, <code>cache-control</code>, …)</li>
@@ -310,10 +329,10 @@
         <div class="card">
           <h3>Cache-Control</h3>
           <ul class="tight">
-            <li><code>no-store</code> — do not journal</li>
-            <li><code>no-cache</code> — Stat this session before serving</li>
-            <li><code>private</code> — do not write the shared journal</li>
-            <li><code>max-age</code> / <code>s-maxage</code> / <code>Expires</code> — expire from <code>cached-at</code></li>
+            <li><code>no-store</code> - do not journal</li>
+            <li><code>no-cache</code> - Stat this session before serving</li>
+            <li><code>private</code> - do not write the shared journal</li>
+            <li><code>max-age</code> / <code>s-maxage</code> / <code>Expires</code> - expire from <code>cached-at</code></li>
           </ul>
         </div>
         <div class="card">
@@ -356,7 +375,7 @@
           <line class="ln" x1="400" y1="88" x2="280" y2="128"/>
           <line class="ln" x1="400" y1="88" x2="620" y2="128"/>
           <rect class="hi" x="160" y="128" width="240" height="56" rx="8"/>
-          <text class="t" x="280" y="152" text-anchor="middle">deny — 403</text>
+          <text class="t" x="280" y="152" text-anchor="middle">deny - 403</text>
           <text class="s" x="280" y="172" text-anchor="middle">empty list, or no match</text>
           <rect class="ok" x="500" y="128" width="240" height="56" rx="8"/>
           <text class="t" x="620" y="152" text-anchor="middle">open + journal</text>
@@ -383,7 +402,7 @@
         </div>
         <div class="card"><div class="lbl now">Bootstrap</div><h3>xjcd</h3>
           <ul class="tight">
-            <li><code>init</code> — state, units, TLS ports</li>
+            <li><code>init</code> - state, units, TLS ports</li>
             <li><code>render</code> / <code>validate</code> / <code>show</code></li>
             <li>No <code>xjcd run</code>; systemd starts xrootd</li>
             <li><code>--install-systemd</code> installs the units</li>
