@@ -275,6 +275,7 @@ namespace XrdCl
         char *path = msg->GetBuffer( 24 );
         size_t length = req->header.dlen;
         if( req->header.requestid == kXR_mv
+            || req->header.requestid == kXR_link
             || req->header.requestid == kXR_symlink )
         {
           for( int i = 0; i < req->header.dlen; ++i, ++path, --length )
@@ -309,7 +310,9 @@ namespace XrdCl
         msg->ReAllocate( 24+newDlen );
         req  = (ClientRequest *)msg->GetBuffer();
         path = msg->GetBuffer( 24 );
-        if( req->header.requestid == kXR_mv )
+        if( req->header.requestid == kXR_mv
+            || req->header.requestid == kXR_link
+            || req->header.requestid == kXR_symlink )
         {
           for( int i = 0; i < req->header.dlen; ++i, ++path )
             if( *path == ' ' )

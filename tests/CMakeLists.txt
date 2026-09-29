@@ -12,6 +12,7 @@ add_subdirectory(XrdEc)
 add_subdirectory(XrdPosix)
 
 add_subdirectory(XrdHttpTests)
+add_subdirectory(XrdPosixApiTests)
 add_subdirectory(XrdXioFSTests)
 
 add_subdirectory(XrdOucTests)

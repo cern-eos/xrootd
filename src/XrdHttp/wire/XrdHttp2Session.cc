@@ -154,13 +154,6 @@ bool iequals(const std::string &a, const char *b)
   return a[i] == '\0' && b[i] == '\0';
 }
 
-bool isBodyMethod(const std::string &method)
-{
-  return method == "PUT" || method == "POST" || method == "PATCH"
-         || method == "PROPPATCH" || method == "PROPFIND"
-         || method == "SYMLINK";
-}
-
 bool hasContentLength(const XrdHttp2StreamState *st)
 {
   if (!st)

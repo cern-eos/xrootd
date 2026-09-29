@@ -99,6 +99,14 @@ public:
   XrdHttp2Session(const XrdHttp2Session &) = delete;
   XrdHttp2Session &operator=(const XrdHttp2Session &) = delete;
 
+  /// True when the method carries a request body (PUT/POST/PATCH/PROPPATCH/PROPFIND/SYMLINK).
+  static bool isBodyMethod(const std::string &method)
+  {
+    return method == "PUT" || method == "POST" || method == "PATCH"
+           || method == "PROPPATCH" || method == "PROPFIND"
+           || method == "SYMLINK";
+  }
+
   void reset();
 
   /// Drive the HTTP/2 session. Returns Process()-compatible rc.
