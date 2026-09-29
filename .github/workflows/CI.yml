@@ -22,6 +22,7 @@ env:
   CDASH: ${{ vars.CDASH }}
   CMAKE_VERBOSE_MAKEFILE: true
   CTEST_OUTPUT_ON_FAILURE: true
+  CTEST_PARALLEL_LEVEL: 1
 
 jobs:
   alpine:

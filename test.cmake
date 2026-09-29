@@ -33,7 +33,14 @@ if(NOT DEFINED ENV{CMAKE_BUILD_PARALLEL_LEVEL})
 endif()
 
 if(NOT DEFINED ENV{CTEST_PARALLEL_LEVEL})
-  set(ENV{CTEST_PARALLEL_LEVEL} ${NCORES})
+  # GitHub runners share one machine: several fixtures still use fixed
+  # ports (authenticated_cluster 10970-10976, TPC, xcache) or xrd.port any,
+  # and XrdCl DirList shares the cluster data dir with cluster::test.
+  if(DEFINED ENV{GITHUB_ACTIONS})
+    set(ENV{CTEST_PARALLEL_LEVEL} 1)
+  else()
+    set(ENV{CTEST_PARALLEL_LEVEL} ${NCORES})
+  endif()
 endif()
 
 if(NOT DEFINED CTEST_CONFIGURATION_TYPE)
