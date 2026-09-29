@@ -102,6 +102,7 @@ if( NOT XRDCL_ONLY )
   add_subdirectory( XrdFrc )
   add_subdirectory( XrdOfs )
   add_subdirectory( XrdOss )
+  add_subdirectory( XrdFsOss )
   add_subdirectory( XrdSfs )
   add_subdirectory( XrdXrootd )
 

@@ -38,6 +38,7 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <ctime>
 #include <cstring>
 #include <vector>
 
@@ -542,6 +543,7 @@ short       rsvd;    // Reserved
 #define XRDOSS_HASRPXY 0x0000000000000040ULL
 #define XRDOSS_HASXERT 0x0000000000000080ULL
 #define XRDOSS_HASFICL 0x0000000000000100ULL
+#define XRDOSS_HASPOSIX 0x0000000000000200ULL //!< POSIX fsuid impersonation (FsOss)
 
 // Options that can be passed to Stat()
 //
@@ -610,6 +612,51 @@ virtual int       Link(const char *old_path, const char *new_path,
                        XrdOucEnv *envP=0)
                       {(void)old_path; (void)new_path; (void)envP;
                        return -ENOTSUP;}
+
+//-----------------------------------------------------------------------------
+//! Change file owner and group.
+//!
+//! @param  path   - Pointer to the path of the file or directory.
+//! @param  u      - New owner uid, or (uid_t)-1 to leave unchanged.
+//! @param  g      - New group gid, or (gid_t)-1 to leave unchanged.
+//! @param  envP   - Pointer to environmental information.
+//!
+//! @return 0 upon success or -errno or -osserr (see XrdOssError.hh).
+//-----------------------------------------------------------------------------
+
+virtual int       Chown(const char *path, uid_t u, gid_t g, XrdOucEnv *envP=0)
+                       {(void)path; (void)u; (void)g; (void)envP;
+                        return -ENOTSUP;}
+
+//-----------------------------------------------------------------------------
+//! Create a symbolic link.
+//!
+//! @param  target - Pointer to the link text stored in the symlink.
+//! @param  path   - Pointer to the path of the symlink to create.
+//! @param  envP   - Pointer to environmental information.
+//!
+//! @return 0 upon success or -errno or -osserr (see XrdOssError.hh).
+//-----------------------------------------------------------------------------
+
+virtual int       Symlink(const char *target, const char *path,
+                          XrdOucEnv *envP=0)
+                         {(void)target; (void)path; (void)envP;
+                          return -ENOTSUP;}
+
+//-----------------------------------------------------------------------------
+//! Set access and modification times.
+//!
+//! @param  path   - Pointer to the path of the file or directory.
+//! @param  ts     - timespec[2] as for utimensat (atime, mtime). Nil uses now.
+//! @param  envP   - Pointer to environmental information.
+//!
+//! @return 0 upon success or -errno or -osserr (see XrdOssError.hh).
+//-----------------------------------------------------------------------------
+
+virtual int       Utimes(const char *path, const struct timespec ts[2],
+                         XrdOucEnv *envP=0)
+                        {(void)path; (void)ts; (void)envP;
+                         return -ENOTSUP;}
 
 //-----------------------------------------------------------------------------
 //! Notify storage system that a client has connected.

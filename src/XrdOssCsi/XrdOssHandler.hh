@@ -89,6 +89,9 @@ public:
 
 virtual int       Chmod(const char *path, mode_t mode, XrdOucEnv *envP=0) /* override */ { return successor_->Chmod(path, mode, envP); }
 virtual int       Link(const char *old_path, const char *new_path, XrdOucEnv *envP=0) /* override */ { return successor_->Link(old_path, new_path, envP); }
+virtual int       Chown(const char *path, uid_t u, gid_t g, XrdOucEnv *envP=0) /* override */ { return successor_->Chown(path, u, g, envP); }
+virtual int       Symlink(const char *target, const char *path, XrdOucEnv *envP=0) /* override */ { return successor_->Symlink(target, path, envP); }
+virtual int       Utimes(const char *path, const struct timespec ts[2], XrdOucEnv *envP=0) /* override */ { return successor_->Utimes(path, ts, envP); }
 
 virtual void      Connect(XrdOucEnv &env) /* override */ { successor_->Connect(env); }
 

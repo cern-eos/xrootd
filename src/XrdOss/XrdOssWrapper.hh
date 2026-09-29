@@ -658,6 +658,17 @@ virtual int       Link(const char *old_path, const char *new_path,
                        XrdOucEnv *envP=0)
                       {return wrapPI.Link(old_path, new_path, envP);}
 
+virtual int       Chown(const char *path, uid_t u, gid_t g, XrdOucEnv *envP=0)
+                       {return wrapPI.Chown(path, u, g, envP);}
+
+virtual int       Symlink(const char *target, const char *path,
+                          XrdOucEnv *envP=0)
+                         {return wrapPI.Symlink(target, path, envP);}
+
+virtual int       Utimes(const char *path, const struct timespec ts[2],
+                         XrdOucEnv *envP=0)
+                        {return wrapPI.Utimes(path, ts, envP);}
+
 //-----------------------------------------------------------------------------
 //! Create a directory.
 //!
