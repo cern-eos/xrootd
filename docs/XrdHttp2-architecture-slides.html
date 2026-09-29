@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XrdHttp Extensions for XRootD</title>
+<style>
+  :root {
+    --bg: #070707;
+    --panel: #161416;
+    --ink: #f7f4ef;
+    --muted: #c9bfb6;
+    --line: rgba(184, 146, 58, 0.32);
+    --gold: #b8923a;
+    --gold2: #c4a04a;
+    --pink: #e8a0bf;
+    --pink2: #f4c1d4;
+    --ok: #b8923a;
+    --warn: #e8a0bf;
+    --accent: #b8923a;
+    --cyan: #e8a0bf;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; color: var(--ink); font-family: var(--sans); }
+  body {
+    overflow: hidden;
+    background:
+      radial-gradient(ellipse 90% 55% at 12% -10%, rgba(184,146,58,0.10), transparent 52%),
+      radial-gradient(ellipse 70% 50% at 100% 110%, rgba(232,160,191,0.10), transparent 50%),
+      repeating-linear-gradient(90deg, rgba(255,255,255,0.035) 0 1px, transparent 1px 7px),
+      linear-gradient(165deg, #2a2a2e 0%, #121214 28%, #070707 62%, #0c0a0c 100%);
+  }
+  .deck { height: 100%; display: flex; flex-direction: column; }
+  .chrome {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0.55rem 1.35rem 0.45rem; border-bottom: 1px solid var(--line);
+    min-height: 3.4rem;
+  }
+  .logo-xrd { height: 52px; width: auto; display: block; }
+  .logo-cern { height: 48px; width: 48px; display: block; }
+  footer.nav {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0.7rem 1.5rem; font-size: 0.85rem; color: var(--ink);
+    border-top: 1px solid var(--gold); gap: 0.9rem;
+    background: #000;
+  }
+  #pos { color: var(--gold); letter-spacing: 0.08em; font-weight: 650; min-width: 4.5rem; text-align: right; }
+  .slides { flex: 1; position: relative; }
+  .slide { display: none; position: absolute; inset: 0; padding: 1.7rem 3rem 1.8rem; overflow: auto; }
+  .slide.on { display: block; }
+  .slide.title { display: none; }
+  .slide.title.on { display: flex; flex-direction: column; justify-content: center; padding: 2rem 4rem 3rem; }
+  .rule { width: 7.5rem; height: 2px; margin: 1.15rem 0 1.25rem;
+    background: linear-gradient(90deg, var(--gold), var(--pink)); }
+  .author { font-size: 1.18rem; color: var(--pink); margin: 0 0 0.45rem; }
+  .event { font-size: 0.92rem; color: var(--gold); letter-spacing: 0.14em; text-transform: uppercase; margin: 0; }
+  .repo { font-size: 0.95rem; margin: 0.85rem 0 0; }
+  .repo a { color: var(--gold); text-decoration: none; }
+  .repo a:hover { color: var(--pink); }
+  h1 { font-size: 2.4rem; font-weight: 650; margin: 0 0 0.4rem; letter-spacing: -0.03em; color: var(--ink); }
+  .slide.title h1 { font-size: 2.85rem; max-width: 42rem; line-height: 1.15; }
+  h2 { font-size: 1.65rem; font-weight: 650; margin: 0 0 0.7rem; letter-spacing: -0.02em; }
+  .kicker { color: var(--pink); font-size: 0.78rem; letter-spacing: 0.12em;
+    text-transform: uppercase; margin-bottom: 0.4rem; }
+  p.lead { font-size: 1.08rem; color: var(--muted); max-width: 50rem; line-height: 1.4; margin: 0 0 1rem; }
+  .cols { display: grid; gap: 0.85rem; }
+  .cols.two { grid-template-columns: 1fr 1fr; }
+  .cols.three { grid-template-columns: 1fr 1fr 1fr; }
+  .card { background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(0,0,0,0.22));
+    border: 1px solid var(--line); border-radius: 8px; padding: 0.85rem 1rem; }
+  .card h3 { margin: 0 0 0.4rem; font-size: 0.95rem; color: var(--gold); }
+  .card p, .card li { font-size: 0.92rem; line-height: 1.38; }
+  ul.tight { margin: 0; padding-left: 1.05rem; }
+  ul.tight li { margin: 0.22rem 0; }
+  code { font-family: var(--mono); font-size: 0.86em; color: var(--pink2); }
+  table.cmp { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  table.cmp th, table.cmp td { text-align: left; padding: 0.42rem 0.55rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.cmp th { color: var(--gold); font-weight: 600; font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; }
+  table.cmp td.m { color: var(--muted); }
+  .note { font-size: 0.8rem; color: var(--muted); margin-top: 0.75rem; }
+  .prog { flex: 1; height: 10px; background: #3a3a3a; border: 1px solid var(--gold); border-radius: 2px; }
+  .prog > i { display: block; height: 100%; background: linear-gradient(90deg, var(--gold), var(--pink)); width: 0; }
+  button { background: transparent; color: var(--ink); border: 1px solid var(--gold);
+    border-radius: 4px; padding: 0.26rem 0.7rem; cursor: pointer; font: inherit; }
+  button:hover { border-color: var(--gold); color: var(--gold); }
+  .agenda { list-style: none; padding: 0; margin: 0; max-width: 40rem; }
+  .agenda li { display: flex; gap: 0.9rem; padding: 0.5rem 0; border-bottom: 1px solid var(--line); font-size: 1.08rem; }
+  .agenda .n { color: var(--gold); font-family: var(--mono); width: 1.6rem; }
+  .lbl { font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 0.25rem; }
+  .lbl.now { color: var(--gold); }
+  .lbl.later { color: var(--pink); }
+  .lbl.why { color: var(--pink); }
+  .figwrap { background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(0,0,0,0.28));
+    border: 1px solid var(--line); border-radius: 8px; padding: 0.5rem 0.35rem; }
+  svg.fig { width: 100%; height: auto; display: block; }
+  @media (max-width: 980px) {
+    .slide { padding: 1.1rem; }
+    .cols.two, .cols.three { grid-template-columns: 1fr; }
+    h1, .slide.title h1 { font-size: 1.6rem; } h2 { font-size: 1.28rem; }
+  }
+  @media print {
+    body { overflow: visible; background: #111; color: #fff; }
+    .chrome, footer.nav { display: none; }
+    .slide { display: block !important; position: static; page-break-after: always; }
+  }
+</style>
+</head>
+<body>
+<div class="deck">
+  <div class="chrome">
+    <img class="logo-xrd" src="slides-assets/xrootd-logo.png" alt="XRootD">
+    <svg class="logo-cern" viewBox="0 0 600 600" role="img" aria-label="CERN">
+      <path fill="#f7f4ef" d="m531.43 64.59-18.896 195.07h-0.34699c-2.6966-36.831-21.038-80.799-43.711-108.6-39.349-48.261-97.088-77.389-161.95-77.389-61.834 0-116.95 27.432-154.85 70.439l8.6847 6.8803c35.809-40.489 87.104-66.444 146.16-66.444 71.886 0 130.45 36.831 163.2 86.926 29.226 44.692 38.922 101.97 32.141 143.91-2.2802 14.187-7.4157 41.738-26.312 72.957l3.3113 14.534c23.159-35.909 34.917-67.851 44.078-149.54 7.0389-62.656 19.124-188.75 19.124-188.75zm-72.956 348.1c-35.006 42.848-89.365 71.698-151.8 71.668-13.414 0-26.421-1.5069-37.267-3.7078l-8.9524 9.5174c17.141 3.9656 32.32 5.4527 46.854 5.4527 64.223 0 119.18-29.99 154.15-69.438zm-288.54 15.693c-7.0092-1.0311-15.773-3.5195-21.047-5.77 23.615 26.867 56.103 48.37 88.007 60.426l8.3674-8.8829c-34.61-11.689-59.742-30.456-75.327-45.773m420.06-412.98s-275.61-2.1811-363.48-2.1414c-13.771 0.0297-23 0.98149-25.975 1.1798-108.55 7.0191-190.18 102.21-190.54 206-0.10906 30.188 7.9312 64.193 20.968 110.1 17.25 60.644 37.435 130.23 37.435 130.23h11.014l-40.697-137.32 0.30734-0.19828c29.891 57.749 98.813 104.16 177.02 104.16 42.214 0 81.344-11.817 112.19-33.579l0.27759 0.25776-181.06 192.66h14.147s127.13-135.26 170.36-181.18c33.152-35.185 50.363-57.868 57.561-69.626 8.2584-13.503 34.521-52.396 33.529-109.69l0.3569-0.0397 79.342 360.53h11.381s-66.563-295.1-79.471-356.81c-12.72-60.723-27.749-98.396-43.939-119.87-5.5717-3.113-14.256-6.6424-18.351-7.5941 23.516 29.673 41.103 73.83 41.103 118.01 0 108.14-87.997 196.14-196.14 196.14s-196.12-87.997-196.12-196.14c0-108.15 88.294-196.13 196.19-196.13 47.954 0 92.408 17.587 126.56 46.546 6.6126 0.922 15.456 2.9841 20.75 4.8876l0.0297-0.10905c-24.537-24.488-55.201-42.68-89.295-52.247v-0.27759l314.54 1.9432zm-447.57 378.1c-23.972-37.931-30.793-74.533-31.745-102.56h-11.074c0.922 30.565 8.3377 62.627 24.924 94.044 3.9061 3.1526 13.086 7.1678 17.895 8.5161m222-219.72c-1.4276 0.24785-3.1824 0.44613-5.3436 0.44613-2.1315 0-3.9557-0.21811-5.2048-0.44613 0.53535 9.9933 1.4574 28.493 1.4574 40.608 0 9.111 0 17.082-0.11896 21.593-4.4415-4.7191-55.33-57.382-60.505-63.003l-3.9954-0.0397c0.18837 7.7627 0.40648 16.18 0.40648 31.536 0 19.689-0.27759 40.608-1.2789 53.496 1.4276-0.23793 3.1923-0.43621 5.3536-0.43621 2.1216 0 3.9458 0.22802 5.1949 0.43621-0.53536-9.9834-1.4673-28.473-1.4673-40.598 0-9.1209 0.0198-18.509 0.13879-23.01 4.4316 4.7191 55.618 58.096 60.495 64.709l3.9953 0.0496c-0.18836-7.7627-0.40647-16.487-0.40647-31.844 0-19.669 0.2875-40.608 1.2789-53.496m-129.64 38.45c10.083-0.19828 23.308-3.4005 23.308-17.32 0-12.135-10.618-15.981-18.916-15.981-5.6014 0-9.2597 0.36682-11.827 0.60476-0.36682 8.9127-0.72372 17.092-0.72372 25.876v6.7118c1.2095 0.15863 6.92 0.12889 8.1592 0.10906m-8.1592 4.4613v9.6959c0 10.489 0.48578 21.107 0.98148 31.586-2.0819-0.35691-5.8393-0.39656-6.6126-0.39656-0.75346 0-4.501 0.0397-6.5928 0.39656 0.4957-10.479 0.98149-21.097 0.98149-31.586v-20.978c0-10.489-0.48579-21.097-0.98149-31.596 4.6398 0.36682 10.509 0.61467 15.149 0.61467 4.6298 0 9.2597-0.61467 13.899-0.61467 13.78 0 26.401 4.0846 26.401 19.422 0 16.239-16.17 22.078-25.449 23.298 5.9881 7.4355 27.392 33.519 34.471 41.441-2.4488-0.35691-6.5234-0.39656-7.6437-0.39656-1.1104 0-5.3337 0.0397-7.6338 0.39656-4.8281-7.3364-20.264-30.476-30.773-41.282h-6.1962m-27.328 36.793c0-1.844 0.15862-3.7475 0.29742-4.6695-8.3178 0.76338-31.17 1.4574-40.092 1.5763-0.14871-2.2207-0.34699-28.612-0.10905-32.696 3.5591 0 22.376 0.24785 30.803 1.1004-0.23793-1.2194-0.36681-3.0337-0.36681-4.2432 0-1.2293 0.12888-3.4104 0.36681-4.6199-7.1976 0.60476-16.418 1.2095-30.803 1.2095 0-3.0535 0.23793-25.301 0.36681-30.535 15.852 0 30.198 0.98149 38.238 1.5862-0.13879-0.83277-0.2875-2.538-0.2875-4.2035 0-1.6755 0.10905-3.0138 0.2875-4.1738-4.2333 0.29742-17.875 0.61467-25.191 0.61467-7.3165 0-18.628-0.24785-25.945-0.61467 0.4957 10.37 0.98148 20.988 0.98148 31.477v20.978c0 10.489-0.48578 21.097-0.98148 31.705 7.4454-0.36682 18.866-0.61467 26.302-0.61467 0.3569 0 0.72372 0 1.0806 0.01 2.5578 0.01 5.7799 0.0397 9.111 0.0991 5.77 0.10905 11.857 0.27759 16.239 0.50561-0.17845-1.2789-0.29742-2.6272-0.29742-4.491m-67.969-2.4359c-2.9048 2.2108-12.977 8.4765-28.146 8.4765-27.442 0-46.14-17.31-46.14-43.661 0-26.232 19.828-43.661 46.784-43.661 10.479 0 22.505 3.222 29.197 6.107-1.3979 3.0932-2.5578 7.1876-3.0436 9.7554l-0.73363 0.22802c-5.1751-5.7204-13.513-10.697-25.846-10.697-15.654 0-33.668 12.68-33.668 37.951 0 24.607 18.361 37.683 34.768 37.683 14.742 0 21.801-6.8704 28.136-12.224l0.4957 0.47587z"/>
+    </svg>
+  </div>
+  <div class="slides">
+
+    <section class="slide title on">
+      <h1>XrdHttp Extensions for XRootD</h1>
+      <div class="rule"></div>
+      <p class="author">Dr. Andreas-Joachim Peters - CERN IT-SD-PSS</p>
+      <p class="event">XRootD Workshop Lyon 2026</p>
+      <p class="repo"><a href="https://github.com/cern-eos/xrootd/tree/XrdHttp2">github.com/cern-eos/xrootd</a> - branch XrdHttp2</p>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">XRootD</div>
+      <h1>Extensions in XrdHTTP</h1>
+      <p class="lead">XrdHTTP is the HTTP plugin of XRootD. This work adds a proper
+      header parser, HTTP/2, Kerberos for HTTP, and a POSIX client that can run
+      in the Linux kernel.</p>
+      <p class="lead">The long-term target is not “better curl”. It is kernel,
+      RDMA, and GPU access to the same files, over a small set of storage operations.</p>
+      <div class="cols three" style="margin-top:1.2rem">
+        <div class="card"><div class="lbl now">Now</div><h3>Kernel</h3>
+          <p>Mount storage in Linux. Reads and writes go through the page cache. TLS stays in the kernel after handshake.</p></div>
+        <div class="card"><div class="lbl later">Next</div><h3>RDMA</h3>
+          <p>Same filesystem operations, but over RDMA instead of HTTP, for high throughput.</p></div>
+        <div class="card"><div class="lbl later">Next</div><h3>GPU</h3>
+          <p>Copy into GPU memory (DMA-BUF). HTTP cannot do that. It needs the RDMA path.</p></div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Talk</div>
+      <h2>Contents</h2>
+      <ol class="agenda">
+        <li><span class="n">1</span> Goals: kernel, RDMA, GPU</li>
+        <li><span class="n">2</span> What we had to add in XrdHTTP, and why</li>
+        <li><span class="n">3</span> Limits of the current XRootD server</li>
+        <li><span class="n">4</span> Parallelism: streams, Bridge, redirects</li>
+        <li><span class="n">5</span> The new pieces (parser, HTTP/2, Kerberos, mount)</li>
+        <li><span class="n">6</span> Test suite - all new tests pass</li>
+        <li><span class="n">7</span> Microbench: native parser still wins</li>
+        <li><span class="n">8</span> Status and what is still open</li>
+      </ol>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Introduction · goals</div>
+      <h2>Three access paths, one operation list</h2>
+      <p class="lead">The filesystem client defines operations (lookup, read, write, …)
+      once. HTTP is the first transport. RDMA is meant to be the second.</p>
+      <div class="figwrap">
+        <svg class="fig" viewBox="0 0 980 255" xmlns="http://www.w3.org/2000/svg">
+          <style>
+            .t { fill:#eef3f8; font: 600 13px sans-serif; }
+            .s { fill:#9aabba; font: 12px sans-serif; }
+            .now { fill:#1e2a36; stroke:#b8923a; stroke-width:1.5; }
+            .nxt { fill:#1e2a36; stroke:#d4a054; stroke-width:1.5; }
+            .box { fill:#1e2a36; stroke:#e8a0bf; stroke-width:1.5; }
+            .g { fill:#1e2a36; stroke:#2b3a4a; stroke-width:1.2; }
+            .ln { stroke:#e8a0bf; stroke-width:1.4; fill:none; }
+          </style>
+          <rect class="now" x="20" y="16" width="280" height="72" rx="8"/>
+          <text class="t" x="160" y="44" text-anchor="middle">Kernel (CPU)</text>
+          <text class="s" x="160" y="64" text-anchor="middle">page cache · mmap · kTLS</text>
+          <rect class="nxt" x="350" y="16" width="280" height="72" rx="8"/>
+          <text class="t" x="490" y="44" text-anchor="middle">RDMA (planned)</text>
+          <text class="s" x="490" y="64" text-anchor="middle">same ops, no HTTP</text>
+          <rect class="nxt" x="680" y="16" width="280" height="72" rx="8"/>
+          <text class="t" x="820" y="44" text-anchor="middle">GPU (planned)</text>
+          <text class="s" x="820" y="64" text-anchor="middle">DMA-BUF · not via HTTP</text>
+          <line class="ln" x1="160" y1="88" x2="490" y2="118"/>
+          <line class="ln" x1="490" y1="88" x2="490" y2="118"/>
+          <line class="ln" x1="820" y1="88" x2="490" y2="118"/>
+          <rect class="box" x="250" y="118" width="480" height="52" rx="8"/>
+          <text class="t" x="490" y="140" text-anchor="middle">xiofs operations</text>
+          <text class="s" x="490" y="158" text-anchor="middle">lookup · getattr · read · write · mkdir · …</text>
+          <line class="ln" x1="360" y1="170" x2="220" y2="198"/>
+          <line class="ln" x1="620" y1="170" x2="760" y2="198"/>
+          <rect class="now" x="40" y="198" width="360" height="46" rx="8"/>
+          <text class="t" x="220" y="226" text-anchor="middle">HTTP  -  implemented</text>
+          <rect class="nxt" x="580" y="198" width="360" height="46" rx="8"/>
+          <text class="t" x="760" y="226" text-anchor="middle">RDMA endpoint  -  not in XrdHTTP yet</text>
+        </svg>
+      </div>
+      <p class="note">See <code>src/XrdXioFS/include/xiofs_ops.h</code>: memory targets are page cache, user buffer, DMA-BUF, GPU.
+      GPU ioctls exist and return <code>-EOPNOTSUPP</code> until RDMA exists.</p>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Introduction · why XrdHTTP</div>
+      <h2>The kernel needs HTTP verbs that XrdHTTP did not have</h2>
+      <p class="lead">A kernel filesystem cannot speak the native xroot protocol.
+      It can speak HTTP/1.1. So the server had to grow the missing methods, and
+      a wire layer that HTTP/2 and HTTP/1.1 both use.</p>
+      <div class="cols two">
+        <div class="card">
+          <div class="lbl why">What we needed</div>
+          <ul class="tight">
+            <li>Range GET for reads (page-cache fill)</li>
+            <li>PATCH with byte range for pwrite (not a full PUT)</li>
+            <li>PROPFIND for stat and directory listing</li>
+            <li>PROPPATCH / LINK for chmod and hard links</li>
+            <li>Many requests on one TLS connection (FUSE)</li>
+            <li>Kerberos for HTTP clients at KDC sites</li>
+          </ul>
+        </div>
+        <div class="card">
+          <div class="lbl why">What that is not</div>
+          <ul class="tight">
+            <li>Not a new storage backend - still <code>ofs</code></li>
+            <li>Not a replacement for <code>root://</code></li>
+            <li>Not HTTP/2 inside the kernel (too much protocol)</li>
+            <li>Not GPU I/O on the HTTP path - kTLS copies into CPU pages</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Why llhttp</div>
+      <h2>Our parser was a line scanner, not an HTTP parser</h2>
+      <p class="lead">On master, headers are read with <code>BuffgetLine</code> (scan for
+      <code>\n</code>) and then <code>parseLine</code> (split on the first
+      <code>:</code>). The code itself calls this “naive parsing”. That is enough
+      for a friendly curl client. It is a poor base for HTTP/2, keepalive, and
+      hostile input.</p>
+      <div class="cols two">
+        <div class="card">
+          <h3>Problems with the own parser</h3>
+          <ul class="tight">
+            <li>It only understands complete lines. A header split across two reads waits until <code>\n</code> arrives.</li>
+            <li>It rewrites the receive buffer in place (inserts <code>'\0'</code>).</li>
+            <li>Header values still carry <code>\r\n</code>; <code>Connection</code> is compared to <code>"Keep-Alive\r\n"</code>.</li>
+            <li>No real grammar: a bad method or a huge incomplete header is easy to mishandle.</li>
+            <li>HTTP/2 headers are HPACK, not lines - this parser cannot be reused.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>What llhttp gives us</h3>
+          <ul class="tight">
+            <li>A generated state machine (Node.js, MIT, vendored v9.4.1). It is the parser the web actually uses.</li>
+            <li>Incremental: feed whatever bytes are in the socket; it says when headers are complete.</li>
+            <li>Rejects malformed request lines and bounds incomplete headers (16&nbsp;KiB, same cap as legacy).</li>
+            <li>Name/value callbacks fill the same <code>XrdHttpReq</code> as HTTP/2.</li>
+            <li>We still keep <code>http.parser legacy</code> so we can A/B and run the old tests.</li>
+          </ul>
+        </div>
+      </div>
+      <p class="note">This is not a speed project. On a typical GET the native line scanner is
+      actually a bit faster (see the microbench). We switched so HTTP/1 is correct, bounded,
+      and shares one request object with HTTP/2. Bodies, GET/PUT, TPC, checksums stay on
+      master’s <code>XrdHttpReq</code> path.</p>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Why HTTP/2</div>
+      <h2>Many file operations on one connection</h2>
+      <div class="figwrap" style="margin-bottom:0.85rem">
+        <svg class="fig" viewBox="0 0 980 168" xmlns="http://www.w3.org/2000/svg">
+          <style>
+            .t { fill:#f7f4ef; font: 600 13px sans-serif; }
+            .s { fill:#c9bfb6; font: 12px sans-serif; }
+            .onbar { fill:#111; font: 600 12px sans-serif; }
+            .b { fill:#2a3542; stroke:#e8a0bf; }
+            .p { fill:#e8a0bf; } .q { fill:#c4a04a; } .r { fill:#b8923a; }
+          </style>
+          <text class="t" x="20" y="24">HTTP/1.1 - one request, then the next</text>
+          <rect class="b" x="20" y="36" width="420" height="32" rx="4"/>
+          <rect class="p" x="28" y="42" width="210" height="20" rx="3"/>
+          <text class="onbar" x="38" y="57">GET /a</text>
+          <text class="s" x="250" y="57">next request waits</text>
+          <text class="t" x="500" y="24">HTTP/2 - several streams at once</text>
+          <rect class="b" x="500" y="36" width="460" height="118" rx="4"/>
+          <rect class="p" x="516" y="50" width="280" height="20" rx="3"/>
+          <rect class="q" x="516" y="80" width="200" height="20" rx="3"/>
+          <rect class="r" x="516" y="110" width="340" height="20" rx="3"/>
+          <text class="onbar" x="528" y="65">GET /a</text>
+          <text class="onbar" x="528" y="95">GET /b</text>
+          <text class="onbar" x="528" y="125">PATCH /c  (write)</text>
+        </svg>
+      </div>
+      <div class="cols three">
+        <div class="card"><h3>LAN / FUSE</h3>
+          <p>A mount does parallel reads and writes. HTTP/2 keeps them on one TLS session. That is the main reason.</p></div>
+        <div class="card"><h3>WAN</h3>
+          <p>Fewer TCP/TLS handshakes for many small files. Useful, not the driver.</p></div>
+        <div class="card"><h3>Kernel</h3>
+          <p>The kernel module uses HTTP/1.1. HTTP/2 is too large (HPACK, streams). The kernel reuses the same methods (GET, PATCH, …).</p></div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Limits</div>
+      <h2>XrdHTTP is still one plugin on one XRootD link</h2>
+      <table class="cmp">
+        <tr><th>XRootD fact</th><th>What it means here</th></tr>
+        <tr>
+          <td>One <code>Bridge-&gt;Run()</code> at a time per connection</td>
+          <td>HTTP/2 can queue many streams. File I/O on that connection still runs one after another.</td>
+        </tr>
+        <tr>
+          <td><code>Process()</code> returns 0 (continue), 1 (wait), or close</td>
+          <td>HTTP/2 must follow that. It is not a thread per stream.</td>
+        </tr>
+        <tr>
+          <td>HTTPS already cannot use sendfile</td>
+          <td>HTTP/2 cannot either. Zero-copy stays HTTP/1.1 without TLS.</td>
+        </tr>
+        <tr>
+          <td>Login is <code>SecEntity</code></td>
+          <td>Kerberos, tokens, and GSI all become a normal XRootD identity.</td>
+        </tr>
+        <tr>
+          <td>kTLS is CPU memory</td>
+          <td>No GPU DMA on the HTTP path. GPU I/O waits for RDMA.</td>
+        </tr>
+      </table>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Limits · parallelism</div>
+      <h2>One socket can carry many streams. One Bridge still does not.</h2>
+      <p class="lead">Three GETs on one HTTP/2 session. Left: today. Right: a normal
+      HTTP/2 origin, and what we would need on the same node.</p>
+      <div class="cols two">
+        <div>
+          <p class="note" style="margin:0 0 0.35rem; color:var(--pink); letter-spacing:0.08em; text-transform:uppercase;">Today - serial Bridge, then fan-out</p>
+          <div class="figwrap">
+            <svg class="fig" viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg">
+              <style>
+                .t { fill:#eef3f8; font: 600 13px sans-serif; }
+                .s { fill:#9aabba; font: 11px sans-serif; }
+                .k { fill:#152028; stroke:#b8923a; stroke-width:1.4; }
+                .u { fill:#1e2a36; stroke:#e8a0bf; stroke-width:1.4; }
+                .g { fill:#1e2a36; stroke:#2b3a4a; stroke-width:1.2; }
+                .ln { stroke:#e8a0bf; stroke-width:1.4; fill:none; marker-end:url(#fan); }
+                .lk { stroke:#b8923a; stroke-width:1.4; fill:none; marker-end:url(#fan2); }
+              </style>
+              <marker id="fan" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#e8a0bf"/></marker>
+              <marker id="fan2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#b8923a"/></marker>
+              <rect class="u" x="95" y="4" width="210" height="42" rx="7"/>
+              <text class="t" x="200" y="22" text-anchor="middle">HTTP/2 client</text>
+              <text class="s" x="200" y="38" text-anchor="middle">streams 1, 3, 5</text>
+              <line class="ln" x1="200" y1="46" x2="200" y2="60"/>
+              <rect class="g" x="95" y="60" width="210" height="42" rx="7"/>
+              <text class="t" x="200" y="78" text-anchor="middle">1 TLS socket</text>
+              <text class="s" x="200" y="94" text-anchor="middle">GETs already on the wire</text>
+              <line class="ln" x1="200" y1="102" x2="200" y2="116"/>
+              <rect class="u" x="95" y="116" width="210" height="42" rx="7"/>
+              <text class="t" x="200" y="134" text-anchor="middle">nghttp2</text>
+              <text class="s" x="200" y="150" text-anchor="middle">ready_queue</text>
+              <line class="ln" x1="200" y1="158" x2="200" y2="172"/>
+              <rect class="k" x="50" y="172" width="300" height="42" rx="7"/>
+              <text class="t" x="200" y="190" text-anchor="middle">one Bridge-&gt;Run()</text>
+              <text class="s" x="200" y="206" text-anchor="middle">/a then /b then /c - re-entry rejected</text>
+              <line class="ln" x1="120" y1="214" x2="66" y2="230"/>
+              <line class="ln" x1="200" y1="214" x2="200" y2="230"/>
+              <line class="ln" x1="280" y1="214" x2="334" y2="230"/>
+              <rect class="k" x="8" y="230" width="116" height="38" rx="7"/>
+              <text class="t" x="66" y="246" text-anchor="middle">data srv A</text>
+              <text class="s" x="66" y="260" text-anchor="middle">new socket /a</text>
+              <rect class="k" x="142" y="230" width="116" height="38" rx="7"/>
+              <text class="t" x="200" y="246" text-anchor="middle">data srv B</text>
+              <text class="s" x="200" y="260" text-anchor="middle">new socket /b</text>
+              <rect class="k" x="276" y="230" width="116" height="38" rx="7"/>
+              <text class="t" x="334" y="246" text-anchor="middle">data srv C</text>
+              <text class="s" x="334" y="260" text-anchor="middle">new socket /c</text>
+              <line class="lk" x1="200" y1="268" x2="200" y2="278"/>
+              <rect class="g" x="8" y="278" width="384" height="18" rx="5"/>
+              <text class="s" x="200" y="291" text-anchor="middle">reads overlap on A, B, C - still one Run per socket</text>
+            </svg>
+          </div>
+        </div>
+        <div>
+          <p class="note" style="margin:0 0 0.35rem; color:var(--gold); letter-spacing:0.08em; text-transform:uppercase;">Target - parallel Bridge on the same socket</p>
+          <div class="figwrap">
+            <svg class="fig" viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg">
+              <style>
+                .t { fill:#eef3f8; font: 600 13px sans-serif; }
+                .s { fill:#9aabba; font: 11px sans-serif; }
+                .k { fill:#152028; stroke:#b8923a; stroke-width:1.4; }
+                .u { fill:#1e2a36; stroke:#e8a0bf; stroke-width:1.4; }
+                .g { fill:#1e2a36; stroke:#2b3a4a; stroke-width:1.2; }
+                .ln { stroke:#b8923a; stroke-width:1.4; fill:none; marker-end:url(#par); }
+              </style>
+              <marker id="par" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#b8923a"/></marker>
+              <rect class="u" x="95" y="4" width="210" height="42" rx="7"/>
+              <text class="t" x="200" y="22" text-anchor="middle">HTTP/2 client</text>
+              <text class="s" x="200" y="38" text-anchor="middle">streams 1, 3, 5</text>
+              <line class="ln" x1="200" y1="46" x2="200" y2="60"/>
+              <rect class="g" x="95" y="60" width="210" height="42" rx="7"/>
+              <text class="t" x="200" y="78" text-anchor="middle">1 TLS socket</text>
+              <text class="s" x="200" y="94" text-anchor="middle">same as today</text>
+              <line class="ln" x1="200" y1="102" x2="200" y2="116"/>
+              <rect class="u" x="95" y="116" width="210" height="42" rx="7"/>
+              <text class="t" x="200" y="134" text-anchor="middle">nghttp2</text>
+              <text class="s" x="200" y="150" text-anchor="middle">three live streams</text>
+              <line class="ln" x1="200" y1="158" x2="200" y2="172"/>
+              <rect class="k" x="8" y="172" width="384" height="68" rx="7"/>
+              <text class="t" x="200" y="190" text-anchor="middle">Bridge - three Run() in flight</text>
+              <rect class="u" x="18" y="198" width="116" height="32" rx="5"/>
+              <text class="s" x="76" y="218" text-anchor="middle">Run a · stream 1</text>
+              <rect class="u" x="142" y="198" width="116" height="32" rx="5"/>
+              <text class="s" x="200" y="218" text-anchor="middle">Run b · stream 3</text>
+              <rect class="u" x="266" y="198" width="116" height="32" rx="5"/>
+              <text class="s" x="324" y="218" text-anchor="middle">Run c · stream 5</text>
+              <line class="ln" x1="200" y1="240" x2="200" y2="254"/>
+              <rect class="k" x="50" y="254" width="300" height="22" rx="6"/>
+              <text class="t" x="200" y="270" text-anchor="middle">ofs - three files at once</text>
+              <line class="ln" x1="200" y1="276" x2="200" y2="286"/>
+              <rect class="g" x="8" y="286" width="384" height="12" rx="5"/>
+              <text class="s" x="200" y="296" text-anchor="middle">DATA interleaved on the original socket</text>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Limits · Bridge</div>
+      <h2>What has to change for parallel Runs</h2>
+      <p class="lead">Native <code>root://</code> already carries a stream id in the 24-byte header.
+      The HTTP Bridge copies that field, then refuses a second <code>Run()</code> on the same link.
+      Login stays once per connection.</p>
+      <table class="cmp">
+        <tr><th>Today, per HTTP connection</th><th>Needed</th></tr>
+        <tr>
+          <td>One <code>CurrentReq</code> / <code>XrdHttpReq</code></td>
+          <td>One request object per HTTP/2 stream (map from nghttp2 id)</td>
+        </tr>
+        <tr>
+          <td><code>Transit::Run()</code> fails if <code>runStatus != 0</code></td>
+          <td>N in-flight Runs, keyed by xroot stream id, each with its own header buffer</td>
+        </tr>
+        <tr>
+          <td>One <code>Result</code> callback (<code>XrdHttpReq</code>)</td>
+          <td><code>Done</code> / <code>Data</code> / <code>Error</code> / <code>Redir</code> demuxed to that stream's writer</td>
+        </tr>
+        <tr>
+          <td><code>dispatchNext()</code> waits for <code>appInFlight</code></td>
+          <td>Start the next stream up to a cap (e.g. 8 or 16 in-flight)</td>
+        </tr>
+        <tr>
+          <td><code>Process()</code> 0 / 1 / close is the whole link</td>
+          <td>A wait on stream 3 must not stop streams 1 and 5</td>
+        </tr>
+        <tr>
+          <td>File table and <code>SecEntity</code> are per link</td>
+          <td>Keep that. Concurrent opens of different files; one identity</td>
+        </tr>
+      </table>
+      <p class="note">Not a thread per stream. The XRootD link is still one protocol object.
+      Parallelism is several outstanding Bridge operations, the way a native client uses several stream ids.
+      Redirect fan-out already gives cross-node parallelism without this work.</p>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Architecture</div>
+      <h2>HTTP/1.1 and HTTP/2 share one request handler</h2>
+      <p class="lead">HTTP/1 request handling is the same as on master: after headers are parsed,
+      the request still goes through <code>XrdHttpReq</code> and the Bridge.
+      GET, PUT, HEAD, DELETE, WebDAV, TPC, checksums, and request bodies are that same code.
+      Only header parsing is new (llhttp). HTTP/2 uses the same handler after nghttp2 assembles the headers.</p>
+      <div class="figwrap">
+        <svg class="fig" viewBox="0 0 980 300" xmlns="http://www.w3.org/2000/svg">
+          <style>
+            .t { fill:#eef3f8; font: 600 13px sans-serif; }
+            .s { fill:#9aabba; font: 12px sans-serif; }
+            .box { fill:#1e2a36; stroke:#2b3a4a; stroke-width:1.2; }
+            .hi { fill:#1e2a36; stroke:#e8a0bf; stroke-width:1.5; }
+            .ln { stroke:#e8a0bf; stroke-width:1.4; fill:none; marker-end:url(#ar); }
+          </style>
+          <marker id="ar" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="#e8a0bf"/>
+          </marker>
+          <rect class="box" x="40" y="12" width="900" height="48" rx="8"/>
+          <text class="t" x="490" y="32" text-anchor="middle">XrdHttpProtocol::Process()</text>
+          <text class="s" x="490" y="48" text-anchor="middle">TLS handshake · detectWireMode() (ALPN h2, HTTP/2 preface, or Upgrade)</text>
+          <line class="ln" x1="250" y1="60" x2="180" y2="88"/>
+          <line class="ln" x1="730" y1="60" x2="800" y2="88"/>
+          <rect class="hi" x="40" y="90" width="280" height="80" rx="8"/>
+          <text class="t" x="180" y="116" text-anchor="middle">HTTP/1.1</text>
+          <text class="s" x="180" y="136" text-anchor="middle">XrdHttp1Session (llhttp)</text>
+          <text class="s" x="180" y="154" text-anchor="middle">XrdHttp1ResponseWriter</text>
+          <rect class="hi" x="660" y="90" width="280" height="80" rx="8"/>
+          <text class="t" x="800" y="116" text-anchor="middle">HTTP/2</text>
+          <text class="s" x="800" y="136" text-anchor="middle">XrdHttp2Session (nghttp2)</text>
+          <text class="s" x="800" y="154" text-anchor="middle">XrdHttp2ResponseWriter</text>
+          <line class="ln" x1="180" y1="170" x2="400" y2="205"/>
+          <line class="ln" x1="800" y1="170" x2="580" y2="205"/>
+          <rect class="hi" x="300" y="200" width="380" height="42" rx="8"/>
+          <text class="t" x="490" y="226" text-anchor="middle">processParsedRequest() → XrdHttpReq</text>
+          <line class="ln" x1="490" y1="242" x2="490" y2="258"/>
+          <rect class="box" x="220" y="258" width="540" height="36" rx="8"/>
+          <text class="s" x="490" y="280" text-anchor="middle">Kerberos · tokens · GSI · TPC · checksums · Bridge → ofs</text>
+        </svg>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Versus master</div>
+      <h2>HTTP/1 is the same request path as master</h2>
+      <p class="lead">An HTTP/1.1 client (curl, davix, XrdClHttp) still talks to the same
+      <code>XrdHttpReq</code> and Bridge as on master. We did not rewrite GET/PUT/HEAD/DELETE
+      or how bodies are read. What changed for HTTP/1 is only how request headers are parsed
+      (llhttp). Set <code>http.parser legacy</code> to use master’s line parser.</p>
+      <table class="cmp">
+        <tr><th></th><th>master</th><th>this branch</th></tr>
+        <tr><td>HTTP/1 GET/PUT/HEAD/DELETE, bodies, TPC, checksums</td><td class="m">XrdHttpReq + Bridge</td><td>Same code</td></tr>
+        <tr><td>HTTP/1 header parser</td><td class="m">line scanner in <code>XrdHttpReq</code></td><td>llhttp (or <code>legacy</code>)</td></tr>
+        <tr><td>HTTP/2</td><td class="m">none</td><td>nghttp2, then the same XrdHttpReq</td></tr>
+        <tr><td>Kerberos on HTTP</td><td class="m">none (only <code>root://</code>)</td><td><code>http.auth krb5</code> SPNEGO</td></tr>
+        <tr><td>Partial write</td><td class="m">PUT replaces the whole file</td><td>PATCH with <code>Content-Range</code></td></tr>
+        <tr><td>POSIX over HTTP</td><td class="m">none</td><td>XIOFS: CLI, FUSE, kernel module</td></tr>
+      </table>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">HTTP/2</div>
+      <h2>What was added</h2>
+      <div class="cols two">
+        <div class="card">
+          <h3>How the client selects HTTP/2</h3>
+          <ul class="tight">
+            <li>HTTPS: TLS ALPN token <code>h2</code></li>
+            <li>Plain TCP: HTTP/2 connection preface, or HTTP/1.1 <code>Upgrade: h2c</code></li>
+            <li><code>http.h2 off</code> advertises only HTTP/1.1</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Behaviour</h3>
+          <ul class="tight">
+            <li>PUT sends body as DATA arrives</li>
+            <li>Up to 100 streams queued; Bridge still one at a time</li>
+            <li>Flow control both ways; reset stream on RST_STREAM</li>
+            <li><code>http.h2push /path</code> after a GET, if the client allows push</li>
+          </ul>
+        </div>
+      </div>
+      <p class="note">Needs libnghttp2 (<code>BUILD_HTTP2</code>). Tests: <code>XRootD::httph2</code>.</p>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Kerberos</div>
+      <h2>HTTP clients can use the site KDC</h2>
+      <p class="lead">New on this branch. Native xroot Kerberos is unchanged.
+      HTTP uses SPNEGO (<code>WWW-Authenticate: Negotiate</code>) and then logs into the Bridge as <code>krb5</code>.</p>
+      <div class="cols two">
+        <div class="card">
+          <h3>Server</h3>
+          <p><code>http.auth krb5 /etc/krb5.keytab HTTP/&lt;host&gt;@REALM</code></p>
+          <ul class="tight">
+            <li>Service class is <strong>HTTP</strong>, not <code>host</code></li>
+            <li>HTTPS required</li>
+            <li>Usually <code>http.tlsclientauth off</code></li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Client</h3>
+          <p><code>kinit</code> then:</p>
+          <p><code>curl --negotiate -u : --cacert ca.pem https://host/file</code></p>
+          <ul class="tight">
+            <li>401, then the token on the same connection</li>
+            <li>Independent of HTTP/1.1 vs HTTP/2</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">XIOFS</div>
+      <h2>POSIX client: CLI, FUSE, kernel</h2>
+      <div class="cols three">
+        <div class="card"><div class="lbl now">Userspace</div><h3>xiofscli / xiofsd</h3>
+          <p>HTTP/2. FUSE multiplexes I/O on one connection. Used to develop and test the methods.</p></div>
+        <div class="card"><div class="lbl now">Kernel</div><h3>xiofs.ko</h3>
+          <p>Linux page cache. HTTP/1.1 on a kTLS socket. Handshake is still userspace (<code>xiofsagent</code>).</p></div>
+        <div class="card"><div class="lbl later">Stub</div><h3>RDMA / GPU</h3>
+          <p><code>XIOFS_IOC_GPU_READ/WRITE</code> exist. They return “not supported” until an RDMA transport is written.</p></div>
+      </div>
+      <table class="cmp" style="margin-top:0.9rem">
+        <tr><th>POSIX</th><th>HTTP method</th></tr>
+        <tr><td>stat / readdir</td><td>PROPFIND</td></tr>
+        <tr><td>read</td><td>GET with Range</td></tr>
+        <tr><td>pwrite / writeback</td><td>PATCH with Content-Range and If-Match</td></tr>
+        <tr><td>create / mkdir / unlink / rename</td><td>PUT / MKCOL / DELETE / MOVE</td></tr>
+        <tr><td>chmod / hard link</td><td>PROPPATCH / LINK</td></tr>
+      </table>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Kernel mount</div>
+      <h2>Handshake in userspace, data path in the kernel</h2>
+      <div class="figwrap">
+        <svg class="fig" viewBox="0 0 980 250" xmlns="http://www.w3.org/2000/svg">
+          <style>
+            .t { fill:#eef3f8; font: 600 13px sans-serif; }
+            .s { fill:#9aabba; font: 11.5px sans-serif; }
+            .k { fill:#152028; stroke:#b8923a; stroke-width:1.4; }
+            .u { fill:#1e2a36; stroke:#e8a0bf; stroke-width:1.4; }
+            .g { fill:#1e2a36; stroke:#2b3a4a; }
+            .ln { stroke:#e8a0bf; stroke-width:1.4; fill:none; marker-end:url(#a4); }
+            .lk { stroke:#b8923a; stroke-width:1.4; fill:none; marker-end:url(#a5); }
+          </style>
+          <marker id="a4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#e8a0bf"/></marker>
+          <marker id="a5" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#b8923a"/></marker>
+          <text class="s" x="20" y="18">Once per mount</text>
+          <rect class="u" x="20" y="28" width="200" height="58" rx="8"/>
+          <text class="t" x="120" y="52" text-anchor="middle">xiofsagent</text>
+          <text class="s" x="120" y="70" text-anchor="middle">OpenSSL handshake</text>
+          <line class="ln" x1="220" y1="57" x2="268" y2="57"/>
+          <rect class="u" x="270" y="28" width="200" height="58" rx="8"/>
+          <text class="t" x="370" y="52" text-anchor="middle">kTLS on the socket</text>
+          <text class="s" x="370" y="70" text-anchor="middle">TLS 1.2 AES-GCM</text>
+          <line class="ln" x1="470" y1="57" x2="518" y2="57"/>
+          <rect class="u" x="520" y="28" width="240" height="58" rx="8"/>
+          <text class="t" x="640" y="52" text-anchor="middle">ioctl import</text>
+          <text class="s" x="640" y="70" text-anchor="middle">/dev/xiofsctl</text>
+          <text class="s" x="20" y="112">Every read / write / mmap</text>
+          <rect class="k" x="20" y="122" width="150" height="56" rx="8"/>
+          <text class="t" x="95" y="146" text-anchor="middle">app</text>
+          <text class="s" x="95" y="164" text-anchor="middle">POSIX</text>
+          <line class="lk" x1="170" y1="150" x2="214" y2="150"/>
+          <rect class="k" x="216" y="122" width="170" height="56" rx="8"/>
+          <text class="t" x="301" y="146" text-anchor="middle">page cache</text>
+          <text class="s" x="301" y="164" text-anchor="middle">readahead / writeback</text>
+          <line class="lk" x1="386" y1="150" x2="430" y2="150"/>
+          <rect class="k" x="432" y="122" width="170" height="56" rx="8"/>
+          <text class="t" x="517" y="146" text-anchor="middle">xiofs.ko</text>
+          <text class="s" x="517" y="164" text-anchor="middle">HTTP/1.1</text>
+          <line class="lk" x1="602" y1="150" x2="646" y2="150"/>
+          <rect class="k" x="648" y="122" width="150" height="56" rx="8"/>
+          <text class="t" x="723" y="146" text-anchor="middle">kTLS + TCP</text>
+          <text class="s" x="723" y="164" text-anchor="middle">no extra copy</text>
+          <line class="lk" x1="798" y1="150" x2="842" y2="150"/>
+          <rect class="g" x="844" y="122" width="116" height="56" rx="8"/>
+          <text class="t" x="902" y="146" text-anchor="middle">XrdHTTP</text>
+          <text class="s" x="902" y="164" text-anchor="middle">server</text>
+        </svg>
+      </div>
+      <p class="note">AlmaLinux 9 and 10. One socket, so no HTTP/2 multiplex in-kernel.
+      If the socket drops, run <code>xiofsagent --import-only</code> again.</p>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Tests</div>
+      <h2>New CTest coverage - all of these pass</h2>
+      <p class="lead">The existing <code>XRootD::http</code> suite still runs. We added dedicated tests for the parser, HTTP/2, Kerberos, and the XIOFS client. They pass in the current tree (Linux, HTTP/2 and Kerberos enabled).</p>
+      <table class="cmp">
+        <tr><th>CTest</th><th>What it covers</th></tr>
+        <tr>
+          <td><code>XRootD::http</code></td>
+          <td>HTTP/1.1 regression, plus PATCH, If-Match, and open-handle reuse</td>
+        </tr>
+        <tr>
+          <td><code>XRootD::httpparser</code></td>
+          <td>llhttp headers, keep-alive, header size cap, h2c preface / Upgrade</td>
+        </tr>
+        <tr>
+          <td><code>XRootD::httpparserlegacy</code></td>
+          <td>Same checks on <code>http.parser legacy</code> (no behaviour change)</td>
+        </tr>
+        <tr>
+          <td><code>XRootD::httph2</code></td>
+          <td>HTTPS ALPN h2: GET/PUT/HEAD/DELETE, ranges, PATCH, multiplex, flow control, push, trailers, <code>xiofscli</code></td>
+        </tr>
+        <tr>
+          <td><code>XRootD::httpkrb5</code></td>
+          <td>SPNEGO upload/download/HEAD; unauthenticated requests rejected</td>
+        </tr>
+        <tr>
+          <td><code>xrdxiofs-unit-tests</code></td>
+          <td>URL parsing and PROPFIND/WebDAV response parsing</td>
+        </tr>
+      </table>
+      <p class="note">Run: <code>ctest -R 'XRootD::(http|httpparser|httph2|httpkrb5)' --output-on-failure</code>
+      &nbsp;·&nbsp; httph2 needs the TLS fixture; httpkrb5 needs Kerberos + TLS (Linux).</p>
+    </section>
+
+    <section class="slide">
+      <h2>The native parser still wins</h2>
+      <p class="lead">Apple Silicon, RelWithDebInfo xrootd, parse compiled <code>-O2</code>.
+      Median of three runs. Parse: 200k iterations of a typical GET.
+      Request loop: one keepalive connection, sequential, local xrootd, cleartext
+      (HTTP/2 = h2c). Same <code>XrdHttpReq</code> after headers.</p>
+      <div class="cols two">
+        <div>
+          <table class="cmp">
+            <tr><th>Header parse</th><th>ns/req</th><th>Mreq/s</th></tr>
+            <tr><td>Native typical GET (291&nbsp;B, 8 hdrs)</td><td>754</td><td>1.33</td></tr>
+            <tr><td>llhttp typical GET</td><td>822</td><td>1.22</td></tr>
+            <tr><td>llhttp, 16&nbsp;B chunks</td><td>1048</td><td>0.95</td></tr>
+            <tr><td>Native 24 extra headers (1269&nbsp;B)</td><td>1448</td><td>0.69</td></tr>
+            <tr><td>llhttp 24 extra headers</td><td>1519</td><td>0.66</td></tr>
+          </table>
+        </div>
+        <div>
+          <table class="cmp">
+            <tr><th>Request handling</th><th>HTTP/1.1</th><th>HTTP/2</th></tr>
+            <tr><td>HEAD</td><td>44 µs</td><td>76 µs</td></tr>
+            <tr><td>GET 64&nbsp;B</td><td>62 µs</td><td>100 µs</td></tr>
+            <tr><td>GET 8&nbsp;MiB</td><td>1.7 ms</td><td>2.3 ms</td></tr>
+          </table>
+        </div>
+      </div>
+      <p class="note">Native = master’s <code>BuffgetLine</code> / split-on-colon scanner.
+      It still wins the parse microbench; we did not switch for speed. HTTP/2 on
+      <em>one</em> stream is about 1.4× after nghttp2 <code>NO_COPY</code> + batched
+      <code>writev</code> (no memcpy of the body into frames). Remaining gap: HPACK,
+      16&nbsp;KiB DATA frames, serial Bridge. True sendfile like cleartext HTTP/1.1
+      is not possible - each DATA frame needs a 9-byte header.</p>
+    </section>
+
+    <section class="slide">
+      <div class="kicker">Outlook</div>
+      <h2>Status</h2>
+      <div class="cols three">
+        <div class="card">
+          <div class="lbl now">Done</div>
+          <ul class="tight">
+            <li>llhttp + HTTP/2 on the server</li>
+            <li>Kerberos for HTTPS</li>
+            <li>PATCH, PROPPATCH, LINK</li>
+            <li>FUSE client (HTTP/2)</li>
+            <li>Kernel module + kTLS (CPU / page cache)</li>
+          </ul>
+        </div>
+        <div class="card">
+          <div class="lbl later">Not done</div>
+          <ul class="tight">
+            <li>RDMA transport</li>
+            <li>GPU-direct (ioctl stub only)</li>
+            <li>HTTP/2 in the kernel</li>
+            <li>Automatic TLS reconnect</li>
+            <li>Parallel Bridge (true parallel I/O on one HTTP/2 connection)</li>
+            <li>Symlinks, chown, utimens</li>
+          </ul>
+        </div>
+        <div class="card">
+          <div class="lbl why">Next steps</div>
+          <ul class="tight">
+            <li>Land parser + HTTP/2 + Kerberos on master</li>
+            <li>Keep XIOFS as the follow-up</li>
+            <li>RDMA when XrdHTTP (or a sibling endpoint) can serve it</li>
+            <li>Then GPU I/O on DMA-BUF</li>
+          </ul>
+        </div>
+      </div>
+      <p class="lead" style="margin-top:1rem">Today: CPU applications can mount XrdHTTP and use the Linux page cache.
+      RDMA and GPU are designed in the client API, not implemented on the wire.</p>
+    </section>
+
+  </div>
+  <footer class="nav">
+    <button type="button" id="prev">Prev</button>
+    <div class="prog"><i id="bar"></i></div>
+    <div id="pos">1 / 19</div>
+    <button type="button" id="next">Next</button>
+  </footer>
+</div>
+<script>
+(function () {
+  const slides = Array.from(document.querySelectorAll(".slide"));
+  const pos = document.getElementById("pos");
+  const bar = document.getElementById("bar");
+  let i = 0;
+  function show(n) {
+    i = (n + slides.length) % slides.length;
+    slides.forEach((s, k) => s.classList.toggle("on", k === i));
+    pos.textContent = (i + 1) + " / " + slides.length;
+    bar.style.width = ((i + 1) / slides.length * 100) + "%";
+  }
+  document.getElementById("prev").onclick = () => show(i - 1);
+  document.getElementById("next").onclick = () => show(i + 1);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowRight" || e.key === " " || e.key === "PageDown") { e.preventDefault(); show(i + 1); }
+    if (e.key === "ArrowLeft" || e.key === "PageUp") { e.preventDefault(); show(i - 1); }
+    if (e.key === "Home") show(0);
+    if (e.key === "End") show(slides.length - 1);
+  });
+  show(0);
+})();
+</script>
+</body>
+</html>
