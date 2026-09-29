@@ -27,6 +27,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <utime.h>
+#ifdef __linux__
+#include <sys/fsuid.h>
+#endif
 
 #ifndef MAXPATHLEN
 #define MAXPATHLEN 4096
@@ -84,13 +87,8 @@ int XrdFsOss::Init(XrdSysLogger *lp, const char *cfn, XrdOucEnv *envP)
    eDest.logger(lp);
    eDest.Say("------ POSIX filesystem (FsOss) initialization started.");
 
-#ifndef __linux__
-   eDest.Say("Config warning: setfsuid is Linux-only; "
-             "FsOss will not impersonate clients on this platform.");
-   fsuidMode = XrdFsOssUid::Off;
-#endif
-
    int NoGo = Configure(cfn, envP);
+   if (!NoGo && fsuidMode != XrdFsOssUid::Off) NoGo = CheckFsUid();
    const char *tmp = NoGo ? "failed." : "completed.";
    eDest.Say("------ POSIX filesystem (FsOss) initialization ", tmp);
    return NoGo;
@@ -147,6 +145,33 @@ int XrdFsOss::Configure(const char *cfn, XrdOucEnv *envP)
              LocalRoot ? " localroot=" : "",
              LocalRoot ? LocalRoot : "");
    return 0;
+}
+
+int XrdFsOss::CheckFsUid()
+{
+#ifndef __linux__
+   eDest.Emsg("Config", "FsOss requires Linux setfsuid/setfsgid; "
+              "set oss.fsuid off to load without impersonation");
+   return 1;
+#else
+   uid_t wantUid = (geteuid() == (uid_t)65534) ? (uid_t)1 : (uid_t)65534;
+   gid_t wantGid = (getegid() == (gid_t)65534) ? (gid_t)1 : (gid_t)65534;
+   uid_t prevUid = (uid_t)setfsuid(wantUid);
+   int   nowUid  = setfsuid(wantUid);
+   setfsuid(prevUid);
+   gid_t prevGid = (gid_t)setfsgid(wantGid);
+   int   nowGid  = setfsgid(wantGid);
+   setfsgid(prevGid);
+
+   if (nowUid != (int)wantUid || nowGid != (int)wantGid)
+      {eDest.Emsg("Config", "setfsuid/setfsgid cannot change identity; "
+                  "need CAP_SETUID and CAP_SETGID "
+                  "(systemd xrootd@.service, or start with xrootd-fsuid)");
+       return 1;
+      }
+   eDest.Say("Config FsOss setfsuid probe succeeded.");
+   return 0;
+#endif
 }
 
 int XrdFsOss::ConfigXeq(char *var, XrdOucStream &Config)

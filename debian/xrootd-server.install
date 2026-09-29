@@ -11,6 +11,7 @@
 /usr/bin/xrdpwdadmin
 /usr/bin/xrdsssadmin
 /usr/bin/xrootd
+/usr/bin/xrootd-fsuid
 /usr/share/man/man8/cmsd.8
 /usr/share/man/man8/frm_admin.8
 /usr/share/man/man8/frm_purged.8

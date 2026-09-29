@@ -126,6 +126,7 @@ public:
 private:
    int       Configure(const char *cfn, XrdOucEnv *envP);
    int       ConfigXeq(char *var, XrdOucStream &Config);
+   int       CheckFsUid();
    int       xfsuid(XrdOucStream &Config);
    int       xnml(XrdOucStream &Config);
 

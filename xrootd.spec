@@ -497,6 +497,7 @@ fi
 %{_bindir}/xrdpwdadmin
 %{_bindir}/xrdsssadmin
 %{_bindir}/xrootd
+%{_bindir}/xrootd-fsuid
 %{_mandir}/man8/cmsd.8*
 %{_mandir}/man8/frm_admin.8*
 %{_mandir}/man8/frm_purged.8*
