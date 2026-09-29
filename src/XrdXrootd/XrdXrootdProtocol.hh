@@ -249,6 +249,7 @@ enum RD_func {RD_chmod = 0, RD_chksum,  RD_dirlist, RD_locate, RD_mkdir,
        int   do_ChkPnt();
        int   do_ChkPntXeq();
        int   do_Chmod();
+       int   do_Chown();
        int   do_CKsum(int canit);
        int   do_CKsum(char *algT, const char *Path, char *Opaque);
        int   do_Clone();
@@ -263,6 +264,9 @@ enum RD_func {RD_chmod = 0, RD_chksum,  RD_dirlist, RD_locate, RD_mkdir,
        int   do_Mkdir();
        int   do_Mv();
        int   do_Link();
+       int   do_Symlink();
+       int   do_Readlink();
+       int   do_Utimes();
        int   do_Offload(int (XrdXrootdProtocol::*Invoke)(), int pathID);
        int   do_OffloadIO();
        int   do_Open();

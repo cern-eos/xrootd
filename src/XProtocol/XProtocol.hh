@@ -144,6 +144,10 @@ enum XRequestTypes {
    kXR_writev,  // 3031
    kXR_clone,   // 3032
    kXR_link,    // 3033 hard link (POSIX link / WebDAV BIND)
+   kXR_chown,   // 3034 POSIX chown
+   kXR_symlink, // 3035 POSIX symlink
+   kXR_readlink,// 3036 POSIX readlink
+   kXR_utimes,  // 3037 POSIX utimens (atime/mtime seconds)
    kXR_REQFENCE // Always last valid request code +1
 };
 
@@ -472,6 +476,56 @@ struct ClientLinkRequest {
    kXR_unt16 requestid;
    kXR_char  reserved[14];
    kXR_int16 arg1len;
+   kXR_int32 dlen;
+};
+
+/******************************************************************************/
+/*                     k X R _ c h o w n   R e q u e s t                      */
+/******************************************************************************/
+
+struct ClientChownRequest {
+   kXR_char  streamid[2];
+   kXR_unt16 requestid;
+   kXR_unt32 uid;         // (uid_t)-1 leaves owner unchanged
+   kXR_unt32 gid;         // (gid_t)-1 leaves group unchanged
+   kXR_char  reserved[8];
+   kXR_int32 dlen;
+};
+
+/******************************************************************************/
+/*                   k X R _ s y m l i n k   R e q u e s t                    */
+/******************************************************************************/
+
+// Data is "<target> <path>" with arg1len = strlen(target). Target is link text.
+struct ClientSymlinkRequest {
+   kXR_char  streamid[2];
+   kXR_unt16 requestid;
+   kXR_char  reserved[14];
+   kXR_int16 arg1len;
+   kXR_int32 dlen;
+};
+
+/******************************************************************************/
+/*                  k X R _ r e a d l i n k   R e q u e s t                   */
+/******************************************************************************/
+
+struct ClientReadlinkRequest {
+   kXR_char  streamid[2];
+   kXR_unt16 requestid;
+   kXR_char  reserved[16];
+   kXR_int32 dlen;
+};
+
+/******************************************************************************/
+/*                    k X R _ u t i m e s   R e q u e s t                     */
+/******************************************************************************/
+
+// atime/mtime are unix seconds in times[0:7] and times[8:15], network order.
+// -1 means UTIME_OMIT. Both -1 means "now".
+struct ClientUtimesRequest {
+   kXR_char  streamid[2];
+   kXR_unt16 requestid;
+   kXR_char  times[16];
    kXR_int32 dlen;
 };
 
@@ -910,6 +964,10 @@ typedef union {
    struct ClientFattrRequest fattr;
    struct ClientGPfileRequest gpfile;
    struct ClientLinkRequest link;
+   struct ClientChownRequest chown;
+   struct ClientSymlinkRequest symlink;
+   struct ClientReadlinkRequest readlink;
+   struct ClientUtimesRequest utimes;
    struct ClientLocateRequest locate;
    struct ClientLoginRequest login;
    struct ClientMkdirRequest mkdir;

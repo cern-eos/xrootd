@@ -1156,6 +1156,23 @@ namespace XrdCl
         req->chmod.mode = htons( req->chmod.mode );
         break;
 
+      case kXR_chown:
+        req->chown.uid = htonl( req->chown.uid );
+        req->chown.gid = htonl( req->chown.gid );
+        break;
+
+      case kXR_utimes:
+      {
+        kXR_int64 as, ms;
+        memcpy( &as, req->utimes.times, 8 );
+        memcpy( &ms, req->utimes.times + 8, 8 );
+        as = htonll( as );
+        ms = htonll( ms );
+        memcpy( req->utimes.times, &as, 8 );
+        memcpy( req->utimes.times + 8, &ms, 8 );
+        break;
+      }
+
       //------------------------------------------------------------------------
       // kXR_open
       //------------------------------------------------------------------------
@@ -1189,6 +1206,10 @@ namespace XrdCl
 
       case kXR_link:
         req->link.arg1len = htons( req->link.arg1len );
+        break;
+
+      case kXR_symlink:
+        req->symlink.arg1len = htons( req->symlink.arg1len );
         break;
 
       //------------------------------------------------------------------------
@@ -3404,6 +3425,46 @@ namespace XrdCl
         o << "destination: ";
         o.write( msg + sizeof( ClientLinkRequest ) + sreq->arg1len + 1, sreq->dlen - sreq->arg1len - 1 );
         o << ")";
+        break;
+      }
+
+      case kXR_chown:
+      {
+        ClientChownRequest *sreq = (ClientChownRequest *)msg;
+        o << "kXR_chown (";
+        char *fn = GetDataAsString( msg );
+        o << "path: " << fn << ", uid: " << sreq->uid << ", gid: " << sreq->gid << ")";
+        delete [] fn;
+        break;
+      }
+
+      case kXR_symlink:
+      {
+        ClientSymlinkRequest *sreq = (ClientSymlinkRequest *)msg;
+        o << "kXR_symlink (";
+        o << "target: ";
+        o.write( msg + sizeof( ClientSymlinkRequest ), sreq->arg1len );
+        o << ", path: ";
+        o.write( msg + sizeof( ClientSymlinkRequest ) + sreq->arg1len + 1, sreq->dlen - sreq->arg1len - 1 );
+        o << ")";
+        break;
+      }
+
+      case kXR_readlink:
+      {
+        o << "kXR_readlink (";
+        char *fn = GetDataAsString( msg );
+        o << "path: " << fn << ")";
+        delete [] fn;
+        break;
+      }
+
+      case kXR_utimes:
+      {
+        o << "kXR_utimes (";
+        char *fn = GetDataAsString( msg );
+        o << "path: " << fn << ")";
+        delete [] fn;
         break;
       }
 

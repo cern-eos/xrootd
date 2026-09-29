@@ -256,9 +256,13 @@ namespace XrdCl
     switch( req->header.requestid )
     {
       case kXR_chmod:
+      case kXR_chown:
+      case kXR_utimes:
+      case kXR_readlink:
       case kXR_mkdir:
       case kXR_mv:
       case kXR_link:
+      case kXR_symlink:
       case kXR_open:
       case kXR_rm:
       case kXR_rmdir:
@@ -270,7 +274,8 @@ namespace XrdCl
         //----------------------------------------------------------------------
         char *path = msg->GetBuffer( 24 );
         size_t length = req->header.dlen;
-        if( req->header.requestid == kXR_mv )
+        if( req->header.requestid == kXR_mv
+            || req->header.requestid == kXR_symlink )
         {
           for( int i = 0; i < req->header.dlen; ++i, ++path, --length )
             if( *path == ' ' )

@@ -587,12 +587,16 @@ int XrdXrootdProtocol::Process2()
 //
    switch(Request.header.requestid)
          {case kXR_chmod:     return do_Chmod();
+          case kXR_chown:     return do_Chown();
           case kXR_dirlist:   return do_Dirlist();
           case kXR_fattr:     return do_FAttr();
           case kXR_locate:    return do_Locate();
           case kXR_mkdir:     return do_Mkdir();
           case kXR_mv:        return do_Mv();
           case kXR_link:      return do_Link();
+          case kXR_symlink:   return do_Symlink();
+          case kXR_readlink:  return do_Readlink();
+          case kXR_utimes:    return do_Utimes();
           case kXR_query:     return do_Query();
           case kXR_prepare:   return do_Prepare();
           case kXR_rm:        return do_Rm();

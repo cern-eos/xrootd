@@ -583,6 +583,10 @@ const char *XrdXrootdTransit::ReqTable()
    rTab[KXR_INDEX(kXR_truncate)]  = 1;
    rTab[KXR_INDEX(kXR_write)]     = 2;
    rTab[KXR_INDEX(kXR_link)]      = 1;
+   rTab[KXR_INDEX(kXR_chown)]     = 1;
+   rTab[KXR_INDEX(kXR_symlink)]   = 1;
+   rTab[KXR_INDEX(kXR_readlink)]  = 1;
+   rTab[KXR_INDEX(kXR_utimes)]    = 1;
 
 // Now return the address
 //

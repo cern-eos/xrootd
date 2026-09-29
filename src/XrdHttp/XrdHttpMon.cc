@@ -44,6 +44,8 @@ std::vector<XrdMonRoll::Item> XrdHttpMon::statsSchema = {
         XrdMonRoll::Item("COPY",      verbCounters[12]),
         XrdMonRoll::Item("PROPPATCH", verbCounters[13]),
         XrdMonRoll::Item("LINK",      verbCounters[14]),
+        XrdMonRoll::Item("SYMLINK",   verbCounters[15]),
+        XrdMonRoll::Item("READLINK",  verbCounters[16]),
     XrdMonRoll::Item("request", XrdMonRoll::Item::Schema::endObject),
 
 // NOTE: Keep this mapping strictly aligned with StatusCodes enum XrdHttpMon::StatusCode
@@ -244,6 +246,10 @@ std::string XrdHttpMon::GetOperationString(XrdHttpReq::ReqType op) {
             return "PROPPATCH";
         case XrdHttpReq::ReqType::rtLINK:
             return "LINK";
+        case XrdHttpReq::ReqType::rtSYMLINK:
+            return "SYMLINK";
+        case XrdHttpReq::ReqType::rtREADLINK:
+            return "READLINK";
         case XrdHttpReq::ReqType::rtMalformed:
             return "Malformed";
         default:

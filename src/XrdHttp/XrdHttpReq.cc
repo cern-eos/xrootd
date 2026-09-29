@@ -53,7 +53,10 @@
 #include <algorithm> 
 #include <functional> 
 #include <cctype>
+#include <cstdint>
+#include <ctime>
 #include <locale>
+#include <map>
 #include <string>
 #include "XrdOuc/XrdOucTUtils.hh"
 #include "XrdOuc/XrdOucUtils.hh"
@@ -145,6 +148,31 @@ kXR_unt16 unixToKxrMode(mode_t m)
   return r;
 }
 
+bool hdrTruthy(const std::map<std::string, std::string> &h, const char *key)
+{
+  auto it = h.find(key);
+  if (it == h.end() || it->second.empty())
+    return false;
+  const char c = it->second[0];
+  return c == '1' || c == 't' || c == 'T' || c == 'y' || c == 'Y';
+}
+
+bool parseUnixTime(const std::string &value, long long &sec)
+{
+  char *end = 0;
+  long long v = strtoll(value.c_str(), &end, 10);
+  if (end != value.c_str() && end && *end == 0) {
+    sec = v;
+    return true;
+  }
+  struct tm t1;
+  memset(&t1, 0, sizeof(t1));
+  if (!strptime(value.c_str(), "%a, %d %b %Y %H:%M:%S", &t1))
+    return false;
+  sec = (long long)timegm(&t1);
+  return true;
+}
+
 void davTrim(std::string &value)
 {
   while (!value.empty() && isspace(static_cast<unsigned char>(value.front())))
@@ -159,6 +187,12 @@ int XrdHttpReq::parsePropPatch(char *body, long long len)
 {
   proppatchItems.clear();
   proppatchUnixMode = -1;
+  proppatchHaveUid = proppatchHaveGid = false;
+  proppatchUid = (uid_t)-1;
+  proppatchGid = (gid_t)-1;
+  proppatchHaveAtime = proppatchHaveMtime = false;
+  proppatchAtime = proppatchMtime = -1;
+  proppatchDone = 0;
   if (!body || len <= 0)
     return 0;
 
@@ -237,9 +271,7 @@ int XrdHttpReq::parsePropPatch(char *body, long long len)
         PropPatchItem item;
         item.xmlname = plocal;
         item.status = 403;
-        if (davIsLiveProp(plocal)) {
-          item.status = 403;
-        } else if (plocal == "executable") {
+        if (plocal == "executable") {
           item.status = 200;
           if (proppatchUnixMode < 0) {
             bool on = !removing && !value.empty()
@@ -259,6 +291,54 @@ int XrdHttpReq::parsePropPatch(char *body, long long len)
               item.status = 400;
             }
           }
+        } else if (plocal == "uid" || plocal == "owner-uid") {
+          if (removing) {
+            item.status = 403;
+          } else {
+            char *end = 0;
+            long mv = strtol(value.c_str(), &end, 10);
+            if (end != value.c_str() && *end == 0) {
+              item.status = 200;
+              proppatchHaveUid = true;
+              proppatchUid = static_cast<uid_t>(mv);
+            } else {
+              item.status = 400;
+            }
+          }
+        } else if (plocal == "gid" || plocal == "owner-gid") {
+          if (removing) {
+            item.status = 403;
+          } else {
+            char *end = 0;
+            long mv = strtol(value.c_str(), &end, 10);
+            if (end != value.c_str() && *end == 0) {
+              item.status = 200;
+              proppatchHaveGid = true;
+              proppatchGid = static_cast<gid_t>(mv);
+            } else {
+              item.status = 400;
+            }
+          }
+        } else if (plocal == "atime" || plocal == "getlastaccessed") {
+          if (removing) {
+            item.status = 403;
+          } else if (parseUnixTime(value, proppatchAtime)) {
+            item.status = 200;
+            proppatchHaveAtime = true;
+          } else {
+            item.status = 400;
+          }
+        } else if (plocal == "mtime" || plocal == "getlastmodified") {
+          if (removing) {
+            item.status = 403;
+          } else if (parseUnixTime(value, proppatchMtime)) {
+            item.status = 200;
+            proppatchHaveMtime = true;
+          } else {
+            item.status = 400;
+          }
+        } else if (davIsLiveProp(plocal)) {
+          item.status = 403;
         }
         proppatchItems.push_back(std::move(item));
         cursor = nextcur > pgt ? nextcur : pgt + 1;
@@ -306,6 +386,14 @@ int XrdHttpReq::sendPropPatchResult()
         el = "Z:executable";
       else if (el == "mode" || el == "unix-mode")
         el = "X:mode";
+      else if (el == "uid" || el == "owner-uid")
+        el = "X:uid";
+      else if (el == "gid" || el == "owner-gid")
+        el = "X:gid";
+      else if (el == "atime" || el == "getlastaccessed")
+        el = (el == "atime") ? "X:atime" : "D:getlastaccessed";
+      else if (el == "mtime")
+        el = "X:mtime";
       else
         el = "D:" + it.xmlname;
       body += "<D:propstat>\n<D:prop><";
@@ -320,6 +408,140 @@ int XrdHttpReq::sendPropPatchResult()
                        (char *)"Content-Type: text/xml; charset=\"utf-8\"",
                        (char *)body.c_str(), body.length(), keepalive);
   return keepalive ? 1 : -1;
+}
+
+int XrdHttpReq::runPropPatchOps()
+{
+  int l;
+
+  if (proppatchUnixMode >= 0 && !(proppatchDone & 1)) {
+    proppatchDone |= 1;
+    memset(&xrdreq, 0, sizeof (ClientRequest));
+    xrdreq.chmod.requestid = htons(kXR_chmod);
+    xrdreq.chmod.mode = htons(unixToKxrMode(static_cast<mode_t>(proppatchUnixMode)));
+    l = resourceplusopaque.length() + 1;
+    xrdreq.chmod.dlen = htonl(l);
+    if (!prot->Bridge->Run((char *) &xrdreq,
+                           (char *) resourceplusopaque.c_str(), l)) {
+      prot->SendSimpleResp(500, NULL, NULL, (char *) "Could not run chmod request.", 0, false);
+      return -1;
+    }
+    return 1;
+  }
+
+  if ((proppatchHaveUid || proppatchHaveGid) && !(proppatchDone & 2)) {
+    proppatchDone |= 2;
+    memset(&xrdreq, 0, sizeof (ClientRequest));
+    xrdreq.chown.requestid = htons(kXR_chown);
+    xrdreq.chown.uid = htonl(static_cast<kXR_unt32>(
+        proppatchHaveUid ? proppatchUid : (uid_t)-1));
+    xrdreq.chown.gid = htonl(static_cast<kXR_unt32>(
+        proppatchHaveGid ? proppatchGid : (gid_t)-1));
+    l = resourceplusopaque.length() + 1;
+    xrdreq.chown.dlen = htonl(l);
+    if (!prot->Bridge->Run((char *) &xrdreq,
+                           (char *) resourceplusopaque.c_str(), l)) {
+      prot->SendSimpleResp(500, NULL, NULL, (char *) "Could not run chown request.", 0, false);
+      return -1;
+    }
+    return 1;
+  }
+
+  if ((proppatchHaveAtime || proppatchHaveMtime) && !(proppatchDone & 4)) {
+    proppatchDone |= 4;
+    kXR_int64 as = htonll(proppatchHaveAtime ? proppatchAtime : -1LL);
+    kXR_int64 ms = htonll(proppatchHaveMtime ? proppatchMtime : -1LL);
+    memset(&xrdreq, 0, sizeof (ClientRequest));
+    xrdreq.utimes.requestid = htons(kXR_utimes);
+    memcpy(xrdreq.utimes.times, &as, 8);
+    memcpy(xrdreq.utimes.times + 8, &ms, 8);
+    l = resourceplusopaque.length() + 1;
+    xrdreq.utimes.dlen = htonl(l);
+    if (!prot->Bridge->Run((char *) &xrdreq,
+                           (char *) resourceplusopaque.c_str(), l)) {
+      prot->SendSimpleResp(500, NULL, NULL, (char *) "Could not run utimes request.", 0, false);
+      return -1;
+    }
+    return 1;
+  }
+
+  return sendPropPatchResult();
+}
+
+int XrdHttpReq::runSymlinkReq()
+{
+  if (prot->fileCacheCloseIfOpen())
+    return 0;
+
+  std::string target;
+  auto tgt = allheaders.find("xrd-symlink-target");
+  if (tgt != allheaders.end() && !tgt->second.empty())
+    target = tgt->second;
+  else if (!destination.empty())
+    target = destination;
+
+  if (target.empty() && length > 0) {
+    char *p = 0;
+    if (prot->BuffgetData(length, &p, true) < length) {
+      prot->SendSimpleResp(400, NULL, NULL,
+          (char *) "Error in getting the SYMLINK request body.", 0, false);
+      return -1;
+    }
+    target.assign(p, static_cast<size_t>(length));
+    while (!target.empty() && (target.back() == '\n' || target.back() == '\r'))
+      target.pop_back();
+  }
+
+  if (target.empty()) {
+    prot->SendSimpleResp(400, NULL, NULL,
+        (char *) "SYMLINK requires Xrd-Symlink-Target, Destination, or a body.",
+        0, false);
+    return -1;
+  }
+
+  size_t skip = target.find("://");
+  if (skip != std::string::npos) {
+    skip += 3;
+    size_t path_pos = target.find('/', skip);
+    if (path_pos == std::string::npos) {
+      prot->SendSimpleResp(400, NULL, NULL,
+          (char *) "Cannot determine symlink target path", 0, false);
+      return -1;
+    }
+    target = target.substr(path_pos);
+  }
+
+  std::string link_args = target + " " + std::string(resourceplusopaque.c_str());
+  int l = link_args.length() + 1;
+
+  memset(&xrdreq, 0, sizeof (ClientRequest));
+  xrdreq.symlink.requestid = htons(kXR_symlink);
+  xrdreq.symlink.arg1len = htons(static_cast<kXR_int16>(target.length()));
+  xrdreq.symlink.dlen = htonl(l);
+
+  if (!prot->Bridge->Run((char *) &xrdreq, (char *) link_args.c_str(), l)) {
+    prot->SendSimpleResp(500, NULL, NULL, (char *) "Could not run symlink request.", 0, false);
+    return -1;
+  }
+  return 1;
+}
+
+int XrdHttpReq::runReadlinkReq()
+{
+  request = rtREADLINK;
+  if (prot->fileCacheCloseIfOpen())
+    return 0;
+
+  memset(&xrdreq, 0, sizeof (ClientRequest));
+  xrdreq.readlink.requestid = htons(kXR_readlink);
+  int l = resourceplusopaque.length() + 1;
+  xrdreq.readlink.dlen = htonl(l);
+  if (!prot->Bridge->Run((char *) &xrdreq,
+                         (char *) resourceplusopaque.c_str(), l)) {
+    prot->SendSimpleResp(500, NULL, NULL, (char *) "Could not run readlink request.", 0, false);
+    return -1;
+  }
+  return 1;
 }
 
 XrdHttpReq::~XrdHttpReq() {
@@ -634,6 +856,10 @@ int XrdHttpReq::parseFirstLine(char *line, int len) {
       request = rtPROPPATCH;
     } else if (!strcmp(key, "LINK") || !strcmp(key, "BIND")) {
       request = rtLINK;
+    } else if (!strcmp(key, "SYMLINK")) {
+      request = rtSYMLINK;
+    } else if (!strcmp(key, "READLINK")) {
+      request = rtREADLINK;
     } else {
       request = rtUnknown;
     }
@@ -1465,6 +1691,9 @@ int XrdHttpReq::ProcessHTTPReq() {
     {
         int retval = keepalive ? 1 : -1; // reset() clears keepalive
 
+        if (hdrTruthy(allheaders, "xrd-readlink"))
+          return runReadlinkReq();
+
         if (resource.beginswith("/static/")) {
 
             // This is a request for a /static resource
@@ -1854,7 +2083,7 @@ int XrdHttpReq::ProcessHTTPReq() {
     }
     case XrdHttpReq::rtOPTIONS:
     {
-      prot->SendSimpleResp(200, NULL, (char *) "DAV: 1\r\nDAV: bind\r\nDAV: <http://apache.org/dav/propset/fs/1>\r\nAllow: HEAD,GET,PUT,PATCH,PROPFIND,PROPPATCH,DELETE,OPTIONS,MOVE,MKCOL,LINK,BIND", NULL, 0, keepalive);
+      prot->SendSimpleResp(200, NULL, (char *) "DAV: 1\r\nDAV: bind\r\nDAV: <http://apache.org/dav/propset/fs/1>\r\nAllow: HEAD,GET,PUT,PATCH,PROPFIND,PROPPATCH,DELETE,OPTIONS,MOVE,MKCOL,LINK,BIND,SYMLINK,READLINK", NULL, 0, keepalive);
       bool ret_keepalive = keepalive; // reset() clears keepalive
       reset();
       return ret_keepalive ? 1 : -1;
@@ -2135,37 +2364,39 @@ int XrdHttpReq::ProcessHTTPReq() {
     }
     case XrdHttpReq::rtPROPPATCH:
     {
-      if (prot->fileCacheCloseIfOpen())
-        return 0;
+      if (reqstate == 0) {
+        if (prot->fileCacheCloseIfOpen())
+          return 0;
 
-      if (length > 0) {
-        char *p = 0;
-        if (prot->BuffgetData(length, &p, true) < length) {
-          prot->SendSimpleResp(400, NULL, NULL,
-              (char *) "Error in getting the PROPPATCH request body.", 0, false);
-          return -1;
+        if (length > 0) {
+          char *p = 0;
+          if (prot->BuffgetData(length, &p, true) < length) {
+            prot->SendSimpleResp(400, NULL, NULL,
+                (char *) "Error in getting the PROPPATCH request body.", 0, false);
+            return -1;
+          }
+          parsePropPatch(p, length);
         }
-        parsePropPatch(p, length);
       }
-
-      if (proppatchUnixMode < 0) {
-        return sendPropPatchResult();
-      }
-
-      memset(&xrdreq, 0, sizeof (ClientRequest));
-      xrdreq.chmod.requestid = htons(kXR_chmod);
-      xrdreq.chmod.mode = htons(unixToKxrMode(static_cast<mode_t>(proppatchUnixMode)));
-      l = resourceplusopaque.length() + 1;
-      xrdreq.chmod.dlen = htonl(l);
-      if (!prot->Bridge->Run((char *) &xrdreq,
-                             (char *) resourceplusopaque.c_str(), l)) {
-        prot->SendSimpleResp(500, NULL, NULL, (char *) "Could not run chmod request.", 0, false);
-        return -1;
-      }
-      return 1;
+      return runPropPatchOps();
+    }
+    case XrdHttpReq::rtSYMLINK:
+    {
+      return runSymlinkReq();
+    }
+    case XrdHttpReq::rtREADLINK:
+    {
+      return runReadlinkReq();
     }
     case XrdHttpReq::rtLINK:
     {
+      auto lt = allheaders.find("xrd-link-type");
+      bool symbolic = allheaders.count("xrd-symlink-target") > 0;
+      if (lt != allheaders.end())
+        symbolic = !strcasecmp(lt->second.c_str(), "symbolic")
+                   || !strcasecmp(lt->second.c_str(), "symlink");
+      if (symbolic)
+        return runSymlinkReq();
       if (prot->fileCacheCloseIfOpen())
         return 0;
 
@@ -3305,7 +3536,32 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
                              httpErrorBody.c_str(), httpErrorBody.length(), false);
         return -1;
       }
-      return sendPropPatchResult();
+      return 0;
+    }
+    case XrdHttpReq::rtSYMLINK:
+    {
+      if (xrdresp != kXR_ok) {
+        prot->SendSimpleResp(httpStatusCode, NULL, NULL, (char *) etext.c_str(), 0, false);
+        return -1;
+      }
+      prot->SendSimpleResp(201, NULL, NULL, (char *) "Created", 0, keepalive);
+      return keepalive ? 1 : -1;
+    }
+    case XrdHttpReq::rtREADLINK:
+    {
+      if (xrdresp != kXR_ok) {
+        prot->SendSimpleResp(httpStatusCode, NULL, NULL, (char *) etext.c_str(), 0, false);
+        return -1;
+      }
+      std::string target;
+      if (iovN > 0 && iovP && iovP[0].iov_base && iovP[0].iov_len)
+        target.assign(static_cast<const char *>(iovP[0].iov_base),
+                      static_cast<size_t>(iovP[0].iov_len));
+      prot->SendSimpleResp(200, NULL,
+                           (char *) "Content-Type: text/plain; charset=utf-8",
+                           target.empty() ? NULL : (char *) target.c_str(),
+                           target.length(), keepalive);
+      return keepalive ? 1 : -1;
     }
     case XrdHttpReq::rtLINK:
     {
@@ -3517,6 +3773,12 @@ void XrdHttpReq::reset() {
   m_precond_ok = false;
   proppatchItems.clear();
   proppatchUnixMode = -1;
+  proppatchHaveUid = proppatchHaveGid = false;
+  proppatchUid = (uid_t)-1;
+  proppatchGid = (gid_t)-1;
+  proppatchHaveAtime = proppatchHaveMtime = false;
+  proppatchAtime = proppatchMtime = -1;
+  proppatchDone = 0;
 
   iovP = 0;
   iovN = 0;

@@ -29,9 +29,11 @@
 
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <string>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <vector>
 
@@ -399,6 +401,30 @@ int XrdXrootdProtocol::do_Chmod()
 
 // An error occurred
 //
+   return fsError(rc, XROOTD_MON_CHMOD, myError, argp->buff, opaque);
+}
+
+/******************************************************************************/
+/*                              d o _ C h o w n                               */
+/******************************************************************************/
+
+int XrdXrootdProtocol::do_Chown()
+{
+   char *opaque;
+   XrdOucErrInfo myError(Link->ID, Monitor.Did, clientPV);
+   uid_t u = static_cast<uid_t>(ntohl(Request.chown.uid));
+   gid_t g = static_cast<gid_t>(ntohl(Request.chown.gid));
+   int rc;
+
+   STATIC_REDIRECT(RD_chmod);
+
+   if (rpCheck(argp->buff, &opaque)) return rpEmsg("Changing owner of", argp->buff);
+   if (!Squash(argp->buff))          return vpEmsg("Changing owner of", argp->buff);
+
+   rc = osFS->chown(argp->buff, u, g, myError, CRED, opaque);
+   TRACEP(FS, "chown rc=" <<rc <<" uid=" <<u <<" gid=" <<g <<' ' <<argp->buff);
+   if (SFS_OK == rc) return Response.Send();
+
    return fsError(rc, XROOTD_MON_CHMOD, myError, argp->buff, opaque);
 }
 
@@ -1342,6 +1368,108 @@ int XrdXrootdProtocol::do_Link()
    if (SFS_OK == rc) return Response.Send();
 
    return fsError(rc, XROOTD_MON_MV, myError, oldp, Opaque);
+}
+
+/******************************************************************************/
+/*                            d o _ S y m l i n k                             */
+/******************************************************************************/
+
+int XrdXrootdProtocol::do_Symlink()
+{
+   int rc;
+   char *target, *path, *Opaque;
+   XrdOucErrInfo myError(Link->ID, Monitor.Did, clientPV);
+
+   STATIC_REDIRECT(RD_mv);
+
+   target = path = argp->buff;
+   if (Request.symlink.arg1len)
+      {int n = ntohs(Request.symlink.arg1len);
+       if (n < 0 || n >= Request.symlink.dlen || *(argp->buff+n) != ' ')
+          return Response.Send(kXR_ArgInvalid, "invalid symlink specification");
+       *(target+n) = 0;
+       path += n+1;
+      } else {
+       while(*path && *path != ' ') path++;
+       if (*path) {*path = '\0'; path++;
+                   while(*path && *path == ' ') path++;
+                  }
+      }
+
+   if (*path == '\0')
+      return Response.Send(kXR_ArgMissing, "path specified for symlink");
+
+   if (rpCheck(path, &Opaque)) return rpEmsg("Symlinking", path);
+   if (!Squash(path))          return vpEmsg("Symlinking", path);
+
+   rc = osFS->symlink(target, path, myError, CRED, Opaque);
+   TRACEP(FS, "rc=" <<rc <<" symlink " <<target <<' ' <<path);
+   if (SFS_OK == rc) return Response.Send();
+
+   return fsError(rc, XROOTD_MON_MV, myError, path, Opaque);
+}
+
+/******************************************************************************/
+/*                           d o _ R e a d l i n k                            */
+/******************************************************************************/
+
+int XrdXrootdProtocol::do_Readlink()
+{
+   char *opaque;
+   char buff[4096];
+   XrdOucErrInfo myError(Link->ID, Monitor.Did, clientPV);
+   int rc;
+
+   STATIC_REDIRECT(RD_stat);
+
+   if (rpCheck(argp->buff, &opaque)) return rpEmsg("Reading link", argp->buff);
+   if (!Squash(argp->buff))          return vpEmsg("Reading link", argp->buff);
+
+   buff[0] = 0;
+   rc = osFS->readlink(argp->buff, buff, (int)sizeof(buff), myError, CRED, opaque);
+   TRACEP(FS, "readlink rc=" <<rc <<' ' <<argp->buff);
+   if (SFS_OK != rc)
+      return fsError(rc, XROOTD_MON_STAT, myError, argp->buff, opaque);
+
+   buff[sizeof(buff)-1] = 0;
+   return Response.Send(buff, (int)strlen(buff));
+}
+
+/******************************************************************************/
+/*                             d o _ U t i m e s                              */
+/******************************************************************************/
+
+int XrdXrootdProtocol::do_Utimes()
+{
+   char *opaque;
+   XrdOucErrInfo myError(Link->ID, Monitor.Did, clientPV);
+   int rc;
+   kXR_int64 as, ms;
+   memcpy(&as, Request.utimes.times, 8);
+   memcpy(&ms, Request.utimes.times + 8, 8);
+   as = ntohll(as);
+   ms = ntohll(ms);
+
+   STATIC_REDIRECT(RD_chmod);
+
+   if (rpCheck(argp->buff, &opaque)) return rpEmsg("Setting times on", argp->buff);
+   if (!Squash(argp->buff))          return vpEmsg("Setting times on", argp->buff);
+
+   if (as == -1 && ms == -1)
+      {rc = osFS->utimes(argp->buff, 0, myError, CRED, opaque);
+      }
+      else
+      {struct timespec ts[2];
+       if (as == -1) {ts[0].tv_sec = 0; ts[0].tv_nsec = UTIME_OMIT;}
+          else {ts[0].tv_sec = (time_t)as; ts[0].tv_nsec = 0;}
+       if (ms == -1) {ts[1].tv_sec = 0; ts[1].tv_nsec = UTIME_OMIT;}
+          else {ts[1].tv_sec = (time_t)ms; ts[1].tv_nsec = 0;}
+       rc = osFS->utimes(argp->buff, ts, myError, CRED, opaque);
+      }
+   TRACEP(FS, "utimes rc=" <<rc <<' ' <<argp->buff);
+   if (SFS_OK == rc) return Response.Send();
+
+   return fsError(rc, XROOTD_MON_CHMOD, myError, argp->buff, opaque);
 }
 
 /******************************************************************************/

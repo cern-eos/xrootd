@@ -115,7 +115,8 @@ const char *reqNames[kXR_REQFENCE-kXR_auth] =
               "fattr",       "prepare",     "statx",       "endsess",
               "bind",        "readv",       "pgwrite",     "locate",
               "truncate",    "sigver",      "pgread",      "writev",
-              "clone"
+              "clone",       "link",        "chown",       "symlink",
+              "readlink",    "utimes"
              };
 
 // Following value is used to determine if the error or request code is

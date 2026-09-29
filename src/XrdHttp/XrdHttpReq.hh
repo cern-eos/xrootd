@@ -91,6 +91,8 @@ public:
     rtCOPY,
     rtPROPPATCH,
     rtLINK,
+    rtSYMLINK,
+    rtREADLINK,
     rtCount
   };
 
@@ -256,11 +258,20 @@ public:
   /// Parse the body of a request, assuming that it's XML and that it's entirely in memory
   int parseBody(char *body, long long len);
 
-  /// Parse a WebDAV PROPPATCH propertyupdate body (chmod / executable / mode).
+  /// Parse a WebDAV PROPPATCH propertyupdate body (chmod / chown / utimes).
   int parsePropPatch(char *body, long long len);
 
   /// Emit RFC 4918 207 Multi-Status for a completed PROPPATCH.
   int sendPropPatchResult();
+
+  /// Issue the next chmod/chown/utimes Bridge call for this PROPPATCH.
+  int runPropPatchOps();
+
+  /// SYMLINK (or LINK with Xrd-Link-Type: symbolic).
+  int runSymlinkReq();
+
+  /// READLINK (or GET with Xrd-Readlink: 1).
+  int runReadlinkReq();
 
   /// Prepare the buffers for sending a readv request
   int ReqReadV(const XrdHttpIOList &cl);
@@ -402,6 +413,15 @@ public:
   };
   std::vector<PropPatchItem> proppatchItems;
   int proppatchUnixMode{-1};
+  bool proppatchHaveUid{false};
+  bool proppatchHaveGid{false};
+  uid_t proppatchUid{(uid_t)-1};
+  gid_t proppatchGid{(gid_t)-1};
+  bool proppatchHaveAtime{false};
+  bool proppatchHaveMtime{false};
+  long long proppatchAtime{-1};
+  long long proppatchMtime{-1};
+  int proppatchDone{0};
 
   int mScitag;
 
