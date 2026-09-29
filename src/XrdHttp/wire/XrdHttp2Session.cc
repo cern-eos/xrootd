@@ -378,29 +378,53 @@ int XrdHttp2Session::flushSend(XrdHttpProtocol &prot)
   if (ctx)
     ctx->prot = &prot;
 
-  const uint8_t *data = nullptr;
-  ssize_t datalen = 0;
-  size_t send_offset = 0;
+  // nghttp2_session_mem_send() often returns a 9-byte frame header, then
+  // the payload. XrdNet enables TCP_NODELAY, so writing those pieces
+  // immediately turns into one packet per syscall (localhost 8 MiB GET
+  // was ~12× slower than HTTP/1.1). Coalesce to ~64 KiB writes.
+  static const size_t kCoalesce = 65536;
+  uint8_t out[kCoalesce];
+  size_t used = 0;
 
-  for (;;) {
-    if (send_offset >= static_cast<size_t>(datalen)) {
-      datalen = nghttp2_session_mem_send(session, &data);
-      send_offset = 0;
-      if (datalen < 0)
-        return -1;
-      if (datalen == 0)
-        return 0;
-    }
-
-    const int to_send = static_cast<int>(datalen - send_offset);
-    const int sent =
-        prot.SendWireData(reinterpret_cast<const char *>(data + send_offset),
-                          to_send);
+  auto flushBuf = [&]() -> int {
+    if (!used)
+      return 0;
+    const int sent = prot.SendWireData(reinterpret_cast<const char *>(out),
+                                        static_cast<int>(used));
     if (sent < 0)
       return -1;
     if (sent == 0)
-      return 0;
-    send_offset += static_cast<size_t>(sent);
+      return 1; // want write; bytes already copied from nghttp2
+    used = 0;
+    return 0;
+  };
+
+  for (;;) {
+    const uint8_t *data = nullptr;
+    const ssize_t datalen = nghttp2_session_mem_send(session, &data);
+    if (datalen < 0)
+      return -1;
+    if (datalen == 0)
+      return flushBuf() < 0 ? -1 : 0;
+
+    const size_t n = static_cast<size_t>(datalen);
+    if (n >= kCoalesce) {
+      if (flushBuf() < 0)
+        return -1;
+      const int sent =
+          prot.SendWireData(reinterpret_cast<const char *>(data), datalen);
+      if (sent < 0)
+        return -1;
+      if (sent == 0)
+        return 0;
+      continue;
+    }
+    if (used + n > kCoalesce) {
+      if (flushBuf() < 0)
+        return -1;
+    }
+    memcpy(out + used, data, n);
+    used += n;
   }
 }
 

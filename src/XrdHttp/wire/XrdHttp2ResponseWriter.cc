@@ -28,10 +28,14 @@ const char *TraceID = "Http2Resp";
 
 void compactPendingBody(XrdHttp2PendingResponse &resp)
 {
-  if (resp.body_offset > 0 && resp.body_offset >= resp.body.size()) {
+  if (resp.body_offset >= resp.body.size()) {
     resp.body.clear();
     resp.body_offset = 0;
-  } else if (resp.body_offset > 4096) {
+    return;
+  }
+  // Do not erase() on every DATA frame: that memmoves the remainder and
+  // is quadratic on a large GET. Reclaim in 1 MiB steps.
+  if (resp.body_offset >= 1024 * 1024) {
     resp.body.erase(0, resp.body_offset);
     resp.body_offset = 0;
   }
