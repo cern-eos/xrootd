@@ -374,7 +374,7 @@ virtual               ~XrdOfs() {}  // Too complicate to delete :-)
 // Configuration values for this filesystem
 //
 enum {Authorize = 0x0001,    // Authorization wanted
-      XAttrPlug = 0x0002,    // Extended Attribute Plugin
+      XAttrPlug = 0x0002,    // Extended attribute plugin
       isPeer    = 0x0050,    // Role peer
       isProxy   = 0x0020,    // Role proxy
       isManager = 0x0040,    // Role manager
@@ -382,10 +382,11 @@ enum {Authorize = 0x0001,    // Authorization wanted
       isSuper   = 0x00C0,    // Role supervisor
       isMeta    = 0x0100,    // Role meta + above
       haveRole  = 0x01F0,    // A role is present
-      Forwarding= 0x1000,    // Fowarding wanted
+      Forwarding= 0x1000,    // Forwarding wanted
       ThirdPC   = 0x2000,    // This party copy wanted
       SubCluster= 0x4000,    // all.subcluster directive encountered
-      RdrTPC    = 0x8000
+      RdrTPC    = 0x8000,
+      PosixFS   = 0x10000    // POSIX mode: do not rewrite file/dir modes
      };                      // These are set in Options below
 
 int   Options;               // Various options

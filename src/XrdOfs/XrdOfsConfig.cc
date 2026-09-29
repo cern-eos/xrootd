@@ -219,6 +219,13 @@ int XrdOfs::Configure(XrdSysError &Eroute, XrdOucEnv *EnvInfo) {
 //
    if (ossRW == ' ') ossRW = 'w';
 
+// POSIX mode: pass client modes through to the oss (no fMask/dMask rewrite)
+//
+   if (Options & PosixFS)
+      {dMask[0] = fMask[0] = 0;
+       dMask[1] = fMask[1] = 0777;
+      }
+
 // Adjust the umask to correspond to the maximum mode allowed
 //
    mode_t uMask = 0777 & (~(dMask[1] | fMask[1]));
@@ -284,6 +291,10 @@ int XrdOfs::Configure(XrdSysError &Eroute, XrdOucEnv *EnvInfo) {
             if (ossFeatures & XRDOSS_HASNAIO)  FeatureSet |= XrdSfs::hasNAIO;
             if (ossFeatures & XRDOSS_HASFICL)  FeatureSet |= XrdSfs::hasFICL;
             if (ossFeatures & XRDOSS_HASXERT)  tryXERT = true;
+            if ((Options & PosixFS) && !(ossFeatures & XRDOSS_HASPOSIX))
+               Eroute.Say("Config warning: ofs.posix is enabled but the oss "
+                          "plugin does not advertise POSIX fsuid support; "
+                          "use ofs.osslib libXrdFsOss.so");
             if (xrdEnv) xrdEnv->PutPtr("XrdOss*", XrdOfsOss);
             ofsConfig->Plugin(Cks);
             CksPfn = !ofsConfig->OssCks();
@@ -429,11 +440,13 @@ void XrdOfs::Config_Display(XrdSysError &Eroute)
      snprintf(buff, sizeof(buff), "Config effective %s ofs configuration:\n"
                                   "       all.role %s\n"
                                   "%s"
+                                  "%s"
                                   "       ofs.maxdelay   %d\n"
                                   "       ofs.persist    %s hold %d%s%s\n"
                                   "       ofs.trace      %x",
               cloc, myRole,
               (Options & Authorize ? "       ofs.authorize\n" : ""),
+              (Options & PosixFS   ? "       ofs.posix\n"     : ""),
                MaxDelay,
                pval, poscHold, (poscLog ? " logdir " : ""),
                (poscLog ? poscLog    : ""), OfsTrace.What);
@@ -821,6 +834,7 @@ int XrdOfs::ConfigXeq(char *var, XrdOucStream &Config,
     TS_Xeq("notifymsg",     xnmsg);
     TS_XPI("osslib",        theOssLib);
     TS_Xeq("persist",       xpers);
+    TS_Bit("posix",         Options, PosixFS);
     TS_XPI("preplib",       thePrpLib);
     TS_Xeq("role",          xrole);
     TS_Xeq("tpc",           xtpc);
