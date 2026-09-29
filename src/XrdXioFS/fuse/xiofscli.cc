@@ -6,6 +6,7 @@
 //
 // Commands: stat | ls | cat | read OFFSET LENGTH | put LOCALFILE
 //           | write OFFSET [LOCALFILE] | rm | mkdir | chmod MODE | ln DESTPATH
+//           | chown UID GID | symlink TARGET | readlink | utime ATIME MTIME
 //
 // Copyright (c) 2026 by the XRootD Collaboration
 //------------------------------------------------------------------------------
@@ -19,6 +20,8 @@
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <ctime>
 #include <vector>
 
 using XioFS::Client;
@@ -41,7 +44,11 @@ static void usage(const char *argv0)
       << "    rm\n"
       << "    mkdir\n"
       << "    chmod MODE\n"
-      << "    ln DESTPATH\n";
+      << "    ln DESTPATH\n"
+      << "    chown UID GID\n"
+      << "    symlink TARGET\n"
+      << "    readlink\n"
+      << "    utime ATIME MTIME\n";
 }
 
 static int fail(const std::string &msg, int rc)
@@ -93,8 +100,13 @@ int main(int argc, char **argv)
     rc = c.getattr(rel, a, err);
     if (rc)
       return fail(err, 1);
-    std::cout << (a.is_dir ? "dir" : "file") << " size=" << a.size
-              << " mtime=" << a.mtime << " ino=" << a.ino;
+    char mbuf[16];
+    std::snprintf(mbuf, sizeof(mbuf), "%04o",
+                  static_cast<unsigned>(a.mode & 07777));
+    std::cout << (a.is_dir ? "dir" : (a.is_lnk ? "lnk" : "file"))
+              << " size=" << a.size << " mtime=" << a.mtime
+              << " atime=" << a.atime << " mode=" << mbuf
+              << " uid=" << a.uid << " gid=" << a.gid << " ino=" << a.ino;
     if (!a.etag.empty())
       std::cout << " etag=" << a.etag;
     std::cout << "\n";
@@ -107,7 +119,8 @@ int main(int argc, char **argv)
     if (rc)
       return fail(err, 1);
     for (const auto &e : ents) {
-      std::cout << (e.is_dir ? "d " : "f ") << e.size << " " << e.name << "\n";
+      std::cout << (e.is_dir ? "d " : (e.is_lnk ? "l " : "f ")) << e.size
+                << " " << e.name << "\n";
     }
     return 0;
   }
@@ -219,6 +232,47 @@ int main(int argc, char **argv)
     if (args.size() < 3)
       return fail("ln DESTPATH", 2);
     rc = c.link(rel, args[2], err);
+    if (rc)
+      return fail(err, 1);
+    return 0;
+  }
+
+  if (cmd == "chown") {
+    if (args.size() < 4)
+      return fail("chown UID GID", 2);
+    uid_t uid = static_cast<uid_t>(std::strtoul(args[2].c_str(), nullptr, 10));
+    gid_t gid = static_cast<gid_t>(std::strtoul(args[3].c_str(), nullptr, 10));
+    rc = c.chown(rel, uid, gid, err);
+    if (rc)
+      return fail(err, 1);
+    return 0;
+  }
+
+  if (cmd == "symlink") {
+    if (args.size() < 3)
+      return fail("symlink TARGET", 2);
+    rc = c.symlink(rel, args[2], err);
+    if (rc)
+      return fail(err, 1);
+    return 0;
+  }
+
+  if (cmd == "readlink") {
+    std::string target;
+    rc = c.readlink(rel, target, err);
+    if (rc)
+      return fail(err, 1);
+    std::cout << target << "\n";
+    return 0;
+  }
+
+  if (cmd == "utime") {
+    if (args.size() < 4)
+      return fail("utime ATIME MTIME", 2);
+    struct timespec tv[2] = {};
+    tv[0].tv_sec = static_cast<time_t>(std::strtoll(args[2].c_str(), nullptr, 10));
+    tv[1].tv_sec = static_cast<time_t>(std::strtoll(args[3].c_str(), nullptr, 10));
+    rc = c.utimens(rel, tv, err);
     if (rc)
       return fail(err, 1);
     return 0;

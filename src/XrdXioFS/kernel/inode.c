@@ -9,6 +9,9 @@
 #include <linux/namei.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/timekeeping.h>
+#include <linux/uidgid.h>
+#include <linux/user_namespace.h>
 
 #include "xiofs.h"
 #include "xiofs_compat.h"
@@ -18,6 +21,23 @@ static unsigned long xiofs_actimeo_jiffies(struct xiofs_sb_info *sbi)
 	if (!sbi->actimeo_sec)
 		return 0;
 	return msecs_to_jiffies(sbi->actimeo_sec * 1000u);
+}
+
+static void xiofs_refresh_inode(struct inode *inode, const struct xiofs_attr *attr)
+{
+	struct xiofs_inode_info *ki = XIOFS_I(inode);
+
+	if (attr->etag[0])
+		strscpy(ki->etag, attr->etag, sizeof(ki->etag));
+	i_size_write(inode, attr->size);
+	xiofs_set_times2(inode, attr->mtime, attr->atime);
+	if (attr->mode)
+		inode->i_mode = (inode->i_mode & S_IFMT) | (attr->mode & 07777);
+	if (attr->have_uid)
+		inode->i_uid = make_kuid(&init_user_ns, attr->uid);
+	if (attr->have_gid)
+		inode->i_gid = make_kgid(&init_user_ns, attr->gid);
+	ki->attr_jiffies = jiffies;
 }
 
 static int xiofs_d_revalidate(struct dentry *dentry, unsigned int flags)
@@ -49,12 +69,7 @@ static int xiofs_d_revalidate(struct dentry *dentry, unsigned int flags)
 		return 0;
 	if (err)
 		return err;
-	if (attr.etag[0])
-		strscpy(XIOFS_I(inode)->etag, attr.etag,
-			sizeof(XIOFS_I(inode)->etag));
-	i_size_write(inode, attr.size);
-	xiofs_set_times(inode, attr.mtime);
-	XIOFS_I(inode)->attr_jiffies = jiffies;
+	xiofs_refresh_inode(inode, &attr);
 	dentry->d_time = jiffies;
 	return 1;
 }
@@ -112,11 +127,7 @@ static int xiofs_getattr(xiofs_idmap_t idmap, const struct path *path,
 		err = xiofs_http_getattr(inode, &attr);
 		if (err)
 			return err;
-		if (attr.etag[0])
-			strscpy(ki->etag, attr.etag, sizeof(ki->etag));
-		i_size_write(inode, attr.size);
-		xiofs_set_times(inode, attr.mtime);
-		ki->attr_jiffies = jiffies;
+		xiofs_refresh_inode(inode, &attr);
 	}
 	xiofs_fillattr(idmap, request_mask, inode, stat);
 	return 0;
@@ -139,6 +150,36 @@ static int xiofs_setattr(xiofs_idmap_t idmap, struct dentry *dentry,
 	}
 	if (attr->ia_valid & ATTR_MODE) {
 		err = xiofs_http_chmod(inode, attr->ia_mode);
+		if (err)
+			return err;
+	}
+	if (attr->ia_valid & (ATTR_UID | ATTR_GID)) {
+		u32 uid = (u32)-1, gid = (u32)-1;
+
+		if (attr->ia_valid & ATTR_UID)
+			uid = from_kuid(&init_user_ns, attr->ia_uid);
+		if (attr->ia_valid & ATTR_GID)
+			gid = from_kgid(&init_user_ns, attr->ia_gid);
+		err = xiofs_http_chown(inode, uid, gid);
+		if (err)
+			return err;
+	}
+	if (attr->ia_valid & (ATTR_ATIME | ATTR_MTIME)) {
+		time64_t at = -1, mt = -1;
+
+		if (attr->ia_valid & ATTR_ATIME) {
+			if (attr->ia_valid & ATTR_ATIME_SET)
+				at = attr->ia_atime.tv_sec;
+			else
+				at = ktime_get_real_seconds();
+		}
+		if (attr->ia_valid & ATTR_MTIME) {
+			if (attr->ia_valid & ATTR_MTIME_SET)
+				mt = attr->ia_mtime.tv_sec;
+			else
+				mt = ktime_get_real_seconds();
+		}
+		err = xiofs_http_utimens(inode, at, mt);
 		if (err)
 			return err;
 	}
@@ -252,6 +293,52 @@ static int xiofs_link(struct dentry *old_dentry, struct inode *dir,
 	return 0;
 }
 
+static int xiofs_symlink(xiofs_idmap_t idmap, struct inode *dir,
+			 struct dentry *dentry, const char *symname)
+{
+	struct xiofs_attr attr = { .is_lnk = true };
+	struct inode *inode;
+	char path[XIOFS_PATH_MAX];
+	int err;
+
+	(void)idmap;
+	if (!symname || !*symname)
+		return -EINVAL;
+	err = xiofs_join_path(path, sizeof(path),
+			      XIOFS_I(dir)->remote_path, dentry->d_name.name);
+	if (err)
+		return err;
+	err = xiofs_http_symlink(dir, path, symname);
+	if (err)
+		return err;
+	attr.size = strlen(symname);
+	inode = xiofs_iget(dir->i_sb, path, &attr);
+	if (IS_ERR(inode))
+		return PTR_ERR(inode);
+	strscpy(XIOFS_I(inode)->link_target, symname,
+		sizeof(XIOFS_I(inode)->link_target));
+	d_instantiate(dentry, inode);
+	return 0;
+}
+
+static const char *xiofs_get_link(struct dentry *dentry, struct inode *inode,
+				  struct delayed_call *done)
+{
+	struct xiofs_inode_info *ki = XIOFS_I(inode);
+	int err;
+
+	(void)done;
+	if (!dentry)
+		return ERR_PTR(-ECHILD);
+	if (ki->link_target[0])
+		return ki->link_target;
+	err = xiofs_http_readlink(inode, ki->link_target,
+				  sizeof(ki->link_target));
+	if (err)
+		return ERR_PTR(err);
+	return ki->link_target;
+}
+
 static int xiofs_iterate(struct file *file, struct dir_context *ctx)
 {
 	struct inode *dir = file_inode(file);
@@ -267,8 +354,13 @@ static int xiofs_iterate(struct file *file, struct dir_context *ctx)
 		return err;
 
 	for (i = 0; i < nents; i++) {
-		unsigned int type = ents[i].is_dir ? DT_DIR : DT_REG;
+		unsigned int type = DT_REG;
 		loff_t pos = i + 2;
+
+		if (ents[i].is_dir)
+			type = DT_DIR;
+		else if (ents[i].is_lnk)
+			type = DT_LNK;
 
 		if (ctx->pos > pos)
 			continue;
@@ -293,10 +385,17 @@ const struct inode_operations xiofs_dir_inode_ops = {
 	.rmdir		= xiofs_rmdir,
 	.rename		= xiofs_rename,
 	.link		= xiofs_link,
+	.symlink	= xiofs_symlink,
 	.setattr	= xiofs_setattr,
 };
 
 const struct inode_operations xiofs_file_inode_ops = {
+	.getattr	= xiofs_getattr,
+	.setattr	= xiofs_setattr,
+};
+
+const struct inode_operations xiofs_symlink_inode_ops = {
+	.get_link	= xiofs_get_link,
 	.getattr	= xiofs_getattr,
 	.setattr	= xiofs_setattr,
 };

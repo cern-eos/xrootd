@@ -11,8 +11,10 @@
 #include "XioUrl.hh"
 
 #include <cstdint>
+#include <ctime>
 #include <mutex>
 #include <string>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <vector>
 
@@ -22,7 +24,12 @@ struct Attr {
   uint64_t ino{0};
   int64_t  size{-1};
   time_t   mtime{0};
+  time_t   atime{0};
+  mode_t   mode{0};
+  uid_t    uid{static_cast<uid_t>(-1)};
+  gid_t    gid{static_cast<gid_t>(-1)};
   bool     is_dir{false};
+  bool     is_lnk{false};
   std::string etag;
   std::string path;
 };
@@ -49,7 +56,13 @@ public:
   int rename(const std::string &from, const std::string &to, std::string &err,
              const std::string &if_match = {});
   int chmod(const std::string &relpath, mode_t mode, std::string &err);
+  int chown(const std::string &relpath, uid_t uid, gid_t gid, std::string &err);
+  int utimens(const std::string &relpath, const struct timespec tv[2],
+              std::string &err);
   int link(const std::string &from, const std::string &to, std::string &err);
+  int symlink(const std::string &linkpath, const std::string &target,
+              std::string &err);
+  int readlink(const std::string &relpath, std::string &target, std::string &err);
 
   const Url &base() const { return base_; }
   bool connected() const { return sess_.connected(); }
@@ -65,6 +78,8 @@ private:
   int doReq(const char *method, const std::string &rel,
             const std::vector<std::pair<std::string, std::string>> &hdrs,
             const std::string &body, HttpResponse &resp, std::string &err);
+  int proppatch(const std::string &relpath, const std::string &body,
+                std::string &err);
 };
 
 int httpToErrno(int status);

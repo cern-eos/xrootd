@@ -318,6 +318,57 @@ static int xiofs_add_match(char *buf, size_t sz, size_t *n, const char *etag)
 	return 0;
 }
 
+static bool xiofs_in_resp(const char *p, const char *end, const char *needle)
+{
+	const char *g = strstr(p, needle);
+
+	return g && g < end;
+}
+
+static int xiofs_xml_ulong(const char *p, const char *end, const char *tag,
+			   unsigned int base, unsigned long *out)
+{
+	const char *g;
+	char tmp[32];
+	size_t i = 0;
+
+	g = strstr(p, tag);
+	if (!g || g >= end)
+		return -ENOENT;
+	g += strlen(tag);
+	while (g < end && i < sizeof(tmp) - 1 && *g && *g != '<') {
+		if (*g != ' ' && *g != '\n' && *g != '\r' && *g != '\t')
+			tmp[i++] = *g;
+		g++;
+	}
+	tmp[i] = 0;
+	if (!i)
+		return -EINVAL;
+	return kstrtoul(tmp, base, out);
+}
+
+static int xiofs_xml_ll(const char *p, const char *end, const char *tag,
+			long long *out)
+{
+	const char *g;
+	char tmp[32];
+	size_t i = 0;
+
+	g = strstr(p, tag);
+	if (!g || g >= end)
+		return -ENOENT;
+	g += strlen(tag);
+	while (g < end && i < sizeof(tmp) - 1 && *g && *g != '<') {
+		if (*g != ' ' && *g != '\n' && *g != '\r' && *g != '\t')
+			tmp[i++] = *g;
+		g++;
+	}
+	tmp[i] = 0;
+	if (!i)
+		return -EINVAL;
+	return kstrtoll(tmp, 10, out);
+}
+
 static int xiofs_parse_dav(const char *xml, size_t len,
 			 struct xiofs_dirent **ents, size_t *nents,
 			 struct xiofs_attr *single)
@@ -338,7 +389,12 @@ static int xiofs_parse_dav(const char *xml, size_t len,
 		const char *end;
 		char href[256] = {};
 		char clen[32] = {};
-		bool is_dir = false;
+		bool is_dir = false, is_lnk = false, have_uid = false, have_gid = false;
+		umode_t mode = 0;
+		time64_t mtime = 0, atime = 0;
+		u32 uid = 0, gid = 0;
+		unsigned long uv;
+		long long lv;
 		const char *hs, *he;
 
 		if (resp2 && (!resp || resp2 < resp))
@@ -378,6 +434,35 @@ static int xiofs_parse_dav(const char *xml, size_t len,
 		if (strstr(p, "<D:collection") || strstr(p, "<d:collection") ||
 		    strstr(p, "<lp1:iscollection>1"))
 			is_dir = true;
+		if (xiofs_in_resp(p, end, "<D:symlink") ||
+		    xiofs_in_resp(p, end, "<d:symlink") ||
+		    xiofs_in_resp(p, end, "<X:other>1") ||
+		    xiofs_in_resp(p, end, "<x:other>1"))
+			is_lnk = true;
+		if (is_dir)
+			is_lnk = false;
+		if (!xiofs_xml_ulong(p, end, "unix-mode>", 8, &uv) ||
+		    !xiofs_xml_ulong(p, end, "<X:unix-mode>", 8, &uv))
+			mode = (umode_t)uv;
+		else if (!xiofs_xml_ulong(p, end, "<X:mode>", 8, &uv) ||
+			 !xiofs_xml_ulong(p, end, "<x:mode>", 8, &uv))
+			mode = (umode_t)uv;
+		if (!xiofs_xml_ulong(p, end, "<X:uid>", 10, &uv) ||
+		    !xiofs_xml_ulong(p, end, "<x:uid>", 10, &uv)) {
+			uid = (u32)uv;
+			have_uid = true;
+		}
+		if (!xiofs_xml_ulong(p, end, "<X:gid>", 10, &uv) ||
+		    !xiofs_xml_ulong(p, end, "<x:gid>", 10, &uv)) {
+			gid = (u32)uv;
+			have_gid = true;
+		}
+		if (!xiofs_xml_ll(p, end, "<X:mtime>", &lv) ||
+		    !xiofs_xml_ll(p, end, "<x:mtime>", &lv))
+			mtime = lv;
+		if (!xiofs_xml_ll(p, end, "<X:atime>", &lv) ||
+		    !xiofs_xml_ll(p, end, "<x:atime>", &lv))
+			atime = lv;
 		{
 			const char *g = strstr(p, "getcontentlength>");
 
@@ -388,6 +473,14 @@ static int xiofs_parse_dav(const char *xml, size_t len,
 
 		if (single && n == 0) {
 			single->is_dir = is_dir;
+			single->is_lnk = is_lnk;
+			single->mode = mode;
+			single->mtime = mtime;
+			single->atime = atime;
+			single->have_uid = have_uid;
+			single->have_gid = have_gid;
+			single->uid = uid;
+			single->gid = gid;
 			if (clen[0])
 				sscanf(clen, "%lld", (long long *)&single->size);
 		}
@@ -408,6 +501,9 @@ static int xiofs_parse_dav(const char *xml, size_t len,
 			}
 			strscpy(out[n].name, href, sizeof(out[n].name));
 			out[n].is_dir = is_dir;
+			out[n].is_lnk = is_lnk;
+			out[n].mode = mode;
+			out[n].mtime = mtime;
 			if (clen[0])
 				sscanf(clen, "%lld", (long long *)&out[n].size);
 			n++;
@@ -725,21 +821,14 @@ int xiofs_http_truncate(struct inode *inode, loff_t size)
 	return -EOPNOTSUPP;
 }
 
-int xiofs_http_chmod(struct inode *inode, umode_t mode)
+static int xiofs_http_proppatch(struct inode *inode, const char *body, size_t blen)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
-	char body[512];
 	char req[896];
-	size_t n = 0, blen;
+	size_t n = 0;
 	struct xiofs_http_resp meta;
 	int err;
 
-	blen = scnprintf(body, sizeof(body),
-			 "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
-			 "<D:propertyupdate xmlns:D=\"DAV:\" xmlns:X=\"http://xrootd.org/ns\">"
-			 "<D:set><D:prop><X:mode>%o</X:mode></D:prop></D:set>"
-			 "</D:propertyupdate>",
-			 (unsigned int)(mode & 0777));
 	n += snprintf(req + n, sizeof(req) - n,
 		      "PROPPATCH %s HTTP/1.1\r\nHost: %s\r\n"
 		      "Content-Type: application/xml; charset=\"utf-8\"\r\n"
@@ -754,6 +843,62 @@ int xiofs_http_chmod(struct inode *inode, umode_t mode)
 	if (!err)
 		err = xiofs_http_status_to_errno(meta.status);
 	return err;
+}
+
+int xiofs_http_chmod(struct inode *inode, umode_t mode)
+{
+	char body[512];
+	size_t blen;
+
+	blen = scnprintf(body, sizeof(body),
+			 "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+			 "<D:propertyupdate xmlns:D=\"DAV:\" xmlns:X=\"http://xrootd.org/ns\">"
+			 "<D:set><D:prop><X:mode>%o</X:mode></D:prop></D:set>"
+			 "</D:propertyupdate>",
+			 (unsigned int)(mode & 07777));
+	return xiofs_http_proppatch(inode, body, blen);
+}
+
+int xiofs_http_chown(struct inode *inode, u32 uid, u32 gid)
+{
+	char body[512];
+	size_t n = 0;
+
+	if (uid == (u32)-1 && gid == (u32)-1)
+		return 0;
+	n += scnprintf(body + n, sizeof(body) - n,
+		       "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+		       "<D:propertyupdate xmlns:D=\"DAV:\" xmlns:X=\"http://xrootd.org/ns\">"
+		       "<D:set><D:prop>");
+	if (uid != (u32)-1)
+		n += scnprintf(body + n, sizeof(body) - n, "<X:uid>%u</X:uid>", uid);
+	if (gid != (u32)-1)
+		n += scnprintf(body + n, sizeof(body) - n, "<X:gid>%u</X:gid>", gid);
+	n += scnprintf(body + n, sizeof(body) - n,
+		       "</D:prop></D:set></D:propertyupdate>");
+	return xiofs_http_proppatch(inode, body, n);
+}
+
+int xiofs_http_utimens(struct inode *inode, time64_t atime, time64_t mtime)
+{
+	char body[512];
+	size_t n = 0;
+
+	if (atime < 0 && mtime < 0)
+		return 0;
+	n += scnprintf(body + n, sizeof(body) - n,
+		       "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+		       "<D:propertyupdate xmlns:D=\"DAV:\" xmlns:X=\"http://xrootd.org/ns\">"
+		       "<D:set><D:prop>");
+	if (atime >= 0)
+		n += scnprintf(body + n, sizeof(body) - n,
+			       "<X:atime>%lld</X:atime>", (long long)atime);
+	if (mtime >= 0)
+		n += scnprintf(body + n, sizeof(body) - n,
+			       "<X:mtime>%lld</X:mtime>", (long long)mtime);
+	n += scnprintf(body + n, sizeof(body) - n,
+		       "</D:prop></D:set></D:propertyupdate>");
+	return xiofs_http_proppatch(inode, body, n);
 }
 
 int xiofs_http_link(struct inode *old_inode, const char *new_path)
@@ -778,4 +923,64 @@ int xiofs_http_link(struct inode *old_inode, const char *new_path)
 	if (!err)
 		err = xiofs_http_status_to_errno(meta.status);
 	return err;
+}
+
+int xiofs_http_symlink(struct inode *dir, const char *path, const char *target)
+{
+	struct xiofs_sb_info *sbi = XIOFS_SB(dir->i_sb);
+	char req[1536];
+	size_t n = 0;
+	struct xiofs_http_resp meta;
+	int err;
+
+	if (!target || !*target || strpbrk(target, "\r\n"))
+		return -EINVAL;
+	n += snprintf(req + n, sizeof(req) - n,
+		      "LINK %s HTTP/1.1\r\nHost: %s\r\n"
+		      "Xrd-Link-Type: symbolic\r\n"
+		      "Xrd-Symlink-Target: %s\r\n"
+		      "Connection: keep-alive\r\n",
+		      path, sbi->hosthdr, target);
+	xiofs_add_auth(req, sizeof(req), &n, sbi);
+	n += snprintf(req + n, sizeof(req) - n, "\r\n");
+	mutex_lock(&sbi->io_lock);
+	err = xiofs_transact(sbi, req, n, NULL, 0, NULL, 0, NULL, &meta);
+	mutex_unlock(&sbi->io_lock);
+	if (!err)
+		err = xiofs_http_status_to_errno(meta.status);
+	return err;
+}
+
+int xiofs_http_readlink(struct inode *inode, char *buf, size_t buflen)
+{
+	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
+	char req[768];
+	size_t n = 0, got = 0;
+	struct xiofs_http_resp meta;
+	int err;
+
+	if (!buf || buflen < 2)
+		return -EINVAL;
+	buf[0] = 0;
+	n += snprintf(req + n, sizeof(req) - n,
+		      "GET %s HTTP/1.1\r\nHost: %s\r\n"
+		      "Xrd-Readlink: 1\r\n"
+		      "Connection: keep-alive\r\n",
+		      XIOFS_I(inode)->remote_path, sbi->hosthdr);
+	xiofs_add_auth(req, sizeof(req), &n, sbi);
+	n += snprintf(req + n, sizeof(req) - n, "\r\n");
+	mutex_lock(&sbi->io_lock);
+	err = xiofs_transact(sbi, req, n, NULL, 0, buf, buflen - 1, &got, &meta);
+	mutex_unlock(&sbi->io_lock);
+	if (!err)
+		err = xiofs_http_status_to_errno(meta.status);
+	if (err)
+		return err;
+	if (got >= buflen)
+		got = buflen - 1;
+	buf[got] = 0;
+	while (got && (buf[got - 1] == '\n' || buf[got - 1] == '\r' ||
+		       buf[got - 1] == '\0'))
+		buf[--got] = 0;
+	return 0;
 }

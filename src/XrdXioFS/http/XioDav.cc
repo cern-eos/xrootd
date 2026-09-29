@@ -6,6 +6,8 @@
 #include <cctype>
 #include <cstring>
 #include <ctime>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 namespace XioFS {
 
@@ -197,13 +199,69 @@ bool parseMultistatus(const std::string &xml, std::vector<DavEntry> &out,
       parseHttpDate(lm, e.mtime);
 
     std::string rt;
-    if (extractLocal(block, "resourcetype", rt) &&
-        toLower(rt).find("collection") != std::string::npos)
-      e.is_dir = true;
+    if (extractLocal(block, "resourcetype", rt)) {
+      const std::string rtl = toLower(rt);
+      if (rtl.find("collection") != std::string::npos)
+        e.is_dir = true;
+      else if (rtl.find("symlink") != std::string::npos)
+        e.is_lnk = true;
+    }
 
     std::string ic;
     if (extractLocal(block, "iscollection", ic) && !ic.empty() && ic[0] == '1')
       e.is_dir = true;
+
+    std::string other;
+    if (extractLocal(block, "other", other) && !other.empty() &&
+        (other[0] == '1' || other[0] == 't' || other[0] == 'T'))
+      e.is_lnk = true;
+
+    std::string umode;
+    if (extractLocal(block, "unix-mode", umode) ||
+        extractLocal(block, "mode", umode)) {
+      try {
+        e.mode = static_cast<mode_t>(std::stoul(umode, nullptr, 8) & 07777);
+      } catch (...) {
+        e.mode = 0;
+      }
+    }
+
+    std::string uid;
+    if (extractLocal(block, "uid", uid) || extractLocal(block, "owner-uid", uid)) {
+      try {
+        e.uid = static_cast<uid_t>(std::stoul(uid, nullptr, 10));
+      } catch (...) {
+      }
+    }
+
+    std::string gid;
+    if (extractLocal(block, "gid", gid) || extractLocal(block, "owner-gid", gid)) {
+      try {
+        e.gid = static_cast<gid_t>(std::stoul(gid, nullptr, 10));
+      } catch (...) {
+      }
+    }
+
+    std::string at;
+    if (extractLocal(block, "atime", at) ||
+        extractLocal(block, "getlastaccessed", at)) {
+      try {
+        e.atime = static_cast<time_t>(std::stoll(at));
+      } catch (...) {
+        parseHttpDate(at, e.atime);
+      }
+    }
+
+    std::string mt;
+    if (extractLocal(block, "mtime", mt)) {
+      try {
+        e.mtime = static_cast<time_t>(std::stoll(mt));
+      } catch (...) {
+      }
+    }
+
+    if (e.is_dir)
+      e.is_lnk = false;
 
     if (e.name.empty() && e.href.empty())
       continue;

@@ -59,19 +59,26 @@ typedef struct user_namespace *xiofs_idmap_t;
 	generic_fillattr((inode), (stat))
 #endif
 
-static inline void xiofs_set_times(struct inode *inode, time64_t sec)
+static inline void xiofs_set_times2(struct inode *inode, time64_t mtime,
+				    time64_t atime)
 {
-	struct timespec64 ts = { .tv_sec = sec, .tv_nsec = 0 };
+	struct timespec64 mt = { .tv_sec = mtime, .tv_nsec = 0 };
+	struct timespec64 at = { .tv_sec = atime ? atime : mtime, .tv_nsec = 0 };
 
 #ifdef XIOFS_HAS_INODE_SET_MTIME_TO_TS
-	inode_set_mtime_to_ts(inode, ts);
-	inode_set_ctime_to_ts(inode, ts);
-	inode_set_atime_to_ts(inode, ts);
+	inode_set_mtime_to_ts(inode, mt);
+	inode_set_ctime_to_ts(inode, mt);
+	inode_set_atime_to_ts(inode, at);
 #else
-	inode->i_mtime = ts;
-	inode->i_ctime = ts;
-	inode->i_atime = ts;
+	inode->i_mtime = mt;
+	inode->i_ctime = mt;
+	inode->i_atime = at;
 #endif
+}
+
+static inline void xiofs_set_times(struct inode *inode, time64_t sec)
+{
+	xiofs_set_times2(inode, sec, sec);
 }
 
 static inline time64_t xiofs_mtime_sec(struct inode *inode)

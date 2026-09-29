@@ -24,7 +24,14 @@ struct fs_context;
 struct xiofs_attr {
 	loff_t		size;
 	time64_t	mtime;
+	time64_t	atime;
+	umode_t		mode;
+	u32		uid;
+	u32		gid;
+	bool		have_uid;
+	bool		have_gid;
 	bool		is_dir;
+	bool		is_lnk;
 	char		etag[128];
 };
 
@@ -32,7 +39,9 @@ struct xiofs_dirent {
 	char		name[256];
 	loff_t		size;
 	time64_t	mtime;
+	umode_t		mode;
 	bool		is_dir;
+	bool		is_lnk;
 };
 
 struct xiofs_sb_info {
@@ -56,6 +65,7 @@ struct xiofs_inode_info {
 	struct inode		vfs_inode;
 	char			remote_path[XIOFS_PATH_MAX];
 	char			etag[128];
+	char			link_target[XIOFS_PATH_MAX];
 	unsigned long		attr_jiffies;
 };
 
@@ -93,6 +103,7 @@ int xiofs_join_path(char *dst, size_t dstsz, const char *parent,
 
 extern const struct inode_operations xiofs_dir_inode_ops;
 extern const struct inode_operations xiofs_file_inode_ops;
+extern const struct inode_operations xiofs_symlink_inode_ops;
 extern const struct file_operations xiofs_file_ops;
 extern const struct file_operations xiofs_dir_ops;
 extern const struct address_space_operations xiofs_aops;
@@ -123,7 +134,11 @@ int xiofs_http_unlink(struct inode *inode);
 int xiofs_http_rename(struct inode *old_inode, const char *new_path);
 int xiofs_http_truncate(struct inode *inode, loff_t size);
 int xiofs_http_chmod(struct inode *inode, umode_t mode);
+int xiofs_http_chown(struct inode *inode, u32 uid, u32 gid);
+int xiofs_http_utimens(struct inode *inode, time64_t atime, time64_t mtime);
 int xiofs_http_link(struct inode *old_inode, const char *new_path);
+int xiofs_http_symlink(struct inode *dir, const char *path, const char *target);
+int xiofs_http_readlink(struct inode *inode, char *buf, size_t buflen);
 
 int xiofs_rdma_gpu_io(struct file *file, struct xiofs_gpu_io *req,
 			 bool writing);

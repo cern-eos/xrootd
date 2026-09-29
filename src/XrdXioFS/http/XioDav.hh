@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <ctime>
 #include <string>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <vector>
 
 namespace XioFS {
@@ -17,8 +19,13 @@ struct DavEntry {
   std::string name;
   std::string href;
   bool        is_dir{false};
+  bool        is_lnk{false};
   int64_t     size{-1};
   time_t      mtime{0};
+  time_t      atime{0};
+  mode_t      mode{0};
+  uid_t       uid{static_cast<uid_t>(-1)};
+  gid_t       gid{static_cast<gid_t>(-1)};
 };
 
 // Parse a DAV:multistatus document produced by XrdHttp (207 Multi-Status).

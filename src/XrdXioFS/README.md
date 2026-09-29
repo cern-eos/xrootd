@@ -43,7 +43,11 @@ kTLS, and imports the socket via `/dev/xiofsctl`. See
 | unlink | `DELETE` |
 | rename | `MOVE` |
 | chmod | `PROPPATCH` (`X:mode` / Apache `executable`) |
+| chown | `PROPPATCH` (`X:uid` / `X:gid`) |
+| utimens | `PROPPATCH` (`X:atime` / `X:mtime`) |
 | hard link | `LINK` (`Destination:`) |
+| symlink | `SYMLINK` (`Xrd-Symlink-Target`) or `LINK` + `Xrd-Link-Type: symbolic` |
+| readlink | `READLINK` or `GET` + `Xrd-Readlink: 1` |
 
 Identity is **URL path + ETag** (XrdHttp `ETag` from `StatGen`).
 
@@ -68,7 +72,10 @@ xiofscli --cacert ca.pem https://localhost:7097/path/file.txt cat
 xiofscli --cacert ca.pem https://localhost:7097/path/file.txt read 0 4096
 xiofscli --cacert ca.pem https://localhost:7097/path/dir ls
 xiofscli --cacert ca.pem https://localhost:7097/path/new.txt put ./local.bin
-xiofscli --cacert ca.pem https://localhost:7097/path/new.txt write 4 ./patch.bin
+xiofscli --cacert ca.pem https://localhost:7097/path/file.txt chmod 0644
+xiofscli --cacert ca.pem https://localhost:7097/path/file.txt chown 1000 1000
+xiofscli --cacert ca.pem https://localhost:7097/path/link symlink /target
+xiofscli --cacert ca.pem https://localhost:7097/path/link readlink
 ```
 
 XrdHttp's `xrd.tls` context did not advertise ALPN `h2`, and TLS 1.3
@@ -86,8 +93,13 @@ xiofsd --cacert ca.pem https://localhost:7097/export /mnt/xiofs -f
 
 FUSE I/O uses Range GETs for reads and PATCH (`Content-Range`) for
 `pwrite`. `create` / truncate-to-empty is `PUT`. mkdir / unlink / rename
-are MKCOL / DELETE / MOVE. `chmod` is PROPPATCH; `link` is LINK. `auto_cache`
-repeated 4 KiB reads; `xiofscli` remains the non-FUSE client.
+are MKCOL / DELETE / MOVE. `chmod` is PROPPATCH; `chown` and `utimens` are
+PROPPATCH `X:uid`/`X:gid`/`X:atime`/`X:mtime`. `link` is LINK. `symlink` is
+SYMLINK (HTTP/2) with a LINK + `Xrd-Link-Type: symbolic` fallback. `readlink`
+is READLINK, or GET + `Xrd-Readlink: 1` on HTTP/1. getattr uses PROPFIND
+`X:unix-mode`/`X:uid`/`X:gid`/`D:symlink`. Regular `mknod` is PUT; fifo/device
+nodes remain `EPERM`. `auto_cache` repeated 4 KiB reads; `xiofscli` remains the
+non-FUSE client.
 
 The HTTP/2 session keeps one TLS connection and multiplexes streams on
 an I/O thread, so concurrent FUSE reads and writes do not wait for each

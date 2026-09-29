@@ -5,7 +5,9 @@
 
 #include <cerrno>
 #include <cstdio>
+#include <ctime>
 #include <functional>
+#include <sstream>
 #include <sys/stat.h>
 
 namespace XioFS {
@@ -57,6 +59,18 @@ void addIfHeader(std::vector<std::pair<std::string, std::string>> &hdrs,
   if (t != "*" && t.front() != '"')
     t = "\"" + t + "\"";
   hdrs.emplace_back(name, std::move(t));
+}
+
+void attrFromDav(const DavEntry &e, Attr &out)
+{
+  out.size = e.size < 0 ? 0 : e.size;
+  out.mtime = e.mtime;
+  out.atime = e.atime ? e.atime : e.mtime;
+  out.mode = e.mode;
+  out.uid = e.uid;
+  out.gid = e.gid;
+  out.is_dir = e.is_dir;
+  out.is_lnk = e.is_lnk && !e.is_dir;
 }
 
 } // namespace
@@ -145,17 +159,17 @@ int Client::getattr(const std::string &relpath, Attr &out, std::string &err)
     out.etag = head.header("etag");
     out.ino = makeIno(out.path, out.etag);
     auto lm = head.header("last-modified");
-    if (!lm.empty())
+    if (!lm.empty()) {
       parseHttpDate(lm, out.mtime);
+      out.atime = out.mtime;
+    }
     return 0;
   }
 
   const DavEntry &e = ents.front();
   out = Attr{};
   out.path = absPath(relpath);
-  out.size = e.size < 0 ? 0 : e.size;
-  out.mtime = e.mtime;
-  out.is_dir = e.is_dir;
+  attrFromDav(e, out);
   out.etag = resp.header("etag");
   if (out.etag.empty())
     out.etag = e.href;
@@ -335,7 +349,13 @@ int Client::chmod(const std::string &relpath, mode_t mode, std::string &err)
                 "<D:propertyupdate xmlns:D=\"DAV:\" xmlns:X=\"http://xrootd.org/ns\">"
                 "<D:set><D:prop><X:mode>%o</X:mode></D:prop></D:set>"
                 "</D:propertyupdate>",
-                static_cast<unsigned>(mode & 0777));
+                static_cast<unsigned>(mode & 07777));
+  return proppatch(relpath, body, err);
+}
+
+int Client::proppatch(const std::string &relpath, const std::string &body,
+                      std::string &err)
+{
   HttpResponse resp;
   int rc = doReq("PROPPATCH", relpath,
                  {{"content-type", "application/xml; charset=\"utf-8\""}},
@@ -347,6 +367,62 @@ int Client::chmod(const std::string &relpath, mode_t mode, std::string &err)
     return -e;
   }
   return 0;
+}
+
+int Client::chown(const std::string &relpath, uid_t uid, gid_t gid,
+                  std::string &err)
+{
+  if (uid == static_cast<uid_t>(-1) && gid == static_cast<gid_t>(-1))
+    return 0;
+  std::ostringstream body;
+  body << "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+          "<D:propertyupdate xmlns:D=\"DAV:\" xmlns:X=\"http://xrootd.org/ns\">"
+          "<D:set><D:prop>";
+  if (uid != static_cast<uid_t>(-1))
+    body << "<X:uid>" << static_cast<unsigned>(uid) << "</X:uid>";
+  if (gid != static_cast<gid_t>(-1))
+    body << "<X:gid>" << static_cast<unsigned>(gid) << "</X:gid>";
+  body << "</D:prop></D:set></D:propertyupdate>";
+  return proppatch(relpath, body.str(), err);
+}
+
+int Client::utimens(const std::string &relpath, const struct timespec tv[2],
+                    std::string &err)
+{
+#ifndef UTIME_NOW
+#define UTIME_NOW  ((1l << 30) - 1l)
+#define UTIME_OMIT ((1l << 30) - 2l)
+#endif
+  long long at = -1;
+  long long mt = -1;
+  if (tv) {
+    if (tv[0].tv_nsec != UTIME_OMIT) {
+      if (tv[0].tv_nsec == UTIME_NOW)
+        at = static_cast<long long>(time(nullptr));
+      else
+        at = static_cast<long long>(tv[0].tv_sec);
+    }
+    if (tv[1].tv_nsec != UTIME_OMIT) {
+      if (tv[1].tv_nsec == UTIME_NOW)
+        mt = static_cast<long long>(time(nullptr));
+      else
+        mt = static_cast<long long>(tv[1].tv_sec);
+    }
+  } else {
+    at = mt = static_cast<long long>(time(nullptr));
+  }
+  if (at < 0 && mt < 0)
+    return 0;
+  std::ostringstream body;
+  body << "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+          "<D:propertyupdate xmlns:D=\"DAV:\" xmlns:X=\"http://xrootd.org/ns\">"
+          "<D:set><D:prop>";
+  if (at >= 0)
+    body << "<X:atime>" << at << "</X:atime>";
+  if (mt >= 0)
+    body << "<X:mtime>" << mt << "</X:mtime>";
+  body << "</D:prop></D:set></D:propertyupdate>";
+  return proppatch(relpath, body.str(), err);
 }
 
 int Client::link(const std::string &from, const std::string &to, std::string &err)
@@ -361,6 +437,53 @@ int Client::link(const std::string &from, const std::string &to, std::string &er
     err = "LINK status " + std::to_string(resp.status);
     return -e;
   }
+  return 0;
+}
+
+int Client::symlink(const std::string &linkpath, const std::string &target,
+                    std::string &err)
+{
+  HttpResponse resp;
+  std::vector<std::pair<std::string, std::string>> hdrs{
+      {"xrd-symlink-target", target},
+      {"destination", target}};
+  int rc = doReq("SYMLINK", linkpath, hdrs, target, resp, err);
+  if (rc)
+    return rc;
+  if (resp.status == 405 || resp.status == 501) {
+    hdrs.emplace_back("xrd-link-type", "symbolic");
+    rc = doReq("LINK", linkpath, hdrs, {}, resp, err);
+    if (rc)
+      return rc;
+  }
+  if (int e = httpToErrno(resp.status)) {
+    err = "SYMLINK status " + std::to_string(resp.status);
+    return -e;
+  }
+  return 0;
+}
+
+int Client::readlink(const std::string &relpath, std::string &target,
+                     std::string &err)
+{
+  HttpResponse resp;
+  int rc = doReq("READLINK", relpath, {}, {}, resp, err);
+  if (rc)
+    return rc;
+  if (resp.status == 405 || resp.status == 501) {
+    rc = doReq("GET", relpath, {{"xrd-readlink", "1"}}, {}, resp, err);
+    if (rc)
+      return rc;
+  }
+  if (int e = httpToErrno(resp.status)) {
+    err = "READLINK status " + std::to_string(resp.status);
+    return -e;
+  }
+  target = resp.body;
+  while (!target.empty() &&
+         (target.back() == '\n' || target.back() == '\r' ||
+          target.back() == '\0'))
+    target.pop_back();
   return 0;
 }
 

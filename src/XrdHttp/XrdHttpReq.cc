@@ -68,6 +68,9 @@
 #include "XrdHttpStatic.hh"
 
 #include <sys/stat.h>
+#include <pwd.h>
+#include <grp.h>
+#include <cstdio>
 #include <cstdlib>
 
 #define MAX_TK_LEN      256
@@ -180,6 +183,135 @@ void davTrim(std::string &value)
   while (!value.empty() && isspace(static_cast<unsigned char>(value.back())))
     value.pop_back();
 }
+
+uid_t nameToUid(const char *n)
+{
+  if (!n || !*n)
+    return static_cast<uid_t>(-1);
+  struct passwd pw, *res = 0;
+  char buf[4096];
+  if (getpwnam_r(n, &pw, buf, sizeof(buf), &res) || !res)
+    return static_cast<uid_t>(-1);
+  return pw.pw_uid;
+}
+
+gid_t nameToGid(const char *n)
+{
+  if (!n || !*n)
+    return static_cast<gid_t>(-1);
+  struct group gr, *res = 0;
+  char buf[4096];
+  if (getgrnam_r(n, &gr, buf, sizeof(buf), &res) || !res)
+    return static_cast<gid_t>(-1);
+  return gr.gr_gid;
+}
+
+void fillDirListFromStat(const char *s, DirListInfo &e)
+{
+  e.size = 0;
+  e.id = 0;
+  e.flags = 0;
+  e.modtime = 0;
+  e.atime = 0;
+  e.mode = 0;
+  e.uid = static_cast<uid_t>(-1);
+  e.gid = static_cast<gid_t>(-1);
+  if (!s)
+    return;
+  long long id = 0;
+  long ctime = 0;
+  unsigned mode = 0;
+  char owner[128] = {};
+  char group[128] = {};
+  int n = sscanf(s, "%lld %lld %ld %ld %ld %ld %o %127s %127s",
+                 &id, &e.size, &e.flags, &e.modtime, &ctime, &e.atime, &mode,
+                 owner, group);
+  if (n < 4)
+    return;
+  e.id = static_cast<long>(id);
+  if (n < 6)
+    e.atime = e.modtime;
+  if (n >= 7) {
+    e.mode = mode & 07777;
+  } else {
+    e.mode = (e.flags & kXR_isDir) ? 0755 : 0644;
+    if (!(e.flags & kXR_writable))
+      e.mode &= ~0222u;
+    if (e.flags & kXR_xset)
+      e.mode |= 0111u;
+  }
+  if (n >= 8)
+    e.uid = nameToUid(owner);
+  if (n >= 9)
+    e.gid = nameToGid(group);
+}
+
+void davAppendPosixProps(std::string &s, const DirListInfo &e)
+{
+  char tmp[160];
+  if (e.flags & kXR_isDir) {
+    s += "<lp1:resourcetype><D:collection/></lp1:resourcetype>\n";
+    s += "<lp1:iscollection>1</lp1:iscollection>\n";
+  } else if (e.flags & kXR_other) {
+    s += "<lp1:resourcetype><D:symlink/></lp1:resourcetype>\n";
+    s += "<lp1:iscollection>0</lp1:iscollection>\n";
+    s += "<X:other>1</X:other>\n";
+  } else {
+    s += "<lp1:resourcetype/>\n";
+    s += "<lp1:iscollection>0</lp1:iscollection>\n";
+  }
+  if (e.flags & kXR_xset)
+    s += "<lp2:executable>T</lp2:executable>\n";
+  else
+    s += "<lp2:executable>F</lp2:executable>\n";
+  snprintf(tmp, sizeof(tmp), "<X:unix-mode>%04o</X:unix-mode>\n", e.mode & 07777);
+  s += tmp;
+  snprintf(tmp, sizeof(tmp), "<X:mode>%04o</X:mode>\n", e.mode & 07777);
+  s += tmp;
+  if (e.uid != static_cast<uid_t>(-1)) {
+    snprintf(tmp, sizeof(tmp), "<X:uid>%u</X:uid>\n", static_cast<unsigned>(e.uid));
+    s += tmp;
+  }
+  if (e.gid != static_cast<gid_t>(-1)) {
+    snprintf(tmp, sizeof(tmp), "<X:gid>%u</X:gid>\n", static_cast<unsigned>(e.gid));
+    s += tmp;
+  }
+  if (e.atime) {
+    snprintf(tmp, sizeof(tmp), "<X:atime>%ld</X:atime>\n", e.atime);
+    s += tmp;
+  }
+  if (e.modtime) {
+    snprintf(tmp, sizeof(tmp), "<X:mtime>%ld</X:mtime>\n", e.modtime);
+    s += tmp;
+  }
+}
+
+void davAppendEntry(std::string &s, const std::string &href, const DirListInfo &e)
+{
+  s += "<D:response xmlns:lp1=\"DAV:\" xmlns:lp2=\"http://apache.org/dav/props/\" "
+       "xmlns:lp3=\"LCGDM:\" xmlns:X=\"http://xrootd.org/ns\">\n";
+  char *estr = escapeXML(href.c_str());
+  s += "<D:href>";
+  s += estr ? estr : href;
+  s += "</D:href>\n";
+  if (estr)
+    free(estr);
+  s += "<D:propstat>\n<D:prop>\n";
+  s += "<lp1:getcontentlength>";
+  s += itos(static_cast<long>(e.size));
+  s += "</lp1:getcontentlength>\n";
+  s += "<lp1:getlastmodified>";
+  s += ISOdatetime(e.modtime);
+  s += "</lp1:getlastmodified>\n";
+  davAppendPosixProps(s, e);
+  s += "</D:prop>\n<D:status>HTTP/1.1 200 OK</D:status>\n</D:propstat>\n"
+       "</D:response>\n";
+}
+
+const char *kDavMultistatusOpen =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+    "<D:multistatus xmlns:D=\"DAV:\" xmlns:ns1=\"http://apache.org/dav/props/\" "
+    "xmlns:ns0=\"DAV:\" xmlns:X=\"http://xrootd.org/ns\">\n";
 
 } // namespace
 
@@ -3293,72 +3425,15 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
             TRACEI(REQ, "Collection " << resource.c_str()
                      << " stat=" << (char *) iovP[0].iov_base);
 
-            long dummyl;
-            sscanf((const char *) iovP[0].iov_base, "%ld %lld %ld %ld",
-                    &dummyl,
-                    &e.size,
-                    &e.flags,
-                    &e.modtime);
+            fillDirListFromStat((const char *) iovP[0].iov_base, e);
 
-            if (e.path.length() && (e.path != ".") && (e.path != "..")) {
-              /* The entry is filled. */
-
-
-              std::string p;
-              stringresp += "<D:response xmlns:lp1=\"DAV:\" xmlns:lp2=\"http://apache.org/dav/props/\" xmlns:lp3=\"LCGDM:\">\n";
-              
-              char *estr = escapeXML(e.path.c_str());
-              
-              stringresp += "<D:href>";
-              stringresp += estr;
-              stringresp += "</D:href>\n";
-              
-              free(estr);
-              
-              stringresp += "<D:propstat>\n<D:prop>\n";
-
-              // Now add the properties that we have to add
-
-              // File size
-              stringresp += "<lp1:getcontentlength>";
-              stringresp += itos(e.size);
-              stringresp += "</lp1:getcontentlength>\n";
-
-
-
-              stringresp += "<lp1:getlastmodified>";
-              stringresp += ISOdatetime(e.modtime);
-              stringresp += "</lp1:getlastmodified>\n";
-
-
-
-              if (e.flags & kXR_isDir) {
-                stringresp += "<lp1:resourcetype><D:collection/></lp1:resourcetype>\n";
-                stringresp += "<lp1:iscollection>1</lp1:iscollection>\n";
-              } else {
-                stringresp += "<lp1:resourcetype/>\n";
-                stringresp += "<lp1:iscollection>0</lp1:iscollection>\n";
-              }
-
-              if (e.flags & kXR_xset) {
-                stringresp += "<lp2:executable>T</lp2:executable>\n";
-              } else {
-                stringresp += "<lp2:executable>F</lp2:executable>\n";
-              }
-
-
-
-              stringresp += "</D:prop>\n<D:status>HTTP/1.1 200 OK</D:status>\n</D:propstat>\n</D:response>\n";
-
-
-            }
-
-
+            if (e.path.length() && (e.path != ".") && (e.path != ".."))
+              davAppendEntry(stringresp, e.path, e);
           }
 
           // If this was the last bunch of entries, send the buffer and empty it immediately
           if ((depth == 0) || !(e.flags & kXR_isDir)) {
-            std::string s = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<D:multistatus xmlns:D=\"DAV:\" xmlns:ns1=\"http://apache.org/dav/props/\" xmlns:ns0=\"DAV:\">\n";
+            std::string s = kDavMultistatusOpen;
             stringresp.insert(0, s);
             stringresp += "</D:multistatus>\n";
             prot->SendSimpleResp(207, (char *) "Multi-Status", (char *) "Content-Type: text/xml; charset=\"utf-8\"",
@@ -3392,79 +3467,15 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
                 TRACEI(REQ, "Dirlist " <<resource.c_str() <<" entry=" <<entry
                             << " stat=" << endp);
 
-                long dummyl;
-                sscanf(endp, "%ld %lld %ld %ld",
-                        &dummyl,
-                        &e.size,
-                        &e.flags,
-                        &e.modtime);
+                fillDirListFromStat(endp, e);
               }
 
 
               if (e.path.length() && (e.path != ".") && (e.path != "..")) {
-                /* The entry is filled.
-          
-                  <D:response xmlns:lp1="DAV:" xmlns:lp2="http://apache.org/dav/props/" xmlns:lp3="LCGDM:">
-                      <D:href>/dpm/cern.ch/home/testers2.eu-emi.eu/</D:href>
-                      <D:propstat>
-                          <D:prop>
-                              <lp1:getcontentlength>1</lp1:getcontentlength>
-                              <lp1:getlastmodified>Tue, 01 May 2012 02:42:13 GMT</lp1:getlastmodified>
-                              <lp1:resourcetype>
-                                <D:collection/>
-                              </lp1:resourcetype>
-                          </D:prop>
-                      <D:status>HTTP/1.1 200 OK</D:status>
-                      </D:propstat>
-                  </D:response>
-                 */
-
-
                 std::string p = resource.c_str();
                 if (*p.rbegin() != '/') p += "/";
-                
                 p += e.path;
-                
-                stringresp += "<D:response xmlns:lp1=\"DAV:\" xmlns:lp2=\"http://apache.org/dav/props/\" xmlns:lp3=\"LCGDM:\">\n";
-                
-                char *estr = escapeXML(p.c_str());
-                stringresp += "<D:href>";
-                stringresp += estr;
-                stringresp += "</D:href>\n";
-                free(estr);
-                
-                stringresp += "<D:propstat>\n<D:prop>\n";
-
-
-
-                // Now add the properties that we have to add
-
-                // File size
-                stringresp += "<lp1:getcontentlength>";
-                stringresp += itos(e.size);
-                stringresp += "</lp1:getcontentlength>\n";
-
-                stringresp += "<lp1:getlastmodified>";
-                stringresp += ISOdatetime(e.modtime);
-                stringresp += "</lp1:getlastmodified>\n";
-
-                if (e.flags & kXR_isDir) {
-                  stringresp += "<lp1:resourcetype><D:collection/></lp1:resourcetype>\n";
-                  stringresp += "<lp1:iscollection>1</lp1:iscollection>\n";
-                } else {
-                  stringresp += "<lp1:resourcetype/>\n";
-                  stringresp += "<lp1:iscollection>0</lp1:iscollection>\n";
-                }
-
-                if (e.flags & kXR_xset) {
-                  stringresp += "<lp2:executable>T</lp2:executable>\n";
-                } else {
-                  stringresp += "<lp2:executable>F</lp2:executable>\n";
-                }
-
-                stringresp += "</D:prop>\n<D:status>HTTP/1.1 200 OK</D:status>\n</D:propstat>\n</D:response>\n";
-
-
+                davAppendEntry(stringresp, p, e);
               }
 
 
@@ -3482,7 +3493,7 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
 
           // If this was the last bunch of entries, send the buffer and empty it immediately
           if (final_) {
-            std::string s = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<D:multistatus xmlns:D=\"DAV:\" xmlns:ns1=\"http://apache.org/dav/props/\" xmlns:ns0=\"DAV:\">\n";
+            std::string s = kDavMultistatusOpen;
             stringresp.insert(0, s);
             stringresp += "</D:multistatus>\n";
             prot->SendSimpleResp(207, (char *) "Multi-Status", (char *) "Content-Type: text/xml; charset=\"utf-8\"",

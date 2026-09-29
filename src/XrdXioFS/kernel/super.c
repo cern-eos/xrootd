@@ -11,6 +11,8 @@
 #include <linux/slab.h>
 #include <linux/statfs.h>
 #include <linux/string.h>
+#include <linux/uidgid.h>
+#include <linux/user_namespace.h>
 #include <linux/wait.h>
 
 #include "xiofs.h"
@@ -88,6 +90,7 @@ static struct inode *xiofs_alloc_inode(struct super_block *sb)
 		return NULL;
 	ki->remote_path[0] = 0;
 	ki->etag[0] = 0;
+	ki->link_target[0] = 0;
 	ki->attr_jiffies = 0;
 	return &ki->vfs_inode;
 }
@@ -146,25 +149,35 @@ struct inode *xiofs_iget(struct super_block *sb, const char *path,
 	inode->i_ino = hash;
 	inode->i_uid = current_fsuid();
 	inode->i_gid = current_fsgid();
+	if (attr && attr->have_uid)
+		inode->i_uid = make_kuid(&init_user_ns, attr->uid);
+	if (attr && attr->have_gid)
+		inode->i_gid = make_kgid(&init_user_ns, attr->gid);
 	inode->i_mapping->a_ops = &xiofs_aops;
 	mapping_set_gfp_mask(inode->i_mapping, GFP_HIGHUSER);
 	inode->i_blkbits = PAGE_SHIFT;
 
 	if (attr && attr->is_dir) {
-		inode->i_mode = S_IFDIR | 0755;
+		inode->i_mode = S_IFDIR | (attr->mode ? (attr->mode & 07777) : 0755);
 		inode->i_op = &xiofs_dir_inode_ops;
 		inode->i_fop = &xiofs_dir_ops;
 		set_nlink(inode, 2);
 		inode->i_size = 0;
+	} else if (attr && attr->is_lnk) {
+		inode->i_mode = S_IFLNK | (attr->mode ? (attr->mode & 07777) : 0777);
+		inode->i_op = &xiofs_symlink_inode_ops;
+		inode->i_fop = NULL;
+		set_nlink(inode, 1);
+		inode->i_size = attr->size;
 	} else {
-		inode->i_mode = S_IFREG | 0644;
+		inode->i_mode = S_IFREG | ((attr && attr->mode) ? (attr->mode & 07777) : 0644);
 		inode->i_op = &xiofs_file_inode_ops;
 		inode->i_fop = &xiofs_file_ops;
 		set_nlink(inode, 1);
 		inode->i_size = attr ? attr->size : 0;
 	}
 	if (attr)
-		xiofs_set_times(inode, attr->mtime);
+		xiofs_set_times2(inode, attr->mtime, attr->atime);
 
 	unlock_new_inode(inode);
 	return inode;

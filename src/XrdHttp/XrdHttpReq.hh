@@ -57,6 +57,10 @@ struct DirListInfo {
   long id;
   long flags;
   long modtime;
+  long atime{0};
+  unsigned mode{0};
+  uid_t uid{(uid_t)-1};
+  gid_t gid{(gid_t)-1};
 };
 
 

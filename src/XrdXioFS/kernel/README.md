@@ -116,7 +116,11 @@ revalidates). `d_revalidate` issues PROPFIND/HEAD when the cache expires.
 | unlink | `DELETE` + `If-Match` |
 | rename | `MOVE` |
 | chmod | `PROPPATCH` `X:mode` |
+| chown | `PROPPATCH` `X:uid` / `X:gid` |
+| utimens | `PROPPATCH` `X:atime` / `X:mtime` |
 | hard link | `LINK` + `Destination` |
+| symlink | `LINK` + `Xrd-Link-Type: symbolic` + `Xrd-Symlink-Target` |
+| readlink | `GET` + `Xrd-Readlink: 1` |
 
 ## Explicitly not done
 
@@ -124,8 +128,7 @@ revalidates). `d_revalidate` issues PROPFIND/HEAD when the cache expires.
 - Automatic handshake upcall (re-import is still `xiofsagent --import-only`)
 - Chunked responses
 - Byte-range locks (local VFS locks still apply)
-- Symlinks, mknod
-- Persistent chown / utimens (no protocol verb)
+- mknod for fifo/device nodes
 - Writeback congestion / batching PATCH across folios
 - RDMA / GPU-direct (`XIOFS_IOC_GPU_READ` returns `-EOPNOTSUPP`)
 

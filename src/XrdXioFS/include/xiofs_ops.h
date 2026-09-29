@@ -28,8 +28,12 @@ struct xiofs_attr {
   uint64_t ino;
   uint64_t size;
   uint64_t mtime_sec;
+  uint64_t atime_sec;
   uint32_t mode;
+  uint32_t uid;
+  uint32_t gid;
   uint32_t is_dir;
+  uint32_t is_lnk;
   char     etag[128];
 };
 
@@ -37,7 +41,9 @@ struct xiofs_dirent {
   char     name[256];
   uint64_t size;
   uint64_t mtime_sec;
+  uint32_t mode;
   uint32_t is_dir;
+  uint32_t is_lnk;
 };
 
 struct xiofs_io {
@@ -61,7 +67,11 @@ struct xiofs_io {
  *   unlink         -> DELETE
  *   rename         -> MOVE
  *   chmod          -> PROPPATCH (X:mode / Z:executable)
+ *   chown          -> PROPPATCH (X:uid / X:gid)
+ *   utimens        -> PROPPATCH (X:atime / X:mtime)
  *   link           -> LINK (Destination, POSIX hard link)
+ *   symlink        -> SYMLINK or LINK + Xrd-Link-Type: symbolic
+ *   readlink       -> READLINK or GET + Xrd-Readlink: 1
  */
 struct xiofs_transport_ops {
   int (*connect)(void *ctx);

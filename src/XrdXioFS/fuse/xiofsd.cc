@@ -5,6 +5,8 @@
 //
 // Reads are Range GETs. Writes are PATCH with Content-Range; create/truncate
 // to empty use PUT. mkdir/unlink/rename map to MKCOL/DELETE/MOVE.
+// chmod/chown/utimens are PROPPATCH. symlink is SYMLINK (LINK fallback);
+// readlink is READLINK (GET + Xrd-Readlink: 1 fallback).
 // Writes send If-Match from the ETag captured at open.
 //
 // Copyright (c) 2026 by the XRootD Collaboration
@@ -27,6 +29,8 @@
 #include <iostream>
 #include <string>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 #include <vector>
 
@@ -50,15 +54,42 @@ void fillStat(const XioFS::Attr &a, struct stat *st)
   memset(st, 0, sizeof(*st));
   st->st_ino = a.ino ? static_cast<ino_t>(a.ino) : 1;
   st->st_nlink = a.is_dir ? 2 : 1;
-  st->st_mode = a.is_dir ? (S_IFDIR | 0755) : (S_IFREG | 0644);
+  mode_t type = S_IFREG;
+  if (a.is_dir)
+    type = S_IFDIR;
+  else if (a.is_lnk)
+    type = S_IFLNK;
+  const mode_t perm = a.mode ? (a.mode & 07777) : (a.is_dir ? 0755 : 0644);
+  st->st_mode = type | perm;
   st->st_size = a.size < 0 ? 0 : a.size;
   st->st_mtime = a.mtime;
-  st->st_atime = a.mtime;
+  st->st_atime = a.atime ? a.atime : a.mtime;
   st->st_ctime = a.mtime;
-  st->st_uid = getuid();
-  st->st_gid = getgid();
+  st->st_uid = a.uid != static_cast<uid_t>(-1) ? a.uid : getuid();
+  st->st_gid = a.gid != static_cast<gid_t>(-1) ? a.gid : getgid();
   st->st_blksize = 4096;
   st->st_blocks = (st->st_size + 511) / 512;
+}
+
+int posixAccess(const XioFS::Attr &a, int mask)
+{
+  if (mask == F_OK)
+    return 0;
+  if (geteuid() == 0)
+    return 0;
+  const mode_t mode = a.mode ? (a.mode & 07777) : (a.is_dir ? 0755 : 0644);
+  int shift = 0;
+  if (a.uid != static_cast<uid_t>(-1) && geteuid() == a.uid)
+    shift = 6;
+  else if (a.gid != static_cast<gid_t>(-1) && getegid() == a.gid)
+    shift = 3;
+  if ((mask & R_OK) && !((mode >> shift) & 4))
+    return -EACCES;
+  if ((mask & W_OK) && !((mode >> shift) & 2))
+    return -EACCES;
+  if ((mask & X_OK) && !((mode >> shift) & 1))
+    return -EACCES;
+  return 0;
 }
 
 int putEmpty(const char *path, const std::string &if_match = {},
@@ -105,9 +136,16 @@ int xiofs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     if (e.name.empty() || e.name == "." || e.name == "..")
       continue;
     struct stat st {};
-    st.st_mode = e.is_dir ? (S_IFDIR | 0755) : (S_IFREG | 0644);
-    st.st_size = e.size < 0 ? 0 : e.size;
-    st.st_mtime = e.mtime;
+    XioFS::Attr a;
+    a.size = e.size;
+    a.mtime = e.mtime;
+    a.atime = e.atime;
+    a.mode = e.mode;
+    a.uid = e.uid;
+    a.gid = e.gid;
+    a.is_dir = e.is_dir;
+    a.is_lnk = e.is_lnk;
+    fillStat(a, &st);
     if (filler(buf, e.name.c_str(), &st, 0) != 0)
       break;
   }
@@ -135,7 +173,7 @@ int xiofs_open(const char *path, struct fuse_file_info *fi)
   return 0;
 }
 
-int xiofs_create(const char *path, mode_t, struct fuse_file_info *fi)
+int xiofs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
   std::string none;
   if (fi && (fi->flags & O_EXCL))
@@ -143,6 +181,12 @@ int xiofs_create(const char *path, mode_t, struct fuse_file_info *fi)
   int rc = putEmpty(path, {}, none);
   if (rc)
     return rc;
+  if (mode & 07777) {
+    std::string err;
+    rc = g_client.chmod(path, mode, err);
+    if (rc)
+      return rc;
+  }
   auto *st = new FileState;
   st->etag = currentEtag(path);
   fi->fh = reinterpret_cast<uint64_t>(st);
@@ -224,10 +268,15 @@ int xiofs_truncate(const char *path, off_t size)
                         std::string(1, '\0'), err, a.etag);
 }
 
-int xiofs_mkdir(const char *path, mode_t)
+int xiofs_mkdir(const char *path, mode_t mode)
 {
   std::string err;
-  return g_client.mkdir(path, err);
+  int rc = g_client.mkdir(path, err);
+  if (rc)
+    return rc;
+  if (mode & 07777)
+    return g_client.chmod(path, mode, err);
+  return 0;
 }
 
 int xiofs_unlink(const char *path)
@@ -253,9 +302,10 @@ int xiofs_chmod(const char *path, mode_t mode)
   return g_client.chmod(path, mode, err);
 }
 
-int xiofs_chown(const char *, uid_t, gid_t)
+int xiofs_chown(const char *path, uid_t uid, gid_t gid)
 {
-  return 0;
+  std::string err;
+  return g_client.chown(path, uid, gid, err);
 }
 
 int xiofs_link(const char *from, const char *to)
@@ -264,19 +314,56 @@ int xiofs_link(const char *from, const char *to)
   return g_client.link(from, to, err);
 }
 
-int xiofs_symlink(const char *, const char *)
+int xiofs_symlink(const char *target, const char *linkpath)
 {
-  return -EPERM;
+  std::string err;
+  return g_client.symlink(linkpath, target, err);
 }
 
-int xiofs_mknod(const char *, mode_t, dev_t)
+int xiofs_readlink(const char *path, char *buf, size_t size)
 {
-  return -EPERM;
-}
-
-int xiofs_utimens(const char *, const struct timespec[2])
-{
+  if (!buf || size == 0)
+    return -EINVAL;
+  std::string target;
+  std::string err;
+  int rc = g_client.readlink(path, target, err);
+  if (rc)
+    return rc;
+  if (target.size() >= size)
+    target.resize(size - 1);
+  memcpy(buf, target.data(), target.size());
+  buf[target.size()] = 0;
   return 0;
+}
+
+int xiofs_mknod(const char *path, mode_t mode, dev_t)
+{
+  if (!S_ISREG(mode) && (mode & S_IFMT) != 0)
+    return -EPERM;
+  int rc = putEmpty(path);
+  if (rc)
+    return rc;
+  if (mode & 07777) {
+    std::string err;
+    return g_client.chmod(path, mode, err);
+  }
+  return 0;
+}
+
+int xiofs_utimens(const char *path, const struct timespec tv[2])
+{
+  std::string err;
+  return g_client.utimens(path, tv, err);
+}
+
+int xiofs_access(const char *path, int mask)
+{
+  XioFS::Attr a;
+  std::string err;
+  int rc = g_client.getattr(path, a, err);
+  if (rc)
+    return rc;
+  return posixAccess(a, mask);
 }
 
 int xiofs_fsync(const char *, int, struct fuse_file_info *)
@@ -303,8 +390,10 @@ fuse_operations xiofs_ops()
   ops.chown = xiofs_chown;
   ops.link = xiofs_link;
   ops.symlink = xiofs_symlink;
+  ops.readlink = xiofs_readlink;
   ops.mknod = xiofs_mknod;
   ops.utimens = xiofs_utimens;
+  ops.access = xiofs_access;
   ops.fsync = xiofs_fsync;
   return ops;
 }
