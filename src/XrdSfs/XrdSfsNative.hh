@@ -132,6 +132,8 @@ public:
 
         int            truncate(XrdSfsFileOffset   fileOffset);
 
+        int            fchown(uid_t u, gid_t g);
+
         int            getCXinfo(char cxtype[4], int &cxrsz) {return cxrsz = 0;}
 
                        XrdSfsNativeFile(char *user=0, int monid=0)
@@ -168,6 +170,32 @@ public:
                                    XrdOucErrInfo    &out_error,
                              const XrdSecClientName *client = 0,
                              const char             *opaque = 0);
+
+        int            chown(const char             *path,
+                                   uid_t             u,
+                                   gid_t             g,
+                                   XrdOucErrInfo    &out_error,
+                             const XrdSecClientName *client = 0,
+                             const char             *opaque = 0);
+
+        int            symlink(const char             *target,
+                               const char             *path,
+                                     XrdOucErrInfo    &out_error,
+                               const XrdSecClientName *client = 0,
+                               const char             *opaque = 0);
+
+        int            readlink(const char             *path,
+                                      char             *buff,
+                                      int               blen,
+                                      XrdOucErrInfo    &out_error,
+                                const XrdSecClientName *client = 0,
+                                const char             *opaque = 0);
+
+        int            utimes(const char             *path,
+                              const struct timespec   ts[2],
+                                    XrdOucErrInfo    &out_error,
+                              const XrdSecClientName *client = 0,
+                              const char             *opaque = 0);
 
         int            exists(const char                *fileName,
                                     XrdSfsFileExistence &exists_flag,

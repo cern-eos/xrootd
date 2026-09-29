@@ -55,6 +55,59 @@ FileSystem::chmod(const char             *Name,
    return m_sfs_ptr->chmod(Name, Mode, out_error, client, opaque);
 }
 
+int
+FileSystem::chown(const char             *path,
+                        uid_t             u,
+                        gid_t             g,
+                        XrdOucErrInfo    &out_error,
+                  const XrdSecEntity     *client,
+                  const char             *opaque)
+{
+   return m_sfs_ptr->chown(path, u, g, out_error, client, opaque);
+}
+
+int
+FileSystem::symlink(const char             *target,
+                    const char             *path,
+                          XrdOucErrInfo    &out_error,
+                    const XrdSecEntity     *client,
+                    const char             *opaque)
+{
+   return m_sfs_ptr->symlink(target, path, out_error, client, opaque);
+}
+
+int
+FileSystem::readlink(const char             *path,
+                           char             *buff,
+                           int               blen,
+                           XrdOucErrInfo    &out_error,
+                     const XrdSecEntity     *client,
+                     const char             *opaque)
+{
+   return m_sfs_ptr->readlink(path, buff, blen, out_error, client, opaque);
+}
+
+int
+FileSystem::utimes(const char             *path,
+                   const struct timespec   ts[2],
+                         XrdOucErrInfo    &out_error,
+                   const XrdSecEntity     *client,
+                   const char             *opaque)
+{
+   return m_sfs_ptr->utimes(path, ts, out_error, client, opaque);
+}
+
+int
+FileSystem::link(const char             *oPath,
+                 const char             *nPath,
+                       XrdOucErrInfo    &out_error,
+                 const XrdSecEntity     *client,
+                 const char             *opaqueO,
+                 const char             *opaqueN)
+{
+   return m_sfs_ptr->link(oPath, nPath, out_error, client, opaqueO, opaqueN);
+}
+
 void
 FileSystem::Connect(const XrdSecEntity *client)
 {

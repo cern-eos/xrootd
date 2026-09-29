@@ -122,6 +122,12 @@ int XrdFsOssFile::Fchmod(mode_t mode)
    return fchmod(fd, mode) ? -errno : 0;
 }
 
+int XrdFsOssFile::Fchown(uid_t u, gid_t g)
+{
+   if (fd < 0) return -EBADF;
+   return fchown(fd, u, g) ? -errno : 0;
+}
+
 int XrdFsOssFile::Fctl(int cmd, int alen, const char *args, char **resp)
 {
    (void)resp;

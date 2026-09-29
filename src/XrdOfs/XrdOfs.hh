@@ -190,6 +190,8 @@ public:
 
         int            truncate(XrdSfsFileOffset   fileOffset);
 
+        int            fchown(uid_t u, gid_t g);
+
         int            getCXinfo(char cxtype[4], int &cxrsz);
 
                        XrdOfsFile(XrdOucErrInfo &eInfo, const char *user);
@@ -279,6 +281,32 @@ public:
                             const XrdSecEntity     *client,
                             const char             *opaqueO = 0,
                             const char             *opaqueN = 0);
+
+        int            symlink(const char             *target,
+                               const char             *path,
+                                     XrdOucErrInfo    &out_error,
+                               const XrdSecEntity     *client,
+                               const char             *opaque = 0);
+
+        int            readlink(const char             *path,
+                                      char             *buff,
+                                      int               blen,
+                                      XrdOucErrInfo    &out_error,
+                                const XrdSecEntity     *client,
+                                const char             *opaque = 0);
+
+        int            chown(const char             *path,
+                                   uid_t             u,
+                                   gid_t             g,
+                                   XrdOucErrInfo    &out_error,
+                             const XrdSecEntity     *client,
+                             const char             *opaque = 0);
+
+        int            utimes(const char             *path,
+                              const struct timespec   ts[2],
+                                    XrdOucErrInfo    &out_error,
+                              const XrdSecEntity     *client,
+                              const char             *opaque = 0);
 
         void           Connect(const XrdSecEntity     *client = 0);
 

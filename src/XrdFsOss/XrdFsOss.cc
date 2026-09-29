@@ -523,3 +523,17 @@ int XrdFsOss::Utimes(const char *path, const struct timespec ts[2],
    if (rc) return rc;
    return utimensat(AT_FDCWD, pfn, ts, AT_SYMLINK_NOFOLLOW) ? -errno : 0;
 }
+
+int XrdFsOss::Readlink(const char *path, char *buff, int blen, XrdOucEnv *envP)
+{
+   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   if (!uid.Ok()) return uid.RC();
+   char pb[MAXPATHLEN]; const char *pfn;
+   int rc = Pfn(path, pb, sizeof(pb), pfn);
+   if (rc) return rc;
+   if (!buff || blen < 1) return -EINVAL;
+   ssize_t n = readlink(pfn, buff, (size_t)blen);
+   if (n < 0) return -errno;
+   if (n < blen) buff[n] = '\0';
+   return (int)n;
+}

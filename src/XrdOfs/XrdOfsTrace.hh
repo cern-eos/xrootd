@@ -84,10 +84,14 @@
 #define TRACE_IO       TRACE_read | TRACE_write | TRACE_aio
 #define TRACE_exists   0x0040
 #define TRACE_chmod    TRACE_exists
+#define TRACE_chown    TRACE_exists
 #define TRACE_getmode  TRACE_exists
 #define TRACE_getsize  TRACE_exists
 #define TRACE_remove   0x0080
 #define TRACE_rename   TRACE_remove
+#define TRACE_symlink  TRACE_mkdir
+#define TRACE_readlink TRACE_exists
+#define TRACE_utime    TRACE_exists
 #define TRACE_sync     0x0100
 #define TRACE_truncate 0x0200
 #define TRACE_fsctl    0x0400

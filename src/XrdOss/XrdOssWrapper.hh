@@ -132,6 +132,8 @@ virtual int     Clone(const std::vector<XrdOucCloneSeg> &cVec)
 
 virtual int     Fchmod(mode_t mode) {return wrapDF.Fchmod(mode);}
 
+virtual int     Fchown(uid_t u, gid_t g) {return wrapDF.Fchown(u, g);}
+
 //-----------------------------------------------------------------------------
 //! Flush filesystem cached pages for this file (used for checksums).
 //-----------------------------------------------------------------------------
@@ -668,6 +670,10 @@ virtual int       Symlink(const char *target, const char *path,
 virtual int       Utimes(const char *path, const struct timespec ts[2],
                          XrdOucEnv *envP=0)
                         {return wrapPI.Utimes(path, ts, envP);}
+
+virtual int       Readlink(const char *path, char *buff, int blen,
+                           XrdOucEnv *envP=0)
+                          {return wrapPI.Readlink(path, buff, blen, envP);}
 
 //-----------------------------------------------------------------------------
 //! Create a directory.

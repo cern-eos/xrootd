@@ -1820,6 +1820,26 @@ int XrdOfsFile::truncate(XrdSfsFileOffset  flen)  // In
 }
 
 /******************************************************************************/
+/*                                f c h o w n                                 */
+/******************************************************************************/
+
+int XrdOfsFile::fchown(uid_t u, gid_t g)
+{
+   EPNAME("fchown");
+   int retc;
+
+   FTRACE(chown, "");
+
+   if (!(XrdOfsFS->Options & XrdOfs::PosixFS))
+      return XrdOfsFS->Emsg(epname, error, -ENOTSUP, "fchown", oh);
+
+   if ((retc = oh->Select().Fchown(u, g)))
+      return XrdOfsFS->Emsg(epname, error, retc, "fchown", oh);
+
+   return SFS_OK;
+}
+
+/******************************************************************************/
 /*                             g e t C X i n f o                              */
 /******************************************************************************/
   
@@ -2091,6 +2111,137 @@ int XrdOfs::link(const char             *old_name,
    if (!(retc = XrdOfsOss->Link(old_name, new_name, &new_Env)))
       return SFS_OK;
    return XrdOfsFS->Emsg(epname, einfo, retc, "link", new_name, "?");
+}
+
+/******************************************************************************/
+/*                               s y m l i n k                                */
+/******************************************************************************/
+
+int XrdOfs::symlink(const char             *target,
+                    const char             *path,
+                          XrdOucErrInfo    &einfo,
+                    const XrdSecEntity     *client,
+                    const char             *info)
+{
+   EPNAME("symlink");
+   static const int locFlags = SFS_O_RDWR|SFS_O_META;
+   const char *tident = einfo.getErrUser();
+   XrdOucEnv env(info, 0, client);
+   int retc;
+   XTRACE(symlink, path, "target=" <<target <<" ");
+
+   if (!(Options & PosixFS))
+      return XrdOfsFS->Emsg(epname, einfo, -ENOTSUP, "symlink", path);
+
+   AUTHORIZE(client, &env, AOP_Excl_Insert, "symlink", path, einfo);
+
+   if (Finder && Finder->isRemote())
+      {if ((retc = Finder->Locate(einfo, path, locFlags, &env)))
+          return fsError(einfo, retc);
+      }
+
+   (void)tident;
+   if (!(retc = XrdOfsOss->Symlink(target, path, &env))) return SFS_OK;
+   return XrdOfsFS->Emsg(epname, einfo, retc, "symlink", path, "?");
+}
+
+/******************************************************************************/
+/*                              r e a d l i n k                               */
+/******************************************************************************/
+
+int XrdOfs::readlink(const char             *path,
+                           char             *buff,
+                           int               blen,
+                           XrdOucErrInfo    &einfo,
+                     const XrdSecEntity     *client,
+                     const char             *info)
+{
+   EPNAME("readlink");
+   static const int locFlags = SFS_O_RDONLY|SFS_O_META;
+   const char *tident = einfo.getErrUser();
+   XrdOucEnv env(info, 0, client);
+   int retc;
+   XTRACE(readlink, path, "");
+
+   if (!(Options & PosixFS))
+      return XrdOfsFS->Emsg(epname, einfo, -ENOTSUP, "readlink", path);
+
+   AUTHORIZE(client, &env, AOP_Read, "readlink", path, einfo);
+
+   if (Finder && Finder->isRemote())
+      {if ((retc = Finder->Locate(einfo, path, locFlags, &env)))
+          return fsError(einfo, retc);
+      }
+
+   (void)tident;
+   if ((retc = XrdOfsOss->Readlink(path, buff, blen, &env)) < 0)
+      return XrdOfsFS->Emsg(epname, einfo, retc, "readlink", path, "?");
+   return SFS_OK;
+}
+
+/******************************************************************************/
+/*                                 c h o w n                                  */
+/******************************************************************************/
+
+int XrdOfs::chown(const char             *path,
+                        uid_t             u,
+                        gid_t             g,
+                        XrdOucErrInfo    &einfo,
+                  const XrdSecEntity     *client,
+                  const char             *info)
+{
+   EPNAME("chown");
+   static const int locFlags = SFS_O_RDWR|SFS_O_META;
+   const char *tident = einfo.getErrUser();
+   XrdOucEnv chown_Env(info, 0, client);
+   int retc;
+   XTRACE(chown, path, "");
+
+   if (!(Options & PosixFS))
+      return XrdOfsFS->Emsg(epname, einfo, -ENOTSUP, "chown", path);
+
+   AUTHORIZE(client, &chown_Env, AOP_Chown, "chown", path, einfo);
+
+   if (Finder && Finder->isRemote())
+      {if ((retc = Finder->Locate(einfo, path, locFlags, &chown_Env)))
+          return fsError(einfo, retc);
+      }
+
+   (void)tident;
+   if (!(retc = XrdOfsOss->Chown(path, u, g, &chown_Env))) return SFS_OK;
+   return XrdOfsFS->Emsg(epname, einfo, retc, "chown", path, "?");
+}
+
+/******************************************************************************/
+/*                                u t i m e s                                 */
+/******************************************************************************/
+
+int XrdOfs::utimes(const char             *path,
+                   const struct timespec   ts[2],
+                         XrdOucErrInfo    &einfo,
+                   const XrdSecEntity     *client,
+                   const char             *info)
+{
+   EPNAME("utimes");
+   static const int locFlags = SFS_O_RDWR|SFS_O_META;
+   const char *tident = einfo.getErrUser();
+   XrdOucEnv env(info, 0, client);
+   int retc;
+   XTRACE(utime, path, "");
+
+   if (!(Options & PosixFS))
+      return XrdOfsFS->Emsg(epname, einfo, -ENOTSUP, "utimes", path);
+
+   AUTHORIZE(client, &env, AOP_Update, "utimes", path, einfo);
+
+   if (Finder && Finder->isRemote())
+      {if ((retc = Finder->Locate(einfo, path, locFlags, &env)))
+          return fsError(einfo, retc);
+      }
+
+   (void)tident;
+   if (!(retc = XrdOfsOss->Utimes(path, ts, &env))) return SFS_OK;
+   return XrdOfsFS->Emsg(epname, einfo, retc, "utimes", path, "?");
 }
 
 /******************************************************************************/

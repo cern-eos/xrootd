@@ -37,6 +37,7 @@
 #include <cstdlib>
 #include <sys/param.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 
 #include "XrdVersion.hh"
 #include "XrdSys/XrdSysE2T.hh"
@@ -76,12 +77,19 @@ public:
 
 static int Chmod(const char *fn, mode_t mode) {return chmod(fn, mode);}
 
+static int Chown(const char *fn, uid_t u, gid_t g) {return lchown(fn, u, g);}
+
 static int Close(int fd) {return close(fd);}
+
+static int Fchown(int fd, uid_t u, gid_t g) {return fchown(fd, u, g);}
 
 static int Mkdir(const char *fn, mode_t mode) {return mkdir(fn, mode);}
 
 static int Open(const char *path, int oflag, mode_t omode)
                {return open(path, oflag, omode);}
+
+static int Readlink(const char *fn, char *buff, int blen)
+                   {return (int)readlink(fn, buff, (size_t)blen);}
 
 static int Rem(const char *fn) {return unlink(fn);}
 
@@ -93,7 +101,12 @@ static int Statfd(int fd, struct stat *buf) {return  fstat(fd, buf);}
 
 static int Statfn(const char *fn, struct stat *buf) {return stat(fn, buf);}
 
+static int Symlink(const char *tgt, const char *fn) {return symlink(tgt, fn);}
+
 static int Truncate(const char *fn, off_t flen) {return truncate(fn, flen);}
+
+static int Utimes(const char *fn, const struct timespec ts[2])
+                 {return utimensat(AT_FDCWD, fn, ts, AT_SYMLINK_NOFOLLOW);}
 };
   
 /******************************************************************************/
@@ -574,6 +587,20 @@ int XrdSfsNativeFile::stat(struct stat     *buf)         // Out
 }
 
 /******************************************************************************/
+/*                                f c h o w n                                 */
+/******************************************************************************/
+
+int XrdSfsNativeFile::fchown(uid_t u, gid_t g)
+{
+   static const char *epname = "fchown";
+
+   if (XrdSfsUFS::Fchown(oh, u, g))
+      return XrdSfsNative::Emsg(epname, error, errno, "fchown", fname);
+
+   return SFS_OK;
+}
+
+/******************************************************************************/
 /*                                  s y n c                                   */
 /******************************************************************************/
 
@@ -682,6 +709,89 @@ int XrdSfsNative::chmod(const char             *path,    // In
 // All done
 //
     return SFS_OK;
+}
+
+/******************************************************************************/
+/*                                 c h o w n                                  */
+/******************************************************************************/
+
+int XrdSfsNative::chown(const char             *path,
+                              uid_t             u,
+                              gid_t             g,
+                              XrdOucErrInfo    &error,
+                        const XrdSecClientName *client,
+                        const char             *info)
+{
+   static const char *epname = "chown";
+   (void)client; (void)info;
+
+   if (XrdSfsUFS::Chown(path, u, g))
+      return XrdSfsNative::Emsg(epname, error, errno, "chown", path);
+
+   return SFS_OK;
+}
+
+/******************************************************************************/
+/*                               s y m l i n k                                */
+/******************************************************************************/
+
+int XrdSfsNative::symlink(const char             *target,
+                          const char             *path,
+                                XrdOucErrInfo    &error,
+                          const XrdSecClientName *client,
+                          const char             *info)
+{
+   static const char *epname = "symlink";
+   (void)client; (void)info;
+
+   if (XrdSfsUFS::Symlink(target, path))
+      return XrdSfsNative::Emsg(epname, error, errno, "symlink", path);
+
+   return SFS_OK;
+}
+
+/******************************************************************************/
+/*                              r e a d l i n k                               */
+/******************************************************************************/
+
+int XrdSfsNative::readlink(const char             *path,
+                                 char             *buff,
+                                 int               blen,
+                                 XrdOucErrInfo    &error,
+                           const XrdSecClientName *client,
+                           const char             *info)
+{
+   static const char *epname = "readlink";
+   (void)client; (void)info;
+
+   if (!buff || blen < 1)
+      return XrdSfsNative::Emsg(epname, error, EINVAL, "readlink", path);
+
+   int n = XrdSfsUFS::Readlink(path, buff, blen);
+   if (n < 0)
+      return XrdSfsNative::Emsg(epname, error, errno, "readlink", path);
+   if (n < blen) buff[n] = '\0';
+
+   return SFS_OK;
+}
+
+/******************************************************************************/
+/*                                u t i m e s                                 */
+/******************************************************************************/
+
+int XrdSfsNative::utimes(const char             *path,
+                         const struct timespec   ts[2],
+                               XrdOucErrInfo    &error,
+                         const XrdSecClientName *client,
+                         const char             *info)
+{
+   static const char *epname = "utimes";
+   (void)client; (void)info;
+
+   if (XrdSfsUFS::Utimes(path, ts))
+      return XrdSfsNative::Emsg(epname, error, errno, "utimes", path);
+
+   return SFS_OK;
 }
   
 /******************************************************************************/

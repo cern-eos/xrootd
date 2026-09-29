@@ -47,6 +47,7 @@ virtual int     StatRet(struct stat *buff) /* override */             { return s
 
                 // File oriented methods
 virtual int     Fchmod(mode_t Mode) /* override */                     { return successor_->Fchmod(Mode); }
+virtual int     Fchown(uid_t u, gid_t g) /* override */                { return successor_->Fchown(u, g); }
 virtual void    Flush() /* override */                            { successor_->Flush(); }
 virtual int     Fstat(struct stat *buff) /* override */               { return successor_->Fstat(buff); }
 virtual int     Fsync() /* override */                            { return successor_->Fsync(); }
@@ -92,6 +93,7 @@ virtual int       Link(const char *old_path, const char *new_path, XrdOucEnv *en
 virtual int       Chown(const char *path, uid_t u, gid_t g, XrdOucEnv *envP=0) /* override */ { return successor_->Chown(path, u, g, envP); }
 virtual int       Symlink(const char *target, const char *path, XrdOucEnv *envP=0) /* override */ { return successor_->Symlink(target, path, envP); }
 virtual int       Utimes(const char *path, const struct timespec ts[2], XrdOucEnv *envP=0) /* override */ { return successor_->Utimes(path, ts, envP); }
+virtual int       Readlink(const char *path, char *buff, int blen, XrdOucEnv *envP=0) /* override */ { return successor_->Readlink(path, buff, blen, envP); }
 
 virtual void      Connect(XrdOucEnv &env) /* override */ { successor_->Connect(env); }
 

@@ -149,6 +149,18 @@ virtual int     Clone(const std::vector<XrdOucCloneSeg> &cVec)
 virtual int     Fchmod(mode_t mode) {return -EISDIR;}
 
 //-----------------------------------------------------------------------------
+//! Change file owner and group on the open file descriptor.
+//!
+//! @param  u      - New owner uid, or (uid_t)-1 to leave unchanged.
+//! @param  g      - New group gid, or (gid_t)-1 to leave unchanged.
+//!
+//! @return 0 upon success or -errno or -osserr (see XrdOssError.hh).
+//-----------------------------------------------------------------------------
+
+virtual int     Fchown(uid_t u, gid_t g)
+                       {(void)u; (void)g; return -ENOTSUP;}
+
+//-----------------------------------------------------------------------------
 //! Flush filesystem cached pages for this file (used for checksums).
 //-----------------------------------------------------------------------------
 
@@ -657,6 +669,23 @@ virtual int       Utimes(const char *path, const struct timespec ts[2],
                          XrdOucEnv *envP=0)
                         {(void)path; (void)ts; (void)envP;
                          return -ENOTSUP;}
+
+//-----------------------------------------------------------------------------
+//! Read the contents of a symbolic link.
+//!
+//! @param  path   - Pointer to the path of the symlink.
+//! @param  buff   - Buffer that receives the link text.
+//! @param  blen   - Size of buff.
+//! @param  envP   - Pointer to environmental information.
+//!
+//! @return >= 0 the number of bytes placed in buff (NUL-terminated if n<blen)
+//! @return <  0 -errno or -osserr (see XrdOssError.hh).
+//-----------------------------------------------------------------------------
+
+virtual int       Readlink(const char *path, char *buff, int blen,
+                           XrdOucEnv *envP=0)
+                          {(void)path; (void)buff; (void)blen; (void)envP;
+                           return -ENOTSUP;}
 
 //-----------------------------------------------------------------------------
 //! Notify storage system that a client has connected.

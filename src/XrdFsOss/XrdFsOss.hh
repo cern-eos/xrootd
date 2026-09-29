@@ -54,6 +54,7 @@ public:
    int     Close(long long *retsz=0);
    int     Open(const char *path, int oflag, mode_t mode, XrdOucEnv &env);
    int     Fchmod(mode_t mode);
+   int     Fchown(uid_t u, gid_t g);
    int     Fctl(int cmd, int alen, const char *args, char **resp=0);
    void    Flush();
    int     Fstat(struct stat *buf);
@@ -112,6 +113,8 @@ public:
    int       Unlink(const char *path, int opts=0, XrdOucEnv *envP=0);
    int       Utimes(const char *path, const struct timespec ts[2],
                     XrdOucEnv *envP=0);
+   int       Readlink(const char *path, char *buff, int blen,
+                      XrdOucEnv *envP=0);
 
    int       Pfn(const char *lfn, char *buff, int blen, const char *&use,
                  int opts=0);

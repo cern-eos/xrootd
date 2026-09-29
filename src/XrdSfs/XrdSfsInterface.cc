@@ -93,6 +93,17 @@ int XrdSfsFile::Clone(const std::vector<XrdOucCloneSeg> &cVec)
 }
 
 /******************************************************************************/
+/*                                 f c h o w n                                */
+/******************************************************************************/
+
+int XrdSfsFile::fchown(uid_t u, gid_t g)
+{
+   (void)u; (void)g;
+   error.setErrInfo(ENOTSUP, "Not supported.");
+   return SFS_ERROR;
+}
+
+/******************************************************************************/
 /*                                  f c t l                                   */
 /******************************************************************************/
 
@@ -323,6 +334,68 @@ int XrdSfsFileSystem::link(const char             *oPath,
                            const char             *opaqueN)
 {
    (void)oPath; (void)nPath; (void)client; (void)opaqueO; (void)opaqueN;
+   eInfo.setErrInfo(ENOTSUP, "Not supported.");
+   return SFS_ERROR;
+}
+
+/******************************************************************************/
+/*                               s y m l i n k                                */
+/******************************************************************************/
+
+int XrdSfsFileSystem::symlink(const char             *target,
+                              const char             *path,
+                                    XrdOucErrInfo    &eInfo,
+                              const XrdSecEntity     *client,
+                              const char             *opaque)
+{
+   (void)target; (void)path; (void)client; (void)opaque;
+   eInfo.setErrInfo(ENOTSUP, "Not supported.");
+   return SFS_ERROR;
+}
+
+/******************************************************************************/
+/*                              r e a d l i n k                               */
+/******************************************************************************/
+
+int XrdSfsFileSystem::readlink(const char             *path,
+                                     char             *buff,
+                                     int               blen,
+                                     XrdOucErrInfo    &eInfo,
+                               const XrdSecEntity     *client,
+                               const char             *opaque)
+{
+   (void)path; (void)buff; (void)blen; (void)client; (void)opaque;
+   eInfo.setErrInfo(ENOTSUP, "Not supported.");
+   return SFS_ERROR;
+}
+
+/******************************************************************************/
+/*                                 c h o w n                                  */
+/******************************************************************************/
+
+int XrdSfsFileSystem::chown(const char             *path,
+                                  uid_t             u,
+                                  gid_t             g,
+                                  XrdOucErrInfo    &eInfo,
+                            const XrdSecEntity     *client,
+                            const char             *opaque)
+{
+   (void)path; (void)u; (void)g; (void)client; (void)opaque;
+   eInfo.setErrInfo(ENOTSUP, "Not supported.");
+   return SFS_ERROR;
+}
+
+/******************************************************************************/
+/*                                u t i m e s                                 */
+/******************************************************************************/
+
+int XrdSfsFileSystem::utimes(const char             *path,
+                             const struct timespec   ts[2],
+                                   XrdOucErrInfo    &eInfo,
+                             const XrdSecEntity     *client,
+                             const char             *opaque)
+{
+   (void)path; (void)ts; (void)client; (void)opaque;
    eInfo.setErrInfo(ENOTSUP, "Not supported.");
    return SFS_ERROR;
 }

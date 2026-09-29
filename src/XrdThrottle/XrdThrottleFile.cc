@@ -227,6 +227,12 @@ File::truncate(XrdSfsFileOffset   fileOffset)
 }
 
 int
+File::fchown(uid_t u, gid_t g)
+{
+   return m_sfs->fchown(u, g);
+}
+
+int
 File::getCXinfo(char cxtype[4], int &cxrsz)
 {
    return m_sfs->getCXinfo(cxtype, cxrsz);

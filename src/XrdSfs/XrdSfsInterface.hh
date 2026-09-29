@@ -35,6 +35,7 @@
 #include <string>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <ctime>
 #include <vector>
 
 #include "XrdOuc/XrdOucErrInfo.hh"
@@ -789,6 +790,18 @@ virtual int            sync(XrdSfsAio *aiop) = 0;
 virtual int            truncate(XrdSfsFileOffset fsize) = 0;
 
 //-----------------------------------------------------------------------------
+//! Change owner and group of the open file.
+//!
+//! @param  u      - New owner uid, or (uid_t)-1 to leave unchanged.
+//! @param  g      - New group gid, or (gid_t)-1 to leave unchanged.
+//!
+//! @return One of SFS_OK, SFS_ERROR, SFS_REDIRECT, or SFS_STALL.
+//!         The default implementation returns SFS_ERROR / ENOTSUP.
+//-----------------------------------------------------------------------------
+
+virtual int            fchown(uid_t u, gid_t g);
+
+//-----------------------------------------------------------------------------
 //! Get compression information for the file.
 //!
 //! @param  cxtype - Place where the compression algorithm name is to be placed
@@ -1210,6 +1223,87 @@ virtual int            link(const char             *oPath,
                             const XrdSecEntity     *client = 0,
                             const char             *opaqueO = 0,
                             const char             *opaqueN = 0);
+
+//-----------------------------------------------------------------------------
+//! Create a symbolic link.
+//!
+//! @param  target - Pointer to the link text stored in the symlink.
+//! @param  path   - Pointer to the path of the symlink to create.
+//! @param  eInfo  - The object where error info is to be returned.
+//! @param  client - Client's identify (see common description).
+//! @param  opaque - Path's CGI information (see common description).
+//!
+//! @return One of SFS_OK, SFS_ERROR, SFS_REDIRECT, or SFS_STALL.
+//!         The default implementation returns SFS_ERROR / ENOTSUP.
+//-----------------------------------------------------------------------------
+
+virtual int            symlink(const char             *target,
+                               const char             *path,
+                                     XrdOucErrInfo    &eInfo,
+                               const XrdSecEntity     *client = 0,
+                               const char             *opaque = 0);
+
+//-----------------------------------------------------------------------------
+//! Read the contents of a symbolic link.
+//!
+//! @param  path   - Pointer to the path of the symlink.
+//! @param  buff   - Buffer that receives the link text.
+//! @param  blen   - Size of buff.
+//! @param  eInfo  - The object where error info is to be returned.
+//! @param  client - Client's identify (see common description).
+//! @param  opaque - Path's CGI information (see common description).
+//!
+//! @return One of SFS_OK, SFS_ERROR, SFS_REDIRECT, or SFS_STALL.
+//!         On SFS_OK, buff holds the link text (NUL-terminated when possible).
+//!         The default implementation returns SFS_ERROR / ENOTSUP.
+//-----------------------------------------------------------------------------
+
+virtual int            readlink(const char             *path,
+                                      char             *buff,
+                                      int               blen,
+                                      XrdOucErrInfo    &eInfo,
+                                const XrdSecEntity     *client = 0,
+                                const char             *opaque = 0);
+
+//-----------------------------------------------------------------------------
+//! Change file owner and group.
+//!
+//! @param  path   - Pointer to the path of the file or directory.
+//! @param  u      - New owner uid, or (uid_t)-1 to leave unchanged.
+//! @param  g      - New group gid, or (gid_t)-1 to leave unchanged.
+//! @param  eInfo  - The object where error info is to be returned.
+//! @param  client - Client's identify (see common description).
+//! @param  opaque - Path's CGI information (see common description).
+//!
+//! @return One of SFS_OK, SFS_ERROR, SFS_REDIRECT, or SFS_STALL.
+//!         The default implementation returns SFS_ERROR / ENOTSUP.
+//-----------------------------------------------------------------------------
+
+virtual int            chown(const char             *path,
+                                   uid_t             u,
+                                   gid_t             g,
+                                   XrdOucErrInfo    &eInfo,
+                             const XrdSecEntity     *client = 0,
+                             const char             *opaque = 0);
+
+//-----------------------------------------------------------------------------
+//! Set access and modification times.
+//!
+//! @param  path   - Pointer to the path of the file or directory.
+//! @param  ts     - timespec[2] as for utimensat (atime, mtime). Nil uses now.
+//! @param  eInfo  - The object where error info is to be returned.
+//! @param  client - Client's identify (see common description).
+//! @param  opaque - Path's CGI information (see common description).
+//!
+//! @return One of SFS_OK, SFS_ERROR, SFS_REDIRECT, or SFS_STALL.
+//!         The default implementation returns SFS_ERROR / ENOTSUP.
+//-----------------------------------------------------------------------------
+
+virtual int            utimes(const char             *path,
+                              const struct timespec   ts[2],
+                                    XrdOucErrInfo    &eInfo,
+                              const XrdSecEntity     *client = 0,
+                              const char             *opaque = 0);
 
 //-----------------------------------------------------------------------------
 //! Create a directory.
