@@ -94,6 +94,12 @@ bool GetFABuff(XrdSfsFACtl &faCtl, int sz=0)
    fabP->dlen = sz;
    return true;
 }
+
+void FaFree(XrdSysXAttr::AList *alP)
+{
+   if (XrdOfsFS->Options & XrdOfs::PosixFS) XrdOfsOss->FreeXattr(alP);
+      else XrdSysFAttr::Xat->Free(alP);
+}
 }
 
 /******************************************************************************/
@@ -102,13 +108,16 @@ bool GetFABuff(XrdSfsFACtl &faCtl, int sz=0)
   
 namespace
 {
-bool GetFAVal(XrdSfsFACtl &faCtl, char *&bP, int &bL, unsigned int k)
+bool GetFAVal(XrdSfsFACtl &faCtl, XrdOucEnv &faEnv, char *&bP, int &bL,
+              unsigned int k)
 {
    int rc;
 
 // Get the attribute value
 //
-   rc = XrdSysFAttr::Xat->Get(faCtl.info[k].Name, bP, bL, faCtl.pfnP);
+   if (XrdOfsFS->Options & XrdOfs::PosixFS)
+      rc = XrdOfsOss->GetXattr(faCtl.info[k].Name, bP, bL, faCtl.path, &faEnv);
+      else rc = XrdSysFAttr::Xat->Get(faCtl.info[k].Name, bP, bL, faCtl.pfnP);
 
 // If all went well, record the value and update incoming information
 //
@@ -139,7 +148,8 @@ bool GetFAVal(XrdSfsFACtl &faCtl, char *&bP, int &bL, unsigned int k)
 
 namespace
 {
-bool GulpFAVal(XrdSfsFACtl &faCtl, char *&bP, int &bL, unsigned int k)
+bool GulpFAVal(XrdSfsFACtl &faCtl, XrdOucEnv &faEnv, char *&bP, int &bL,
+               unsigned int k)
 {
    XrdSysMutexHelper mHelper(faMutex);
    char *bzP = 0;
@@ -147,7 +157,7 @@ bool GulpFAVal(XrdSfsFACtl &faCtl, char *&bP, int &bL, unsigned int k)
 
 // Get the size of the attribute value
 //
-   if (!GetFAVal(faCtl, bzP, n, k))
+   if (!GetFAVal(faCtl, faEnv, bzP, n, k))
       {faCtl.info[k].faRC = ERANGE;
        faCtl.info[k].VLen = 0;
        return true;
@@ -164,7 +174,7 @@ bool GulpFAVal(XrdSfsFACtl &faCtl, char *&bP, int &bL, unsigned int k)
 //
    bP = faCtl.fabP->data;
    bL = faCtl.fabP->dlen;
-   if (!GetFAVal(faCtl, bP, bL, k)) faCtl.info[k].faRC = ERANGE;
+   if (!GetFAVal(faCtl, faEnv, bP, bL, k)) faCtl.info[k].faRC = ERANGE;
       else {bP += faCtl.info[k].VLen;
             bL -= faCtl.info[k].VLen;
            }
@@ -315,7 +325,12 @@ int XrdOfs::ctlFADel(XrdSfsFACtl &faCtl, XrdOucEnv &faEnv, XrdOucErrInfo &einfo)
 // Delete each variable
 //
    for (unsigned int i = 0; i < faCtl.iNum; i++)
-       faCtl.info[i].faRC = XrdSysFAttr::Xat->Del(faCtl.info[i].Name,faCtl.pfnP);
+       {if (XrdOfsFS->Options & XrdOfs::PosixFS)
+           faCtl.info[i].faRC = XrdOfsOss->DelXattr(faCtl.info[i].Name,
+                                                    faCtl.path, &faEnv);
+           else faCtl.info[i].faRC = XrdSysFAttr::Xat->Del(faCtl.info[i].Name,
+                                                           faCtl.pfnP);
+       }
 
 // All done
 //
@@ -338,7 +353,9 @@ int XrdOfs::ctlFALst(XrdSfsFACtl &faCtl, XrdOucEnv &faEnv, XrdOucErrInfo &einfo)
 
 // Get all of the attribute names
 //
-   rc = XrdSysFAttr::Xat->List(&alP, faCtl.pfnP, -1, getMsz);
+   if (XrdOfsFS->Options & XrdOfs::PosixFS)
+      rc = XrdOfsOss->ListXattr(&alP, faCtl.path, &faEnv, -1, getMsz);
+      else rc = XrdSysFAttr::Xat->List(&alP, faCtl.pfnP, -1, getMsz);
    if (rc < 0) return Emsg(epname, einfo, -rc, "list fattrs", faCtl.path);
 
 // Count up attributes
@@ -359,12 +376,15 @@ int XrdOfs::ctlFALst(XrdSfsFACtl &faCtl, XrdOucEnv &faEnv, XrdOucErrInfo &einfo)
 
 // If there are no attributes of interest, we are done.
 //
-   if (!faCtl.iNum) return SFS_OK;
+   if (!faCtl.iNum)
+      {FaFree(alP);
+       return SFS_OK;
+      }
 
 // Allocate sufficient memory to hold the complete list
 //
    if (!GetFABuff(faCtl, faSize))
-      {XrdSysFAttr::Xat->Free(alP);
+      {FaFree(alP);
        return Emsg(epname, einfo, ENOMEM, "list fattrs", faCtl.path);
       }
 
@@ -396,14 +416,14 @@ int XrdOfs::ctlFALst(XrdSfsFACtl &faCtl, XrdOucEnv &faEnv, XrdOucErrInfo &einfo)
 // If we don't need to return values, we are done
 //
    if (!getVal)
-      {XrdSysFAttr::Xat->Free(alP);
+      {FaFree(alP);
        return SFS_OK;
       }
 
 // Allocate a buffer to hold all of the values
 //
    if (!GetFABuff(faCtl, fvSize))
-      {XrdSysFAttr::Xat->Free(alP);
+      {FaFree(alP);
        return SetNoMem(faCtl, 0);
       }
 
@@ -419,8 +439,9 @@ int XrdOfs::ctlFALst(XrdSfsFACtl &faCtl, XrdOucEnv &faEnv, XrdOucErrInfo &einfo)
            {nP = faCtl.info[i].Name;
             faCtl.info[i].Name  = faCtl.info[i].Value;
             faCtl.info[i].Value = 0;
-            if (!GetFAVal(faCtl, bP, bL, i) && !GulpFAVal(faCtl, bP, bL, i))
-               {XrdSysFAttr::Xat->Free(alP);
+            if (!GetFAVal(faCtl, faEnv, bP, bL, i)
+            &&  !GulpFAVal(faCtl, faEnv, bP, bL, i))
+               {FaFree(alP);
                 return SetNoMem(faCtl, i);
                }
             faCtl.info[i].Name = nP;
@@ -429,7 +450,7 @@ int XrdOfs::ctlFALst(XrdSfsFACtl &faCtl, XrdOucEnv &faEnv, XrdOucErrInfo &einfo)
 
 // Free up the buffer list and return success
 //
-   XrdSysFAttr::Xat->Free(alP);
+   FaFree(alP);
    return SFS_OK;
 }
 
@@ -462,7 +483,8 @@ int XrdOfs::ctlFAGet(XrdSfsFACtl &faCtl, XrdOucEnv &faEnv, XrdOucErrInfo &einfo)
             bL = faCtl.fabP->dlen;
            }
 
-        if (!GetFAVal(faCtl, bP, bL, i) && !GulpFAVal(faCtl, bP, bL, i))
+        if (!GetFAVal(faCtl, faEnv, bP, bL, i)
+        &&  !GulpFAVal(faCtl, faEnv, bP, bL, i))
            return SetNoMem(faCtl, i);
        }
 
@@ -484,10 +506,18 @@ int XrdOfs::ctlFASet(XrdSfsFACtl &faCtl, XrdOucEnv &faEnv, XrdOucErrInfo &einfo)
 // Set each variable
 //
    for (unsigned int i = 0; i < faCtl.iNum; i++)
-       faCtl.info[i].faRC = XrdSysFAttr::Xat->Set(faCtl.info[i].Name,
-                                                  faCtl.info[i].Value,
-                                                  faCtl.info[i].VLen,
-                                                  faCtl.pfnP, -1, isNew);
+       {if (XrdOfsFS->Options & XrdOfs::PosixFS)
+           faCtl.info[i].faRC = XrdOfsOss->SetXattr(faCtl.info[i].Name,
+                                                    faCtl.info[i].Value,
+                                                    faCtl.info[i].VLen,
+                                                    faCtl.path, &faEnv, -1,
+                                                    isNew);
+           else faCtl.info[i].faRC = XrdSysFAttr::Xat->Set(faCtl.info[i].Name,
+                                                           faCtl.info[i].Value,
+                                                           faCtl.info[i].VLen,
+                                                           faCtl.pfnP, -1,
+                                                           isNew);
+       }
 
 // Unlock the mutex if we locked it
 //

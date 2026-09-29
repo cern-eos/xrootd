@@ -32,6 +32,7 @@
 #include <cstring>      // For strlcpy()
 #include <cerrno>
 #include <cstdint>
+#include <fcntl.h>
 #include <string>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -802,6 +803,29 @@ virtual int            truncate(XrdSfsFileOffset fsize) = 0;
 virtual int            fchown(uid_t u, gid_t g);
 
 //-----------------------------------------------------------------------------
+//! Apply an advisory flock() lock on the open file.
+//!
+//! @param  op     - LOCK_SH, LOCK_EX, LOCK_UN, optionally OR'd with LOCK_NB.
+//!
+//! @return One of SFS_OK, SFS_ERROR, SFS_REDIRECT, or SFS_STALL.
+//!         The default implementation returns SFS_ERROR / ENOTSUP.
+//-----------------------------------------------------------------------------
+
+virtual int            flock(int op);
+
+//-----------------------------------------------------------------------------
+//! Apply a POSIX fcntl record lock (F_GETLK, F_SETLK, F_SETLKW).
+//!
+//! @param  cmd    - F_GETLK, F_SETLK, or F_SETLKW.
+//! @param  fl     - Pointer to the flock structure (in/out for F_GETLK).
+//!
+//! @return One of SFS_OK, SFS_ERROR, SFS_REDIRECT, or SFS_STALL.
+//!         The default implementation returns SFS_ERROR / ENOTSUP.
+//-----------------------------------------------------------------------------
+
+virtual int            fcntlLock(int cmd, struct flock *fl);
+
+//-----------------------------------------------------------------------------
 //! Get compression information for the file.
 //!
 //! @param  cxtype - Place where the compression algorithm name is to be placed
@@ -1304,6 +1328,46 @@ virtual int            utimes(const char             *path,
                                     XrdOucErrInfo    &eInfo,
                               const XrdSecEntity     *client = 0,
                               const char             *opaque = 0);
+
+//-----------------------------------------------------------------------------
+//! Check accessibility of a path (POSIX access: F_OK, R_OK, W_OK, X_OK).
+//!
+//! @param  path   - Pointer to the path of the file or directory.
+//! @param  amode  - Access mode bits as for access(2).
+//! @param  eInfo  - The object where error info is to be returned.
+//! @param  client - Client's identify (see common description).
+//! @param  opaque - Path's CGI information (see common description).
+//!
+//! @return One of SFS_OK, SFS_ERROR, SFS_REDIRECT, or SFS_STALL.
+//!         The default implementation returns SFS_ERROR / ENOTSUP.
+//-----------------------------------------------------------------------------
+
+virtual int            access(const char             *path,
+                                    int               amode,
+                                    XrdOucErrInfo    &eInfo,
+                              const XrdSecEntity     *client = 0,
+                              const char             *opaque = 0);
+
+//-----------------------------------------------------------------------------
+//! Create a special file (fifo, device node, or regular file).
+//!
+//! @param  path   - Pointer to the path of the node to create.
+//! @param  mode   - POSIX mode including type (S_IFIFO, S_IFCHR, S_IFBLK, ...).
+//! @param  dev    - Device number for S_IFCHR/S_IFBLK; otherwise 0.
+//! @param  eInfo  - The object where error info is to be returned.
+//! @param  client - Client's identify (see common description).
+//! @param  opaque - Path's CGI information (see common description).
+//!
+//! @return One of SFS_OK, SFS_ERROR, SFS_REDIRECT, or SFS_STALL.
+//!         The default implementation returns SFS_ERROR / ENOTSUP.
+//-----------------------------------------------------------------------------
+
+virtual int            mknod(const char             *path,
+                                   mode_t            mode,
+                                   dev_t             dev,
+                                   XrdOucErrInfo    &eInfo,
+                             const XrdSecEntity     *client = 0,
+                             const char             *opaque = 0);
 
 //-----------------------------------------------------------------------------
 //! Create a directory.

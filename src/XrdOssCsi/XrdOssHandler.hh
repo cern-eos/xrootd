@@ -48,6 +48,12 @@ virtual int     StatRet(struct stat *buff) /* override */             { return s
                 // File oriented methods
 virtual int     Fchmod(mode_t Mode) /* override */                     { return successor_->Fchmod(Mode); }
 virtual int     Fchown(uid_t u, gid_t g) /* override */                { return successor_->Fchown(u, g); }
+virtual int     Flock(int op) /* override */                          { return successor_->Flock(op); }
+virtual int     FcntlLock(int cmd, struct flock *fl) /* override */   { return successor_->FcntlLock(cmd, fl); }
+virtual int     FDelXattr(const char *Aname) /* override */           { return successor_->FDelXattr(Aname); }
+virtual int     FGetXattr(const char *Aname, void *Aval, int Avsz) /* override */ { return successor_->FGetXattr(Aname, Aval, Avsz); }
+virtual int     FSetXattr(const char *Aname, const void *Aval, int Avsz, int isNew=0) /* override */ { return successor_->FSetXattr(Aname, Aval, Avsz, isNew); }
+virtual int     FListXattr(XrdSysXAttr::AList **aPL, int getSz=0) /* override */ { return successor_->FListXattr(aPL, getSz); }
 virtual void    Flush() /* override */                            { successor_->Flush(); }
 virtual int     Fstat(struct stat *buff) /* override */               { return successor_->Fstat(buff); }
 virtual int     Fsync() /* override */                            { return successor_->Fsync(); }
@@ -94,6 +100,13 @@ virtual int       Chown(const char *path, uid_t u, gid_t g, XrdOucEnv *envP=0) /
 virtual int       Symlink(const char *target, const char *path, XrdOucEnv *envP=0) /* override */ { return successor_->Symlink(target, path, envP); }
 virtual int       Utimes(const char *path, const struct timespec ts[2], XrdOucEnv *envP=0) /* override */ { return successor_->Utimes(path, ts, envP); }
 virtual int       Readlink(const char *path, char *buff, int blen, XrdOucEnv *envP=0) /* override */ { return successor_->Readlink(path, buff, blen, envP); }
+virtual int       Access(const char *path, int amode, XrdOucEnv *envP=0) /* override */ { return successor_->Access(path, amode, envP); }
+virtual int       Mknod(const char *path, mode_t mode, dev_t dev, XrdOucEnv *envP=0) /* override */ { return successor_->Mknod(path, mode, dev, envP); }
+virtual int       DelXattr(const char *Aname, const char *path, XrdOucEnv *envP=0, int fd=-1) /* override */ { return successor_->DelXattr(Aname, path, envP, fd); }
+virtual int       GetXattr(const char *Aname, void *Aval, int Avsz, const char *path, XrdOucEnv *envP=0, int fd=-1) /* override */ { return successor_->GetXattr(Aname, Aval, Avsz, path, envP, fd); }
+virtual int       SetXattr(const char *Aname, const void *Aval, int Avsz, const char *path, XrdOucEnv *envP=0, int fd=-1, int isNew=0) /* override */ { return successor_->SetXattr(Aname, Aval, Avsz, path, envP, fd, isNew); }
+virtual int       ListXattr(XrdSysXAttr::AList **aPL, const char *path, XrdOucEnv *envP=0, int fd=-1, int getSz=0) /* override */ { return successor_->ListXattr(aPL, path, envP, fd, getSz); }
+virtual void      FreeXattr(XrdSysXAttr::AList *aPL) /* override */ { successor_->FreeXattr(aPL); }
 
 virtual void      Connect(XrdOucEnv &env) /* override */ { successor_->Connect(env); }
 

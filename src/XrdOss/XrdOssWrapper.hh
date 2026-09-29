@@ -134,6 +134,23 @@ virtual int     Fchmod(mode_t mode) {return wrapDF.Fchmod(mode);}
 
 virtual int     Fchown(uid_t u, gid_t g) {return wrapDF.Fchown(u, g);}
 
+virtual int     Flock(int op) {return wrapDF.Flock(op);}
+
+virtual int     FcntlLock(int cmd, struct flock *fl)
+                         {return wrapDF.FcntlLock(cmd, fl);}
+
+virtual int     FDelXattr(const char *Aname) {return wrapDF.FDelXattr(Aname);}
+
+virtual int     FGetXattr(const char *Aname, void *Aval, int Avsz)
+                         {return wrapDF.FGetXattr(Aname, Aval, Avsz);}
+
+virtual int     FSetXattr(const char *Aname, const void *Aval, int Avsz,
+                          int isNew=0)
+                         {return wrapDF.FSetXattr(Aname, Aval, Avsz, isNew);}
+
+virtual int     FListXattr(XrdSysXAttr::AList **aPL, int getSz=0)
+                          {return wrapDF.FListXattr(aPL, getSz);}
+
 //-----------------------------------------------------------------------------
 //! Flush filesystem cached pages for this file (used for checksums).
 //-----------------------------------------------------------------------------
@@ -674,6 +691,35 @@ virtual int       Utimes(const char *path, const struct timespec ts[2],
 virtual int       Readlink(const char *path, char *buff, int blen,
                            XrdOucEnv *envP=0)
                           {return wrapPI.Readlink(path, buff, blen, envP);}
+
+virtual int       Access(const char *path, int amode, XrdOucEnv *envP=0)
+                        {return wrapPI.Access(path, amode, envP);}
+
+virtual int       Mknod(const char *path, mode_t mode, dev_t dev,
+                        XrdOucEnv *envP=0)
+                       {return wrapPI.Mknod(path, mode, dev, envP);}
+
+virtual int       DelXattr(const char *Aname, const char *path,
+                           XrdOucEnv *envP=0, int fd=-1)
+                          {return wrapPI.DelXattr(Aname, path, envP, fd);}
+
+virtual int       GetXattr(const char *Aname, void *Aval, int Avsz,
+                           const char *path, XrdOucEnv *envP=0, int fd=-1)
+                          {return wrapPI.GetXattr(Aname, Aval, Avsz, path,
+                                                  envP, fd);}
+
+virtual int       SetXattr(const char *Aname, const void *Aval, int Avsz,
+                           const char *path, XrdOucEnv *envP=0, int fd=-1,
+                           int isNew=0)
+                          {return wrapPI.SetXattr(Aname, Aval, Avsz, path,
+                                                  envP, fd, isNew);}
+
+virtual int       ListXattr(XrdSysXAttr::AList **aPL, const char *path,
+                            XrdOucEnv *envP=0, int fd=-1, int getSz=0)
+                           {return wrapPI.ListXattr(aPL, path, envP, fd, getSz);}
+
+virtual void      FreeXattr(XrdSysXAttr::AList *aPL)
+                           {wrapPI.FreeXattr(aPL);}
 
 //-----------------------------------------------------------------------------
 //! Create a directory.

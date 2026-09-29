@@ -98,6 +98,27 @@ FileSystem::utimes(const char             *path,
 }
 
 int
+FileSystem::access(const char             *path,
+                         int               amode,
+                         XrdOucErrInfo    &out_error,
+                   const XrdSecEntity     *client,
+                   const char             *opaque)
+{
+   return m_sfs_ptr->access(path, amode, out_error, client, opaque);
+}
+
+int
+FileSystem::mknod(const char             *path,
+                        mode_t            mode,
+                        dev_t             dev,
+                        XrdOucErrInfo    &out_error,
+                  const XrdSecEntity     *client,
+                  const char             *opaque)
+{
+   return m_sfs_ptr->mknod(path, mode, dev, out_error, client, opaque);
+}
+
+int
 FileSystem::link(const char             *oPath,
                  const char             *nPath,
                        XrdOucErrInfo    &out_error,

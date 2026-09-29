@@ -192,6 +192,10 @@ public:
 
         int            fchown(uid_t u, gid_t g);
 
+        int            flock(int op);
+
+        int            fcntlLock(int cmd, struct flock *fl);
+
         int            getCXinfo(char cxtype[4], int &cxrsz);
 
                        XrdOfsFile(XrdOucErrInfo &eInfo, const char *user);
@@ -307,6 +311,19 @@ public:
                                     XrdOucErrInfo    &out_error,
                               const XrdSecEntity     *client,
                               const char             *opaque = 0);
+
+        int            access(const char             *path,
+                                    int               amode,
+                                    XrdOucErrInfo    &out_error,
+                              const XrdSecEntity     *client,
+                              const char             *opaque = 0);
+
+        int            mknod(const char             *path,
+                                   mode_t            mode,
+                                   dev_t             dev,
+                                   XrdOucErrInfo    &out_error,
+                             const XrdSecEntity     *client,
+                             const char             *opaque = 0);
 
         void           Connect(const XrdSecEntity     *client = 0);
 

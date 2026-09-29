@@ -1840,6 +1840,46 @@ int XrdOfsFile::fchown(uid_t u, gid_t g)
 }
 
 /******************************************************************************/
+/*                                  f l o c k                                 */
+/******************************************************************************/
+
+int XrdOfsFile::flock(int op)
+{
+   EPNAME("flock");
+   int retc;
+
+   FTRACE(lock, "");
+
+   if (!(XrdOfsFS->Options & XrdOfs::PosixFS))
+      return XrdOfsFS->Emsg(epname, error, -ENOTSUP, "flock", oh);
+
+   if ((retc = oh->Select().Flock(op)))
+      return XrdOfsFS->Emsg(epname, error, retc, "flock", oh);
+
+   return SFS_OK;
+}
+
+/******************************************************************************/
+/*                              f c n t l L o c k                             */
+/******************************************************************************/
+
+int XrdOfsFile::fcntlLock(int cmd, struct flock *fl)
+{
+   EPNAME("fcntlLock");
+   int retc;
+
+   FTRACE(lock, "");
+
+   if (!(XrdOfsFS->Options & XrdOfs::PosixFS))
+      return XrdOfsFS->Emsg(epname, error, -ENOTSUP, "fcntlLock", oh);
+
+   if ((retc = oh->Select().FcntlLock(cmd, fl)))
+      return XrdOfsFS->Emsg(epname, error, retc, "fcntlLock", oh);
+
+   return SFS_OK;
+}
+
+/******************************************************************************/
 /*                             g e t C X i n f o                              */
 /******************************************************************************/
   
@@ -2242,6 +2282,85 @@ int XrdOfs::utimes(const char             *path,
    (void)tident;
    if (!(retc = XrdOfsOss->Utimes(path, ts, &env))) return SFS_OK;
    return XrdOfsFS->Emsg(epname, einfo, retc, "utimes", path, "?");
+}
+
+/******************************************************************************/
+/*                                 a c c e s s                                */
+/******************************************************************************/
+
+int XrdOfs::access(const char             *path,
+                         int               amode,
+                         XrdOucErrInfo    &einfo,
+                   const XrdSecEntity     *client,
+                   const char             *info)
+{
+   EPNAME("access");
+   static const int locFlags = SFS_O_RDONLY|SFS_O_META;
+   const char *tident = einfo.getErrUser();
+   XrdOucEnv env(info, 0, client);
+   int retc;
+   XTRACE(access, path, "");
+
+   if (!(Options & PosixFS))
+      return XrdOfsFS->Emsg(epname, einfo, -ENOTSUP, "access", path);
+
+   if (amode == F_OK)
+      {AUTHORIZE(client, &env, AOP_Stat, "access", path, einfo);}
+      else
+      {if (amode & R_OK)
+          AUTHORIZE(client, &env, AOP_Read, "access", path, einfo);
+       if (amode & W_OK)
+          AUTHORIZE(client, &env, AOP_Update, "access", path, einfo);
+       if (amode & X_OK)
+          AUTHORIZE(client, &env, AOP_Read, "access", path, einfo);
+      }
+
+   if (Finder && Finder->isRemote())
+      {if ((retc = Finder->Locate(einfo, path, locFlags, &env)))
+          return fsError(einfo, retc);
+      }
+
+   (void)tident;
+   if (!(retc = XrdOfsOss->Access(path, amode, &env))) return SFS_OK;
+   return XrdOfsFS->Emsg(epname, einfo, retc, "access", path, "?");
+}
+
+/******************************************************************************/
+/*                                  m k n o d                                 */
+/******************************************************************************/
+
+int XrdOfs::mknod(const char             *path,
+                        mode_t            mode,
+                        dev_t             dev,
+                        XrdOucErrInfo    &einfo,
+                  const XrdSecEntity     *client,
+                  const char             *info)
+{
+   EPNAME("mknod");
+   static const int locFlags = SFS_O_RDWR|SFS_O_CREAT|SFS_O_META;
+   const char *tident = einfo.getErrUser();
+   XrdOucEnv env(info, 0, client);
+   int retc;
+   XTRACE(mknod, path, "");
+
+   if (!(Options & PosixFS))
+      return XrdOfsFS->Emsg(epname, einfo, -ENOTSUP, "mknod", path);
+
+   AUTHORIZE(client, &env, AOP_Excl_Create, "mknod", path, einfo);
+
+   if (Finder && Finder->isRemote())
+      {if ((retc = Finder->Locate(einfo, path, locFlags, &env)))
+          return fsError(einfo, retc);
+      }
+
+   mode_t type = mode & S_IFMT;
+   mode_t perm = (mode | fMask[0]) & fMask[1] & S_IAMB;
+   if (!type) type = S_IFREG;
+   mode_t acc_mode = type | perm;
+
+   (void)tident;
+   if (!(retc = XrdOfsOss->Mknod(path, acc_mode, dev, &env))) return SFS_OK;
+   return XrdOfsFS->Emsg(epname, einfo, retc, "mknod", path, "?");
 }
 
 /******************************************************************************/

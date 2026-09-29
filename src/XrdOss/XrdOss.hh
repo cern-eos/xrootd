@@ -33,6 +33,8 @@
 #include <dirent.h>
 #include <cerrno>
 #include <cstdint>
+#include <cstdlib>
+#include <fcntl.h>
 #include <string>
 #include <strings.h>
 #include <sys/stat.h>
@@ -45,6 +47,7 @@
 #include "XrdOss/XrdOssVS.hh"
 #include "XrdOuc/XrdOucIOVec.hh"
 #include "XrdOuc/XrdOucRange.hh"
+#include "XrdSys/XrdSysXAttr.hh"
 
 struct XrdOucCloneSeg;
 class XrdOucEnv;
@@ -159,6 +162,83 @@ virtual int     Fchmod(mode_t mode) {return -EISDIR;}
 
 virtual int     Fchown(uid_t u, gid_t g)
                        {(void)u; (void)g; return -ENOTSUP;}
+
+//-----------------------------------------------------------------------------
+//! Apply an advisory flock() lock on the open file descriptor.
+//!
+//! @param  op     - LOCK_SH, LOCK_EX, LOCK_UN, optionally OR'd with LOCK_NB.
+//!
+//! @return 0 upon success or -errno or -osserr (see XrdOssError.hh).
+//-----------------------------------------------------------------------------
+
+virtual int     Flock(int op)
+                       {(void)op; return -ENOTSUP;}
+
+//-----------------------------------------------------------------------------
+//! Apply a POSIX fcntl record lock (F_GETLK, F_SETLK, F_SETLKW).
+//!
+//! @param  cmd    - F_GETLK, F_SETLK, or F_SETLKW.
+//! @param  fl     - Pointer to the flock structure (in/out for F_GETLK).
+//!
+//! @return 0 upon success or -errno or -osserr (see XrdOssError.hh).
+//-----------------------------------------------------------------------------
+
+virtual int     FcntlLock(int cmd, struct flock *fl)
+                       {(void)cmd; (void)fl; return -ENOTSUP;}
+
+//-----------------------------------------------------------------------------
+//! Remove an extended attribute from the open file.
+//!
+//! @param  Aname  - Attribute name (user namespace, without "user." prefix).
+//!
+//! @return 0 upon success or -errno or -osserr (see XrdOssError.hh).
+//-----------------------------------------------------------------------------
+
+virtual int     FDelXattr(const char *Aname)
+                       {(void)Aname; return -ENOTSUP;}
+
+//-----------------------------------------------------------------------------
+//! Get an extended attribute from the open file.
+//!
+//! @param  Aname  - Attribute name (user namespace, without "user." prefix).
+//! @param  Aval   - Buffer to receive the value (ignored when Avsz is 0).
+//! @param  Avsz   - Size of Aval, or 0 to query the value size.
+//!
+//! @return >= 0 the value size (bytes placed in Aval when Avsz > 0)
+//! @return <  0 -errno or -osserr (see XrdOssError.hh).
+//-----------------------------------------------------------------------------
+
+virtual int     FGetXattr(const char *Aname, void *Aval, int Avsz)
+                       {(void)Aname; (void)Aval; (void)Avsz; return -ENOTSUP;}
+
+//-----------------------------------------------------------------------------
+//! Set an extended attribute on the open file.
+//!
+//! @param  Aname  - Attribute name (user namespace, without "user." prefix).
+//! @param  Aval   - Buffer holding the value.
+//! @param  Avsz   - Length of the value in bytes.
+//! @param  isNew  - When non-zero the attribute must not already exist.
+//!
+//! @return 0 upon success or -errno or -osserr (see XrdOssError.hh).
+//-----------------------------------------------------------------------------
+
+virtual int     FSetXattr(const char *Aname, const void *Aval, int Avsz,
+                          int isNew=0)
+                       {(void)Aname; (void)Aval; (void)Avsz; (void)isNew;
+                        return -ENOTSUP;}
+
+//-----------------------------------------------------------------------------
+//! List extended attributes of the open file.
+//!
+//! @param  aPL    - Receives the first AList element; free with FreeXattr().
+//! @param  getSz  - When non-zero return the largest value size encountered.
+//!
+//! @return >= 0 success (see XrdSysXAttr::List)
+//! @return <  0 -errno or -osserr (see XrdOssError.hh).
+//-----------------------------------------------------------------------------
+
+virtual int     FListXattr(XrdSysXAttr::AList **aPL, int getSz=0)
+                       {(void)aPL; (void)getSz; return -ENOTSUP;}
 
 //-----------------------------------------------------------------------------
 //! Flush filesystem cached pages for this file (used for checksums).
@@ -686,6 +766,120 @@ virtual int       Readlink(const char *path, char *buff, int blen,
                            XrdOucEnv *envP=0)
                           {(void)path; (void)buff; (void)blen; (void)envP;
                            return -ENOTSUP;}
+
+//-----------------------------------------------------------------------------
+//! Check accessibility of a path (POSIX access: F_OK, R_OK, W_OK, X_OK).
+//!
+//! @param  path   - Pointer to the path of the file or directory.
+//! @param  amode  - Access mode bits as for access(2).
+//! @param  envP   - Pointer to environmental information.
+//!
+//! @return 0 upon success or -errno or -osserr (see XrdOssError.hh).
+//-----------------------------------------------------------------------------
+
+virtual int       Access(const char *path, int amode, XrdOucEnv *envP=0)
+                        {(void)path; (void)amode; (void)envP;
+                         return -ENOTSUP;}
+
+//-----------------------------------------------------------------------------
+//! Create a special file (fifo, device node, or regular file).
+//!
+//! @param  path   - Pointer to the path of the node to create.
+//! @param  mode   - POSIX mode including type (S_IFIFO, S_IFCHR, S_IFBLK, ...).
+//! @param  dev    - Device number for S_IFCHR/S_IFBLK; otherwise 0.
+//! @param  envP   - Pointer to environmental information.
+//!
+//! @return 0 upon success or -errno or -osserr (see XrdOssError.hh).
+//-----------------------------------------------------------------------------
+
+virtual int       Mknod(const char *path, mode_t mode, dev_t dev,
+                        XrdOucEnv *envP=0)
+                       {(void)path; (void)mode; (void)dev; (void)envP;
+                        return -ENOTSUP;}
+
+//-----------------------------------------------------------------------------
+//! Remove an extended attribute.
+//!
+//! @param  Aname  - Attribute name (user namespace, without "user." prefix).
+//! @param  path   - Pointer to the path of the file or directory.
+//! @param  envP   - Pointer to environmental information.
+//! @param  fd     - If >= 0, use this open file descriptor instead of path.
+//!
+//! @return 0 upon success or -errno or -osserr (see XrdOssError.hh).
+//-----------------------------------------------------------------------------
+
+virtual int       DelXattr(const char *Aname, const char *path,
+                           XrdOucEnv *envP=0, int fd=-1)
+                          {(void)Aname; (void)path; (void)envP; (void)fd;
+                           return -ENOTSUP;}
+
+//-----------------------------------------------------------------------------
+//! Get an extended attribute value and its size.
+//!
+//! @param  Aname  - Attribute name (user namespace, without "user." prefix).
+//! @param  Aval   - Buffer to receive the value (ignored when Avsz is 0).
+//! @param  Avsz   - Size of Aval, or 0 to query the value size.
+//! @param  path   - Pointer to the path of the file or directory.
+//! @param  envP   - Pointer to environmental information.
+//! @param  fd     - If >= 0, use this open file descriptor instead of path.
+//!
+//! @return >= 0 the value size (bytes placed in Aval when Avsz > 0)
+//! @return <  0 -errno or -osserr (see XrdOssError.hh).
+//-----------------------------------------------------------------------------
+
+virtual int       GetXattr(const char *Aname, void *Aval, int Avsz,
+                           const char *path, XrdOucEnv *envP=0, int fd=-1)
+                          {(void)Aname; (void)Aval; (void)Avsz; (void)path;
+                           (void)envP; (void)fd; return -ENOTSUP;}
+
+//-----------------------------------------------------------------------------
+//! Set an extended attribute.
+//!
+//! @param  Aname  - Attribute name (user namespace, without "user." prefix).
+//! @param  Aval   - Buffer holding the value.
+//! @param  Avsz   - Length of the value in bytes.
+//! @param  path   - Pointer to the path of the file or directory.
+//! @param  envP   - Pointer to environmental information.
+//! @param  fd     - If >= 0, use this open file descriptor instead of path.
+//! @param  isNew  - When non-zero the attribute must not already exist.
+//!
+//! @return 0 upon success or -errno or -osserr (see XrdOssError.hh).
+//-----------------------------------------------------------------------------
+
+virtual int       SetXattr(const char *Aname, const void *Aval, int Avsz,
+                           const char *path, XrdOucEnv *envP=0, int fd=-1,
+                           int isNew=0)
+                          {(void)Aname; (void)Aval; (void)Avsz; (void)path;
+                           (void)envP; (void)fd; (void)isNew; return -ENOTSUP;}
+
+//-----------------------------------------------------------------------------
+//! List extended attributes associated with a file.
+//!
+//! @param  aPL    - Receives the first AList element; free with FreeXattr().
+//! @param  path   - Pointer to the path of the file or directory.
+//! @param  envP   - Pointer to environmental information.
+//! @param  fd     - If >= 0, use this open file descriptor instead of path.
+//! @param  getSz  - When non-zero return the largest value size encountered.
+//!
+//! @return >= 0 success (see XrdSysXAttr::List)
+//! @return <  0 -errno or -osserr (see XrdOssError.hh).
+//-----------------------------------------------------------------------------
+
+virtual int       ListXattr(XrdSysXAttr::AList **aPL, const char *path,
+                            XrdOucEnv *envP=0, int fd=-1, int getSz=0)
+                           {(void)aPL; (void)path; (void)envP; (void)fd;
+                            (void)getSz; return -ENOTSUP;}
+
+//-----------------------------------------------------------------------------
+//! Release storage returned by ListXattr() / FListXattr().
+//!
+//! @param  aPL    - The first element of the AList structure.
+//-----------------------------------------------------------------------------
+
+virtual void      FreeXattr(XrdSysXAttr::AList *aPL)
+                           {XrdSysXAttr::AList *nP;
+                            while (aPL) {nP = aPL->Next; free(aPL); aPL = nP;}
+                           }
 
 //-----------------------------------------------------------------------------
 //! Notify storage system that a client has connected.

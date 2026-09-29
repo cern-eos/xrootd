@@ -134,6 +134,10 @@ public:
 
         int            fchown(uid_t u, gid_t g);
 
+        int            flock(int op);
+
+        int            fcntlLock(int cmd, struct flock *fl);
+
         int            getCXinfo(char cxtype[4], int &cxrsz) {return cxrsz = 0;}
 
                        XrdSfsNativeFile(char *user=0, int monid=0)
@@ -196,6 +200,19 @@ public:
                                     XrdOucErrInfo    &out_error,
                               const XrdSecClientName *client = 0,
                               const char             *opaque = 0);
+
+        int            access(const char             *path,
+                                    int               amode,
+                                    XrdOucErrInfo    &out_error,
+                              const XrdSecClientName *client = 0,
+                              const char             *opaque = 0);
+
+        int            mknod(const char             *path,
+                                   mode_t            mode,
+                                   dev_t             dev,
+                                   XrdOucErrInfo    &out_error,
+                             const XrdSecClientName *client = 0,
+                             const char             *opaque = 0);
 
         int            exists(const char                *fileName,
                                     XrdSfsFileExistence &exists_flag,

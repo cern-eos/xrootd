@@ -104,6 +104,28 @@ int XrdSfsFile::fchown(uid_t u, gid_t g)
 }
 
 /******************************************************************************/
+/*                                  f l o c k                                 */
+/******************************************************************************/
+
+int XrdSfsFile::flock(int op)
+{
+   (void)op;
+   error.setErrInfo(ENOTSUP, "Not supported.");
+   return SFS_ERROR;
+}
+
+/******************************************************************************/
+/*                              f c n t l L o c k                             */
+/******************************************************************************/
+
+int XrdSfsFile::fcntlLock(int cmd, struct flock *fl)
+{
+   (void)cmd; (void)fl;
+   error.setErrInfo(ENOTSUP, "Not supported.");
+   return SFS_ERROR;
+}
+
+/******************************************************************************/
 /*                                  f c t l                                   */
 /******************************************************************************/
 
@@ -396,6 +418,37 @@ int XrdSfsFileSystem::utimes(const char             *path,
                              const char             *opaque)
 {
    (void)path; (void)ts; (void)client; (void)opaque;
+   eInfo.setErrInfo(ENOTSUP, "Not supported.");
+   return SFS_ERROR;
+}
+
+/******************************************************************************/
+/*                                 a c c e s s                                */
+/******************************************************************************/
+
+int XrdSfsFileSystem::access(const char             *path,
+                                   int               amode,
+                                   XrdOucErrInfo    &eInfo,
+                             const XrdSecEntity     *client,
+                             const char             *opaque)
+{
+   (void)path; (void)amode; (void)client; (void)opaque;
+   eInfo.setErrInfo(ENOTSUP, "Not supported.");
+   return SFS_ERROR;
+}
+
+/******************************************************************************/
+/*                                  m k n o d                                 */
+/******************************************************************************/
+
+int XrdSfsFileSystem::mknod(const char             *path,
+                                  mode_t            mode,
+                                  dev_t             dev,
+                                  XrdOucErrInfo    &eInfo,
+                            const XrdSecEntity     *client,
+                            const char             *opaque)
+{
+   (void)path; (void)mode; (void)dev; (void)client; (void)opaque;
    eInfo.setErrInfo(ENOTSUP, "Not supported.");
    return SFS_ERROR;
 }

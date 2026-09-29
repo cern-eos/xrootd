@@ -12,6 +12,7 @@
 #include "XrdOuc/XrdOucName2Name.hh"
 #include "XrdOuc/XrdOucStream.hh"
 #include "XrdSys/XrdSysFD.hh"
+#include "XrdSys/XrdSysFAttr.hh"
 #include "XrdSys/XrdSysHeaders.hh"
 #include "XrdSys/XrdSysPlatform.hh"
 #include "XrdVersion.hh"
@@ -536,4 +537,111 @@ int XrdFsOss::Readlink(const char *path, char *buff, int blen, XrdOucEnv *envP)
    if (n < 0) return -errno;
    if (n < blen) buff[n] = '\0';
    return (int)n;
+}
+
+int XrdFsOss::Access(const char *path, int amode, XrdOucEnv *envP)
+{
+   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   if (!uid.Ok()) return uid.RC();
+   char pb[MAXPATHLEN]; const char *pfn;
+   int rc = Pfn(path, pb, sizeof(pb), pfn);
+   if (rc) return rc;
+
+   struct stat st;
+   if (lstat(pfn, &st)) return -errno;
+   if (amode == F_OK) return 0;
+
+   // access(2) uses the real uid, not fsuid. Check mode bits against the
+   // impersonated filesystem identity (supplementary groups are not applied).
+#ifdef __linux__
+   uid_t u = (uid_t)setfsuid((uid_t)-1);
+   gid_t g = (gid_t)setfsgid((gid_t)-1);
+#else
+   uid_t u = geteuid();
+   gid_t g = getegid();
+#endif
+   if (u == 0) return 0;
+
+   mode_t want = 0;
+   if (amode & R_OK) want |= 4;
+   if (amode & W_OK) want |= 2;
+   if (amode & X_OK) want |= 1;
+
+   mode_t have;
+   if (st.st_uid == u) have = (st.st_mode >> 6) & 7;
+   else if (st.st_gid == g) have = (st.st_mode >> 3) & 7;
+   else have = st.st_mode & 7;
+
+   return ((have & want) == want) ? 0 : -EACCES;
+}
+
+int XrdFsOss::Mknod(const char *path, mode_t mode, dev_t dev, XrdOucEnv *envP)
+{
+   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   if (!uid.Ok()) return uid.RC();
+   char pb[MAXPATHLEN]; const char *pfn;
+   int rc = Pfn(path, pb, sizeof(pb), pfn);
+   if (rc) return rc;
+   return mknod(pfn, mode, dev) ? -errno : 0;
+}
+
+int XrdFsOss::DelXattr(const char *Aname, const char *path,
+                       XrdOucEnv *envP, int fd)
+{
+   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   if (!uid.Ok()) return uid.RC();
+   const char *use = path;
+   char pb[MAXPATHLEN];
+   if (fd < 0)
+      {int rc = Pfn(path, pb, sizeof(pb), use);
+       if (rc) return rc;
+      }
+   return XrdSysFAttr::Xat->Del(Aname, use, fd);
+}
+
+int XrdFsOss::GetXattr(const char *Aname, void *Aval, int Avsz,
+                       const char *path, XrdOucEnv *envP, int fd)
+{
+   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   if (!uid.Ok()) return uid.RC();
+   const char *use = path;
+   char pb[MAXPATHLEN];
+   if (fd < 0)
+      {int rc = Pfn(path, pb, sizeof(pb), use);
+       if (rc) return rc;
+      }
+   return XrdSysFAttr::Xat->Get(Aname, Aval, Avsz, use, fd);
+}
+
+int XrdFsOss::SetXattr(const char *Aname, const void *Aval, int Avsz,
+                       const char *path, XrdOucEnv *envP, int fd, int isNew)
+{
+   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   if (!uid.Ok()) return uid.RC();
+   const char *use = path;
+   char pb[MAXPATHLEN];
+   if (fd < 0)
+      {int rc = Pfn(path, pb, sizeof(pb), use);
+       if (rc) return rc;
+      }
+   return XrdSysFAttr::Xat->Set(Aname, Aval, Avsz, use, fd, isNew);
+}
+
+int XrdFsOss::ListXattr(XrdSysXAttr::AList **aPL, const char *path,
+                        XrdOucEnv *envP, int fd, int getSz)
+{
+   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   if (!uid.Ok()) return uid.RC();
+   const char *use = path;
+   char pb[MAXPATHLEN];
+   if (fd < 0)
+      {int rc = Pfn(path, pb, sizeof(pb), use);
+       if (rc) return rc;
+      }
+   return XrdSysFAttr::Xat->List(aPL, use, fd, getSz);
+}
+
+void XrdFsOss::FreeXattr(XrdSysXAttr::AList *aPL)
+{
+   XrdSysFAttr::Xat->Free(aPL);
 }

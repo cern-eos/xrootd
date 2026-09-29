@@ -233,6 +233,18 @@ File::fchown(uid_t u, gid_t g)
 }
 
 int
+File::flock(int op)
+{
+   return m_sfs->flock(op);
+}
+
+int
+File::fcntlLock(int cmd, struct flock *fl)
+{
+   return m_sfs->fcntlLock(cmd, fl);
+}
+
+int
 File::getCXinfo(char cxtype[4], int &cxrsz)
 {
    return m_sfs->getCXinfo(cxtype, cxrsz);

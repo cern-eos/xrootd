@@ -38,6 +38,7 @@
 #include <sys/param.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/file.h>
 
 #include "XrdVersion.hh"
 #include "XrdSys/XrdSysE2T.hh"
@@ -75,6 +76,8 @@ class XrdSfsUFS
 {
 public:
 
+static int Access(const char *fn, int amode) {return ::access(fn, amode);}
+
 static int Chmod(const char *fn, mode_t mode) {return chmod(fn, mode);}
 
 static int Chown(const char *fn, uid_t u, gid_t g) {return lchown(fn, u, g);}
@@ -83,7 +86,15 @@ static int Close(int fd) {return close(fd);}
 
 static int Fchown(int fd, uid_t u, gid_t g) {return fchown(fd, u, g);}
 
+static int Flock(int fd, int op) {return ::flock(fd, op);}
+
+static int FcntlLock(int fd, int cmd, struct flock *fl)
+                    {return ::fcntl(fd, cmd, fl);}
+
 static int Mkdir(const char *fn, mode_t mode) {return mkdir(fn, mode);}
+
+static int Mknod(const char *fn, mode_t mode, dev_t dev)
+                {return ::mknod(fn, mode, dev);}
 
 static int Open(const char *path, int oflag, mode_t omode)
                {return open(path, oflag, omode);}
@@ -601,6 +612,37 @@ int XrdSfsNativeFile::fchown(uid_t u, gid_t g)
 }
 
 /******************************************************************************/
+/*                                  f l o c k                                 */
+/******************************************************************************/
+
+int XrdSfsNativeFile::flock(int op)
+{
+   static const char *epname = "flock";
+
+   if (XrdSfsUFS::Flock(oh, op))
+      return XrdSfsNative::Emsg(epname, error, errno, "flock", fname);
+
+   return SFS_OK;
+}
+
+/******************************************************************************/
+/*                              f c n t l L o c k                             */
+/******************************************************************************/
+
+int XrdSfsNativeFile::fcntlLock(int cmd, struct flock *fl)
+{
+   static const char *epname = "fcntlLock";
+
+   if (!fl)
+      return XrdSfsNative::Emsg(epname, error, EINVAL, "fcntlLock", fname);
+
+   if (XrdSfsUFS::FcntlLock(oh, cmd, fl))
+      return XrdSfsNative::Emsg(epname, error, errno, "fcntlLock", fname);
+
+   return SFS_OK;
+}
+
+/******************************************************************************/
 /*                                  s y n c                                   */
 /******************************************************************************/
 
@@ -790,6 +832,45 @@ int XrdSfsNative::utimes(const char             *path,
 
    if (XrdSfsUFS::Utimes(path, ts))
       return XrdSfsNative::Emsg(epname, error, errno, "utimes", path);
+
+   return SFS_OK;
+}
+
+/******************************************************************************/
+/*                                 a c c e s s                                */
+/******************************************************************************/
+
+int XrdSfsNative::access(const char             *path,
+                               int               amode,
+                               XrdOucErrInfo    &error,
+                         const XrdSecClientName *client,
+                         const char             *info)
+{
+   static const char *epname = "access";
+   (void)client; (void)info;
+
+   if (XrdSfsUFS::Access(path, amode))
+      return XrdSfsNative::Emsg(epname, error, errno, "access", path);
+
+   return SFS_OK;
+}
+
+/******************************************************************************/
+/*                                  m k n o d                                 */
+/******************************************************************************/
+
+int XrdSfsNative::mknod(const char             *path,
+                             mode_t            mode,
+                             dev_t             dev,
+                             XrdOucErrInfo    &error,
+                       const XrdSecClientName *client,
+                       const char             *info)
+{
+   static const char *epname = "mknod";
+   (void)client; (void)info;
+
+   if (XrdSfsUFS::Mknod(path, mode, dev))
+      return XrdSfsNative::Emsg(epname, error, errno, "mknod", path);
 
    return SFS_OK;
 }

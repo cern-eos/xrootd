@@ -112,6 +112,12 @@ public:
    fchown(uid_t u, gid_t g) override;
 
    virtual int
+   flock(int op) override;
+
+   virtual int
+   fcntlLock(int cmd, struct flock *fl) override;
+
+   virtual int
    getCXinfo(char cxtype[4], int &cxrsz) override;
 
    virtual int
@@ -192,6 +198,21 @@ public:
                 XrdOucErrInfo    &out_error,
           const XrdSecEntity     *client,
           const char             *opaque = 0) override;
+
+   virtual int
+   access(const char             *path,
+                int               amode,
+                XrdOucErrInfo    &out_error,
+          const XrdSecEntity     *client,
+          const char             *opaque = 0) override;
+
+   virtual int
+   mknod(const char             *path,
+               mode_t            mode,
+               dev_t             dev,
+               XrdOucErrInfo    &out_error,
+         const XrdSecEntity     *client,
+         const char             *opaque = 0) override;
 
    virtual int
    link(const char             *oPath,

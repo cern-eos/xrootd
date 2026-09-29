@@ -8,12 +8,14 @@
 #include "XrdFsOss/XrdFsOss.hh"
 #include "XrdOuc/XrdOucEnv.hh"
 #include "XrdSfs/XrdSfsAio.hh"
+#include "XrdSys/XrdSysFAttr.hh"
 #include "XrdSys/XrdSysFD.hh"
 #include "XrdSys/XrdSysPlatform.hh"
 
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/param.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -126,6 +128,44 @@ int XrdFsOssFile::Fchown(uid_t u, gid_t g)
 {
    if (fd < 0) return -EBADF;
    return fchown(fd, u, g) ? -errno : 0;
+}
+
+int XrdFsOssFile::Flock(int op)
+{
+   if (fd < 0) return -EBADF;
+   return flock(fd, op) ? -errno : 0;
+}
+
+int XrdFsOssFile::FcntlLock(int cmd, struct flock *fl)
+{
+   if (fd < 0) return -EBADF;
+   if (!fl) return -EINVAL;
+   return fcntl(fd, cmd, fl) ? -errno : 0;
+}
+
+int XrdFsOssFile::FDelXattr(const char *Aname)
+{
+   if (fd < 0) return -EBADF;
+   return XrdSysFAttr::Xat->Del(Aname, tident, fd);
+}
+
+int XrdFsOssFile::FGetXattr(const char *Aname, void *Aval, int Avsz)
+{
+   if (fd < 0) return -EBADF;
+   return XrdSysFAttr::Xat->Get(Aname, Aval, Avsz, tident, fd);
+}
+
+int XrdFsOssFile::FSetXattr(const char *Aname, const void *Aval, int Avsz,
+                            int isNew)
+{
+   if (fd < 0) return -EBADF;
+   return XrdSysFAttr::Xat->Set(Aname, Aval, Avsz, tident, fd, isNew);
+}
+
+int XrdFsOssFile::FListXattr(XrdSysXAttr::AList **aPL, int getSz)
+{
+   if (fd < 0) return -EBADF;
+   return XrdSysFAttr::Xat->List(aPL, tident, fd, getSz);
 }
 
 int XrdFsOssFile::Fctl(int cmd, int alen, const char *args, char **resp)

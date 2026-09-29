@@ -55,6 +55,12 @@ public:
    int     Open(const char *path, int oflag, mode_t mode, XrdOucEnv &env);
    int     Fchmod(mode_t mode);
    int     Fchown(uid_t u, gid_t g);
+   int     Flock(int op);
+   int     FcntlLock(int cmd, struct flock *fl);
+   int     FDelXattr(const char *Aname);
+   int     FGetXattr(const char *Aname, void *Aval, int Avsz);
+   int     FSetXattr(const char *Aname, const void *Aval, int Avsz, int isNew=0);
+   int     FListXattr(XrdSysXAttr::AList **aPL, int getSz=0);
    int     Fctl(int cmd, int alen, const char *args, char **resp=0);
    void    Flush();
    int     Fstat(struct stat *buf);
@@ -115,6 +121,19 @@ public:
                     XrdOucEnv *envP=0);
    int       Readlink(const char *path, char *buff, int blen,
                       XrdOucEnv *envP=0);
+   int       Access(const char *path, int amode, XrdOucEnv *envP=0);
+   int       Mknod(const char *path, mode_t mode, dev_t dev,
+                   XrdOucEnv *envP=0);
+   int       DelXattr(const char *Aname, const char *path,
+                      XrdOucEnv *envP=0, int fd=-1);
+   int       GetXattr(const char *Aname, void *Aval, int Avsz,
+                      const char *path, XrdOucEnv *envP=0, int fd=-1);
+   int       SetXattr(const char *Aname, const void *Aval, int Avsz,
+                      const char *path, XrdOucEnv *envP=0, int fd=-1,
+                      int isNew=0);
+   int       ListXattr(XrdSysXAttr::AList **aPL, const char *path,
+                       XrdOucEnv *envP=0, int fd=-1, int getSz=0);
+   void      FreeXattr(XrdSysXAttr::AList *aPL);
 
    int       Pfn(const char *lfn, char *buff, int blen, const char *&use,
                  int opts=0);
