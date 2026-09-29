@@ -1824,6 +1824,32 @@ int XrdHttpProtocol::SendWireData(const char *body, int bodylen)
   return total;
 }
 
+int XrdHttpProtocol::SendWirev(const struct iovec *iov, int iocnt, int bytes)
+{
+  if (!iov || iocnt <= 0)
+    return 0;
+  if (!bytes) {
+    for (int i = 0; i < iocnt; i++)
+      bytes += static_cast<int>(iov[i].iov_len);
+  }
+  if (ishttps) {
+    for (int i = 0; i < iocnt; i++) {
+      if (SendWireData(static_cast<const char *>(iov[i].iov_base),
+                       static_cast<int>(iov[i].iov_len)) < 0)
+        return -1;
+    }
+    return bytes;
+  }
+  if (!Link)
+    return -1;
+  const int r = Link->Send(iov, iocnt, bytes);
+  if (r <= 0) {
+    CurrentReq.monState = XrdHttpMonState::ERR_NET;
+    return -1;
+  }
+  return r;
+}
+
 int XrdHttpProtocol::RecvWireData(char *buf, int buflen, int timeout_ms)
 {
   if (!buf || buflen <= 0)

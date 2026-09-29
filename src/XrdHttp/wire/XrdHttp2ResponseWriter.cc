@@ -26,21 +26,6 @@ namespace
 {
 const char *TraceID = "Http2Resp";
 
-void compactPendingBody(XrdHttp2PendingResponse &resp)
-{
-  if (resp.body_offset >= resp.body.size()) {
-    resp.body.clear();
-    resp.body_offset = 0;
-    return;
-  }
-  // Do not erase() on every DATA frame: that memmoves the remainder and
-  // is quadratic on a large GET. Reclaim in 1 MiB steps.
-  if (resp.body_offset >= 1024 * 1024) {
-    resp.body.erase(0, resp.body_offset);
-    resp.body_offset = 0;
-  }
-}
-
 bool bodyComplete(const XrdHttp2PendingResponse &resp)
 {
   if (!resp.streaming)
@@ -84,6 +69,7 @@ ssize_t readResponse(nghttp2_session *session, int32_t stream_id,
                      uint8_t *buf, size_t length, uint32_t *data_flags,
                      nghttp2_data_source *source, void * /*user_data*/)
 {
+  (void)buf;
   if (!source || !source->ptr)
     return NGHTTP2_ERR_CALLBACK_FAILURE;
 
@@ -99,16 +85,20 @@ ssize_t readResponse(nghttp2_session *session, int32_t stream_id,
     if (!bodyComplete(resp))
       return NGHTTP2_ERR_DEFERRED;
     markEof(session, resp, data_flags);
+    *data_flags |= NGHTTP2_DATA_FLAG_NO_COPY;
     return 0;
   }
 
   const size_t n = std::min(length, remain);
-  memcpy(buf, resp.body.data() + resp.body_offset, n);
-  resp.body_offset += n;
-  resp.bytes_sent += static_cast<long long>(n);
-  compactPendingBody(resp);
-
-  if (resp.unsent() == 0 && bodyComplete(resp))
+  *data_flags |= NGHTTP2_DATA_FLAG_NO_COPY;
+  // consume() runs in send_data_callback; treat this as the last DATA frame
+  // if it would exhaust the body.
+  const bool last =
+      n == remain &&
+      (!resp.streaming || resp.finished ||
+       (resp.content_length >= 0 &&
+        resp.bytes_sent + static_cast<long long>(n) >= resp.content_length));
+  if (last)
     markEof(session, resp, data_flags);
 
   return static_cast<ssize_t>(n);
@@ -310,7 +300,16 @@ int XrdHttp2ResponseWriter::sendStreamData(XrdHttpProtocol &prot,
   if (!pending.active || !pending.streaming)
     return -1;
 
-  pending.body.append(body, static_cast<size_t>(bodylen));
+  // Prefer a view of the Bridge buffer so flushSend can writev it without
+  // copying into pending.body. If the window cannot drain it, copy the
+  // remainder so the pointer is not held after we return.
+  if (!pending.view && pending.unsent() == 0) {
+    pending.view = body;
+    pending.view_len = static_cast<size_t>(bodylen);
+    pending.view_off = 0;
+  } else {
+    pending.body.append(body, static_cast<size_t>(bodylen));
+  }
 
   nghttp2_session *session =
       static_cast<nghttp2_session *>(prot.http2Session_.nghttp2SessionHandle());
@@ -320,7 +319,18 @@ int XrdHttp2ResponseWriter::sendStreamData(XrdHttpProtocol &prot,
   if (nghttp2_session_resume_data(session, pending.stream_id) != 0)
     return -1;
 
-  return prot.http2Session_.flushSend(prot) < 0 ? -1 : 0;
+  if (prot.http2Session_.flushSend(prot) < 0)
+    return -1;
+
+  if (pending.view) {
+    if (pending.view_off < pending.view_len)
+      pending.body.append(pending.view + pending.view_off,
+                           pending.view_len - pending.view_off);
+    pending.view = nullptr;
+    pending.view_len = 0;
+    pending.view_off = 0;
+  }
+  return 0;
 }
 
 int XrdHttp2ResponseWriter::finishStream(XrdHttpProtocol &prot)

@@ -56,6 +56,7 @@
 #include <cstdlib>
 #include <openssl/ssl.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
@@ -140,6 +141,9 @@ public:
 
   /// Send wire bytes (used by HTTP/2 framing)
   int SendWireData(const char *body, int bodylen);
+
+  /// writev of several buffers (cleartext). HTTPS falls back to SendWireData.
+  int SendWirev(const struct iovec *iov, int iocnt, int bytes = 0);
 
   /// Receive raw TLS/TCP bytes into a caller buffer (HTTP/2 framing).
   /// timeout_ms == 0 never blocks; > 0 waits up to that long for data.

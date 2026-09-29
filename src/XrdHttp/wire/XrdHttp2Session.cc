@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <sys/uio.h>
 #include <utility>
 #include <vector>
 
@@ -22,8 +23,122 @@ const char *TraceID = "Http2Session";
 
 struct SessionCtx
 {
+  static const int kMaxIov = 64;
+  static const int kMaxHdrs = 32;
+  static const size_t kFlushBytes = 65536;
+
   XrdHttp2Session *self;
   XrdHttpProtocol   *prot;
+  uint8_t sendbuf[kFlushBytes];
+  size_t send_used{0};
+
+  uint8_t hdrs[kMaxHdrs][9];
+  int nhdrs{0};
+  uint8_t pads[kMaxHdrs];
+  int npads{0};
+  struct iovec iov[kMaxIov];
+  int niov{0};
+  size_t iov_bytes{0};
+
+  SessionCtx(XrdHttp2Session *s, XrdHttpProtocol *p)
+    : self(s), prot(p), sendbuf{}, send_used(0)
+  {}
+
+  int flushSendBuf()
+  {
+    if (!send_used)
+      return 0;
+    const int sent = prot->SendWireData(reinterpret_cast<const char *>(sendbuf),
+                                         static_cast<int>(send_used));
+    if (sent < 0)
+      return -1;
+    if (sent == 0)
+      return 1;
+    send_used = 0;
+    return 0;
+  }
+
+  int flushIovs()
+  {
+    if (!niov)
+      return 0;
+    if (prot->SendWirev(iov, niov, static_cast<int>(iov_bytes)) < 0)
+      return -1;
+    niov = 0;
+    iov_bytes = 0;
+    nhdrs = 0;
+    npads = 0;
+    if (self)
+      self->compactOutboundBodies();
+    return 0;
+  }
+
+  int appendSendBuf(const void *p, size_t n)
+  {
+    if (!n)
+      return 0;
+    if (n >= kFlushBytes) {
+      if (flushSendBuf() != 0)
+        return -1;
+      const int sent = prot->SendWireData(static_cast<const char *>(p),
+                                           static_cast<int>(n));
+      if (sent < 0)
+        return -1;
+      if (sent == 0)
+        return 1;
+      return 0;
+    }
+    if (send_used + n > kFlushBytes && flushSendBuf() != 0)
+      return -1;
+    memcpy(sendbuf + send_used, p, n);
+    send_used += n;
+    return 0;
+  }
+
+  int queueData(const uint8_t *framehd, const char *payload, size_t length,
+                size_t padlen)
+  {
+    const int extra = 1 + (length ? 1 : 0) + (padlen > 0 ? 1 : 0) +
+                      (padlen > 1 ? 1 : 0);
+    const size_t add = 9 + length + padlen;
+    if (niov + extra > kMaxIov || nhdrs >= kMaxHdrs ||
+        (iov_bytes && iov_bytes + add > kFlushBytes)) {
+      if (flushIovs() != 0)
+        return -1;
+    }
+
+    memcpy(hdrs[nhdrs], framehd, 9);
+    iov[niov].iov_base = hdrs[nhdrs];
+    iov[niov].iov_len = 9;
+    niov++;
+    nhdrs++;
+    iov_bytes += 9;
+
+    if (padlen > 0) {
+      pads[npads] = static_cast<uint8_t>(padlen - 1);
+      iov[niov].iov_base = &pads[npads];
+      iov[niov].iov_len = 1;
+      niov++;
+      npads++;
+      iov_bytes += 1;
+    }
+    if (length) {
+      iov[niov].iov_base = const_cast<char *>(payload);
+      iov[niov].iov_len = length;
+      niov++;
+      iov_bytes += length;
+    }
+    static const uint8_t zeros[256] = {};
+    if (padlen > 1) {
+      if (padlen - 1 > sizeof(zeros))
+        return -1;
+      iov[niov].iov_base = const_cast<uint8_t *>(zeros);
+      iov[niov].iov_len = padlen - 1;
+      niov++;
+      iov_bytes += padlen - 1;
+    }
+    return 0;
+  }
 };
 
 bool iequals(const std::string &a, const char *b)
@@ -63,13 +178,56 @@ ssize_t sendCallback(nghttp2_session * /*session*/, const uint8_t *data,
   if (!ctx || !ctx->prot)
     return NGHTTP2_ERR_CALLBACK_FAILURE;
 
-  const int sent = ctx->prot->SendWireData(reinterpret_cast<const char *>(data),
-                                           static_cast<int>(length));
-  if (sent < 0)
+  if (ctx->flushIovs() != 0)
     return NGHTTP2_ERR_CALLBACK_FAILURE;
-  if (sent == 0)
-    return NGHTTP2_ERR_WOULDBLOCK;
-  return sent;
+  if (ctx->appendSendBuf(data, length) != 0)
+    return NGHTTP2_ERR_CALLBACK_FAILURE;
+  return static_cast<ssize_t>(length);
+}
+
+int sendDataCallback(nghttp2_session * /*session*/, nghttp2_frame *frame,
+                     const uint8_t *framehd, size_t length,
+                     nghttp2_data_source *source, void *user_data)
+{
+  auto *ctx = static_cast<SessionCtx *>(user_data);
+  if (!ctx || !ctx->prot || !source || !source->ptr)
+    return NGHTTP2_ERR_CALLBACK_FAILURE;
+  if (ctx->flushSendBuf() != 0)
+    return NGHTTP2_ERR_CALLBACK_FAILURE;
+
+  auto *h2 = static_cast<XrdHttp2Session *>(source->ptr);
+  XrdHttp2PendingResponse *resp = h2->pendingFor(frame->hd.stream_id);
+  if (!resp || length > resp->unsent())
+    return NGHTTP2_ERR_CALLBACK_FAILURE;
+
+  const size_t padlen = frame->data.padlen;
+  const char *payload = length ? resp->unsentData() : nullptr;
+
+  // HTTPS cannot writev; coalesce into sendbuf so TLS records stay large.
+  if (ctx->prot->isHTTPS()) {
+    if (ctx->appendSendBuf(framehd, 9) != 0)
+      return NGHTTP2_ERR_CALLBACK_FAILURE;
+    if (padlen > 0) {
+      uint8_t padb = static_cast<uint8_t>(padlen - 1);
+      if (ctx->appendSendBuf(&padb, 1) != 0)
+        return NGHTTP2_ERR_CALLBACK_FAILURE;
+    }
+    if (length && ctx->appendSendBuf(payload, length) != 0)
+      return NGHTTP2_ERR_CALLBACK_FAILURE;
+    if (padlen > 1) {
+      static const uint8_t zeros[256] = {};
+      if (padlen - 1 > sizeof(zeros) ||
+          ctx->appendSendBuf(zeros, padlen - 1) != 0)
+        return NGHTTP2_ERR_CALLBACK_FAILURE;
+    }
+    resp->consume(length);
+    return 0;
+  }
+
+  if (ctx->queueData(framehd, payload, length, padlen) != 0)
+    return NGHTTP2_ERR_CALLBACK_FAILURE;
+  resp->consume(length);
+  return 0;
 }
 
 int onBeginHeaders(nghttp2_session * /*session*/, const nghttp2_frame *frame,
@@ -378,54 +536,17 @@ int XrdHttp2Session::flushSend(XrdHttpProtocol &prot)
   if (ctx)
     ctx->prot = &prot;
 
-  // nghttp2_session_mem_send() often returns a 9-byte frame header, then
-  // the payload. XrdNet enables TCP_NODELAY, so writing those pieces
-  // immediately turns into one packet per syscall (localhost 8 MiB GET
-  // was ~12× slower than HTTP/1.1). Coalesce to ~64 KiB writes.
-  static const size_t kCoalesce = 65536;
-  uint8_t out[kCoalesce];
-  size_t used = 0;
-
-  auto flushBuf = [&]() -> int {
-    if (!used)
+  const int rv = nghttp2_session_send(session);
+  if (rv != 0) {
+    if (rv == NGHTTP2_ERR_WOULDBLOCK)
       return 0;
-    const int sent = prot.SendWireData(reinterpret_cast<const char *>(out),
-                                        static_cast<int>(used));
-    if (sent < 0)
-      return -1;
-    if (sent == 0)
-      return 1; // want write; bytes already copied from nghttp2
-    used = 0;
-    return 0;
-  };
-
-  for (;;) {
-    const uint8_t *data = nullptr;
-    const ssize_t datalen = nghttp2_session_mem_send(session, &data);
-    if (datalen < 0)
-      return -1;
-    if (datalen == 0)
-      return flushBuf() < 0 ? -1 : 0;
-
-    const size_t n = static_cast<size_t>(datalen);
-    if (n >= kCoalesce) {
-      if (flushBuf() < 0)
-        return -1;
-      const int sent =
-          prot.SendWireData(reinterpret_cast<const char *>(data), datalen);
-      if (sent < 0)
-        return -1;
-      if (sent == 0)
-        return 0;
-      continue;
-    }
-    if (used + n > kCoalesce) {
-      if (flushBuf() < 0)
-        return -1;
-    }
-    memcpy(out + used, data, n);
-    used += n;
+    return -1;
   }
+  if (ctx && ctx->flushIovs() != 0)
+    return -1;
+  if (ctx && ctx->flushSendBuf() != 0)
+    return -1;
+  return 0;
 }
 
 bool XrdHttp2Session::hasPendingSend() const
@@ -476,6 +597,12 @@ void XrdHttp2Session::pruneFinishedResponses()
     else
       ++it;
   }
+}
+
+void XrdHttp2Session::compactOutboundBodies()
+{
+  for (auto &kv : pendingResponses_)
+    kv.second.compact();
 }
 
 bool XrdHttp2Session::activeBodyComplete() const
@@ -635,6 +762,7 @@ int XrdHttp2Session::ensureSession(XrdHttpProtocol &prot, bool flush)
   nghttp2_session_callbacks *callbacks = nullptr;
   nghttp2_session_callbacks_new(&callbacks);
   nghttp2_session_callbacks_set_send_callback(callbacks, sendCallback);
+  nghttp2_session_callbacks_set_send_data_callback(callbacks, sendDataCallback);
   nghttp2_session_callbacks_set_on_begin_headers_callback(callbacks,
                                                           onBeginHeaders);
   nghttp2_session_callbacks_set_on_header_callback(callbacks, onHeader);
@@ -652,7 +780,7 @@ int XrdHttp2Session::ensureSession(XrdHttpProtocol &prot, bool flush)
   nghttp2_option_new(&option);
   nghttp2_option_set_no_auto_window_update(option, 1);
 
-  auto *ctx = new SessionCtx{this, &prot};
+  auto *ctx = new SessionCtx(this, &prot);
   sessionCtx_ = ctx;
   nghttp2_session *session = nullptr;
   const int nrc = nghttp2_session_server_new2(&session, callbacks, ctx, option);

@@ -23,6 +23,10 @@ struct XrdHttp2PendingResponse
   int         status_code{200};
   std::string body;
   std::size_t body_offset{0};
+  /// Transient pointer to the current Bridge chunk (valid until sendStreamData returns).
+  const char *view{nullptr};
+  std::size_t view_len{0};
+  std::size_t view_off{0};
   bool        active{false};
   bool        streaming{false};
   /// Set once the application signalled end of body (finishStream).
@@ -32,7 +36,42 @@ struct XrdHttp2PendingResponse
   long long   bytes_sent{0};
   std::vector<std::pair<std::string, std::string>> trailers;
 
-  std::size_t unsent() const { return body.size() - body_offset; }
+  std::size_t unsent() const
+  {
+    if (view)
+      return view_len - view_off;
+    return body.size() - body_offset;
+  }
+
+  const char *unsentData() const
+  {
+    if (view)
+      return view + view_off;
+    return body.data() + body_offset;
+  }
+
+  void consume(std::size_t n)
+  {
+    bytes_sent += static_cast<long long>(n);
+    if (view) {
+      view_off += n;
+      return;
+    }
+    body_offset += n;
+  }
+
+  void compact()
+  {
+    if (view)
+      return;
+    if (body_offset >= body.size()) {
+      body.clear();
+      body_offset = 0;
+    } else if (body_offset >= 1024 * 1024) {
+      body.erase(0, body_offset);
+      body_offset = 0;
+    }
+  }
 };
 
 struct XrdHttp2StreamState
@@ -76,6 +115,9 @@ public:
 
   /// Drop pending responses whose DATA has fully been handed to nghttp2.
   void pruneFinishedResponses();
+
+  /// Reclaim sent prefix of pending bodies after a successful writev flush.
+  void compactOutboundBodies();
 
   /// True when the active stream received END_STREAM and all of its body has
   /// been injected into the protocol buffer.
