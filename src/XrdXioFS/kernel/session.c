@@ -3,8 +3,9 @@
  * Userspace TLS handshake agent imports a connected socket after
  * installing kTLS TX/RX. Steady-state HTTP then stays in-kernel.
  *
- * Kerberos: one imported socket per uid (default ccache principal).
- * GSS/SPNEGO is finished in xiofsagent; the kernel only multiplexes
+ * krb5: one imported socket per uid (default ccache principal).
+ * jwt:  one imported socket per uid (WLCG bt_u<uid> bearer file).
+ * GSS and token files stay in xiofsagent; the kernel multiplexes
  * already-authenticated HTTP channels keyed by current_fsuid().
  */
 #include <linux/cred.h>
@@ -218,7 +219,7 @@ int xiofs_conn_get(struct xiofs_sb_info *sbi, struct xiofs_conn **out)
 	u32 uid = 0;
 	int err;
 
-	if (sbi->krb5) {
+	if (sbi->krb5 || sbi->jwt) {
 		uid = from_kuid(&init_user_ns, current_fsuid());
 		if (uid == (u32)-1)
 			return -EOVERFLOW;
@@ -322,7 +323,7 @@ static int xiofs_import_sock(struct xiofs_import_sock *im)
 		goto out;
 	}
 
-	uid = sbi->krb5 ? im->uid : 0;
+	uid = (sbi->krb5 || sbi->jwt) ? im->uid : 0;
 	mutex_lock(&sbi->conns_lock);
 	c = xiofs_conn_lookup(sbi, uid);
 	if (!c) {
@@ -387,6 +388,8 @@ static int xiofs_wait_need(struct xiofs_need_conn *uc)
 		uc->port = n->sbi->port;
 		if (n->sbi->krb5)
 			uc->flags |= XIOFS_IMPORT_KRB5;
+		if (n->sbi->jwt)
+			uc->flags |= XIOFS_IMPORT_JWT;
 		strscpy(uc->host, n->sbi->host, sizeof(uc->host));
 		strscpy(uc->export_path, n->sbi->export_path,
 			sizeof(uc->export_path));

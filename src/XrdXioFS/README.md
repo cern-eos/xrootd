@@ -136,10 +136,15 @@ socket wait (seconds). RDMA and GPU-direct are not implemented.
 
 `--krb5` mounts with `krb5` and runs a persistent `WAIT_NEED` loop:
 SPNEGO as each requesting uid, then import with `XIOFS_IMPORT_KRB5`.
-`--workers N` forks N processes. See `kernel/README.md`.
+`--jwt` does the same with a WLCG `bt_u<uid>` bearer file (`XIOFS_IMPORT_JWT`).
+The token file must be owned by that uid and not group/world accessible;
+the client does not parse the JWT. `--workers N` forks N processes.
+See `kernel/README.md`.
 
 ```bash
 xiofsagent --krb5 --workers 4 --cacert ca.pem \
+    https://storage.example:1094/export /mnt/xiofs
+xiofsagent --jwt --workers 4 --cacert ca.pem \
     https://storage.example:1094/export /mnt/xiofs
 ```
 
@@ -152,6 +157,7 @@ fuse/xiofscli.cc           command-line client
 fuse/xiofsd.cc             FUSE daemon
 agent/xiofsagent.cc        Linux TLS handshake + kTLS import
 agent/xiofsagent_krb5.cc   SPNEGO for --krb5 (HAVE_KRB5)
+http/XioBearer.cc          WLCG bt_u<uid> discovery (owner-only file)
 kernel/                  Linux module for AlmaLinux 9 (5.14) and 10 (6.12):
                          page cache, readahead, writeback, HTTP/1.1 + kTLS
                          import (kbuild, not CMake)

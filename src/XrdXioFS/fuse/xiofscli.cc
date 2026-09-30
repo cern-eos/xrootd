@@ -11,6 +11,7 @@
 // Copyright (c) 2026 by the XRootD Collaboration
 //------------------------------------------------------------------------------
 #include "XioClient.hh"
+#include "XioBearer.hh"
 
 #include <cstdio>
 #include <cstdlib>
@@ -21,6 +22,7 @@
 #include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 #ifdef __linux__
 #include <sys/sysmacros.h>
 #endif
@@ -92,6 +94,15 @@ int main(int argc, char **argv)
   if (args.size() < 2) {
     usage(argv[0]);
     return 2;
+  }
+
+  if (opt.bearer.empty()) {
+    std::string tok, berr;
+    bool missing = false;
+    if (XioFS::loadBearerToken(geteuid(), tok, berr, &missing))
+      opt.bearer = tok;
+    else if (!missing)
+      return fail(berr, 1);
   }
 
   const std::string &url = args[0];

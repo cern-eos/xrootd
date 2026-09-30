@@ -21,6 +21,7 @@
 #define FUSE_USE_VERSION 26
 
 #include "XioClient.hh"
+#include "XioBearer.hh"
 
 #include <fuse.h>
 
@@ -560,6 +561,17 @@ int main(int argc, char **argv)
   if (url.empty() || mount.empty()) {
     usage(argv[0]);
     return 2;
+  }
+
+  if (opt.bearer.empty()) {
+    std::string tok, berr;
+    bool missing = false;
+    if (XioFS::loadBearerToken(geteuid(), tok, berr, &missing))
+      opt.bearer = tok;
+    else if (!missing) {
+      std::cerr << "xiofsd: " << berr << "\n";
+      return 1;
+    }
   }
 
   std::string err;

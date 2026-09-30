@@ -28,6 +28,7 @@ enum {
 	Opt_timeo,
 	Opt_http2,
 	Opt_krb5,
+	Opt_jwt,
 };
 
 static const struct fs_parameter_spec xiofs_fs_parameters[] = {
@@ -38,6 +39,7 @@ static const struct fs_parameter_spec xiofs_fs_parameters[] = {
 	fsparam_u32("timeo", Opt_timeo),
 	fsparam_flag("http2", Opt_http2),
 	fsparam_flag("krb5", Opt_krb5),
+	fsparam_flag("jwt", Opt_jwt),
 	{}
 };
 
@@ -49,6 +51,7 @@ struct xiofs_fc_ctx {
 	unsigned int	timeo_sec;
 	bool		http2;
 	bool		krb5;
+	bool		jwt;
 };
 
 static void xiofs_set_hosthdr(struct xiofs_sb_info *sbi)
@@ -219,6 +222,8 @@ int xiofs_fill_super(struct super_block *sb, struct fs_context *fc)
 
 	if (!ctx || !ctx->host[0])
 		return -EINVAL;
+	if (ctx->krb5 && ctx->jwt)
+		return -EINVAL;
 
 	sbi = kzalloc(sizeof(*sbi), GFP_KERNEL);
 	if (!sbi)
@@ -232,6 +237,7 @@ int xiofs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sbi->timeo_sec = ctx->timeo_sec ? ctx->timeo_sec : XIOFS_DEF_TIMEO_SEC;
 	sbi->http2 = ctx->http2;
 	sbi->krb5 = ctx->krb5;
+	sbi->jwt = ctx->jwt;
 	strscpy(sbi->host, ctx->host, sizeof(sbi->host));
 	strscpy(sbi->export_path,
 		ctx->export_path[0] ? ctx->export_path : "/",
@@ -306,6 +312,9 @@ static int xiofs_fc_parse_param(struct fs_context *fc,
 		return 0;
 	case Opt_krb5:
 		ctx->krb5 = true;
+		return 0;
+	case Opt_jwt:
+		ctx->jwt = true;
 		return 0;
 	default:
 		return -EINVAL;

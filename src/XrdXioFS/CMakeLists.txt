@@ -7,6 +7,7 @@ add_library(XrdXioFS STATIC
   http/XioDav.cc
   http/XioHttp2.cc
   http/XioClient.cc
+  http/XioBearer.cc
 )
 
 target_include_directories(XrdXioFS

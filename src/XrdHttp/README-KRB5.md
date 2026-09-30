@@ -155,6 +155,9 @@ sudo xiofsagent --krb5 --workers 4 --cacert /path/to/ca.pem \
 The server sees the Kerberos principal username, not the client numeric
 uid. Imported krb5 sockets stay on HTTP/1.1 (no in-kernel HTTP/2).
 
+JWT / OIDC bearer files use `xiofsagent --jwt` and the WLCG `bt_u<uid>`
+paths; see `src/XrdXioFS/kernel/README.md`.
+
 ## Authentication flow
 
 ```text

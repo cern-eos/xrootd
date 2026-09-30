@@ -95,15 +95,16 @@ strcpy(im.export_path, "/export");
 ioctl(ctlfd, XIOFS_IOC_IMPORT_SOCK, &im);
 ```
 
-A non-krb5 mount uses one socket with a mutex (uid 0). A `krb5` mount
-keeps a uid-to-conn table: each `current_fsuid()` gets its own already
-authenticated HTTP channel. HTTP/2 is one stream at a time (HPACK from
-the HTTP/1 request builders) and is forced off after a Kerberos import.
+A non-krb5/jwt mount uses one socket with a mutex (uid 0). A `krb5` or
+`jwt` mount keeps a uid-to-conn table: each `current_fsuid()` gets its
+own already authenticated HTTP channel. HTTP/2 is one stream at a time
+(HPACK from the HTTP/1 request builders) and is forced off after a
+Kerberos import. JWT imports may keep serial HTTP/2.
 No chunked encoding; XrdHttp sends `Content-Length` on HTTP/1.1.
 Send/recv use `sk_rcvtimeo` / `sk_sndtimeo` (`timeo=`, default 30s). On
 connection errors the socket is dropped and the request waits for a new
 import (`xiofsagent --import-only`, or `XIOFS_IOC_WAIT_NEED` on krb5
-mounts). Dirty pages are redirtied so writeback can retry after a new
+or jwt mounts). Dirty pages are redirtied so writeback can retry after a new
 kTLS socket.
 
 Metadata uses a dentry/inode TTL (`actimeo=`, default 30s, `0` always
@@ -143,8 +144,46 @@ sudo xiofsagent --krb5 --workers 4 --import-only \
 ```
 
 `WAIT_NEED` is the automatic handshake upcall. `mount.xiofs` with `-o krb5`
-only mounts; run `xiofsagent --krb5 --import-only` as a separate daemon.
-Non-krb5 remounts still use `xiofsagent --import-only`.
+or `-o jwt` only mounts; run `xiofsagent --krb5` or `--jwt --import-only`
+as a separate daemon. Non-krb5 remounts still use `xiofsagent --import-only`.
+
+## JWT / OIDC bearer (WLCG `bt_u<uid>`)
+
+The kernel never reads or parses the token. `xiofsagent --jwt` waits on
+`XIOFS_IOC_WAIT_NEED`, loads the calling uid's bearer file, and imports
+with `XIOFS_IMPORT_JWT` plus `Authorization: Bearer` on that uid's
+HTTP channel. Discovery (same as `XrdSecztn`):
+
+```text
+/run/user/<uid>/bt_u<uid>
+/tmp/bt_u<uid>
+```
+
+The file must be a regular file owned by that uid, with no group or
+world access bits (`0600` / `0400`). Symlinks are rejected (`O_NOFOLLOW`).
+The agent copies the bytes as-is; it does not inspect the JWT.
+
+```bash
+# as the user who will do I/O (oidc-agent, htgettoken, ...)
+chmod 0600 /tmp/bt_u${UID}
+
+# as root
+sudo xiofsagent --jwt --workers 4 --cacert /path/ca.pem \
+    https://storage.example:1094/export /mnt/xiofs
+```
+
+Or mount first:
+
+```bash
+sudo mount -t xiofs \
+    -o host=storage.example,port=1094,path=/export,jwt \
+    none /mnt/xiofs
+sudo xiofsagent --jwt --workers 4 --import-only \
+    https://storage.example:1094/export
+```
+
+`krb5` and `jwt` cannot be combined on one mount. JWT imports may use
+serial HTTP/2; Kerberos imports stay on HTTP/1.1.
 
 ## Verb map
 

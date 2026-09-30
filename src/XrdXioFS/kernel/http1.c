@@ -554,7 +554,7 @@ static int xiofs_do_propfind(struct xiofs_conn *c, const char *path,
 			   int depth, void *body, size_t cap, size_t *len,
 			   struct xiofs_http_resp *meta)
 {
-	char req[1024];
+	char req[XIOFS_MAX_HDR];
 	size_t n = 0;
 
 	n += snprintf(req + n, sizeof(req) - n,
@@ -595,7 +595,7 @@ int xiofs_http_getattr_path(struct xiofs_sb_info *sbi, const char *path,
 			strscpy(attr->etag, meta.etag, sizeof(attr->etag));
 	}
 	if (err == -ENOENT || err == -EPERM) {
-		char req[512];
+		char req[XIOFS_MAX_HDR];
 		size_t n = 0;
 
 		n += snprintf(req + n, sizeof(req) - n,
@@ -662,7 +662,7 @@ int xiofs_http_read(struct inode *inode, loff_t off, size_t len,
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
 	struct xiofs_conn *c;
-	char req[768];
+	char req[XIOFS_MAX_HDR];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
 	int err;
@@ -695,7 +695,7 @@ int xiofs_http_write(struct inode *inode, loff_t off, size_t len,
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
 	struct xiofs_conn *c;
-	char req[896];
+	char req[XIOFS_MAX_HDR];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
 	int err;
@@ -737,7 +737,7 @@ static int xiofs_put(struct xiofs_sb_info *sbi, const char *path,
 		   const char *if_none, struct xiofs_attr *attr)
 {
 	struct xiofs_conn *c;
-	char req[896];
+	char req[XIOFS_MAX_HDR];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
 	int err;
@@ -781,7 +781,7 @@ int xiofs_http_mkdir(struct inode *dir, const char *path)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(dir->i_sb);
 	struct xiofs_conn *c;
-	char req[512];
+	char req[XIOFS_MAX_HDR];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
 	int err;
@@ -806,7 +806,7 @@ int xiofs_http_unlink(struct inode *inode)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
 	struct xiofs_conn *c;
-	char req[640];
+	char req[XIOFS_MAX_HDR];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
 	int err;
@@ -832,7 +832,7 @@ int xiofs_http_rename(struct inode *old_inode, const char *new_path)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(old_inode->i_sb);
 	struct xiofs_conn *c;
-	char req[1024];
+	char req[XIOFS_MAX_HDR];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
 	int err;
@@ -879,7 +879,7 @@ static int xiofs_http_proppatch(struct inode *inode, const char *body, size_t bl
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
 	struct xiofs_conn *c;
-	char req[896];
+	char req[XIOFS_MAX_HDR];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
 	int err;
@@ -962,7 +962,7 @@ int xiofs_http_link(struct inode *old_inode, const char *new_path)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(old_inode->i_sb);
 	struct xiofs_conn *c;
-	char req[1024];
+	char req[XIOFS_MAX_HDR];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
 	int err;
@@ -989,7 +989,7 @@ int xiofs_http_symlink(struct inode *dir, const char *path, const char *target)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(dir->i_sb);
 	struct xiofs_conn *c;
-	char req[1536];
+	char req[XIOFS_MAX_HDR];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
 	int err;
@@ -1018,7 +1018,7 @@ int xiofs_http_readlink(struct inode *inode, char *buf, size_t buflen)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
 	struct xiofs_conn *c;
-	char req[768];
+	char req[XIOFS_MAX_HDR];
 	size_t n = 0, got = 0;
 	struct xiofs_http_resp meta;
 	int err;
@@ -1055,7 +1055,7 @@ int xiofs_http_mknod(struct inode *dir, const char *path, umode_t mode, dev_t rd
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(dir->i_sb);
 	struct xiofs_conn *c;
-	char req[768];
+	char req[XIOFS_MAX_HDR];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
 	int err;
@@ -1086,7 +1086,7 @@ int xiofs_http_getxattr(struct inode *inode, const char *name, void *buf,
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
 	struct xiofs_conn *c;
-	char req[1024];
+	char req[XIOFS_MAX_HDR];
 	char *tmp;
 	size_t n = 0, got = 0;
 	struct xiofs_http_resp meta;
@@ -1155,7 +1155,7 @@ int xiofs_http_listxattr(struct inode *inode, char *buf, size_t size)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
 	struct xiofs_conn *c;
-	char req[768];
+	char req[XIOFS_MAX_HDR];
 	char *tmp;
 	size_t n = 0, got = 0;
 	struct xiofs_http_resp meta;
@@ -1214,7 +1214,7 @@ int xiofs_http_lock(struct inode *inode, int cmd, int type, int whence,
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
 	struct xiofs_conn *c;
-	char req[1024];
+	char req[XIOFS_MAX_HDR];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
 	int err;
@@ -1268,7 +1268,7 @@ int xiofs_http_flock(struct inode *inode, int op)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
 	struct xiofs_conn *c;
-	char req[768];
+	char req[XIOFS_MAX_HDR];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
 	int err;

@@ -67,8 +67,9 @@ struct xiofs_http_resp {
 struct xiofs_sb_info;
 
 /*
- * One already-authenticated HTTP channel. Non-krb5 mounts use uid 0.
- * Kerberos mounts key by current_fsuid(); GSS/SPNEGO stays in xiofsagent.
+ * One already-authenticated HTTP channel. Shared mounts use uid 0.
+ * krb5/jwt mounts key by current_fsuid(); GSS and token files stay
+ * in xiofsagent.
  */
 struct xiofs_conn {
 	struct list_head	list;
@@ -84,7 +85,7 @@ struct xiofs_conn {
 	int			last_err;
 	u32			h2_next_sid;
 	u32			h2_send_win;
-	char			bearer[512];
+	char			bearer[XIOFS_BEARER_MAX];
 };
 
 struct xiofs_sb_info {
@@ -93,6 +94,7 @@ struct xiofs_sb_info {
 	struct mutex		conns_lock;
 	struct list_head	conns;
 	bool			krb5;
+	bool			jwt;
 	bool			http2;
 	bool			shutting_down;
 	unsigned int		actimeo_sec;
@@ -100,7 +102,7 @@ struct xiofs_sb_info {
 	char			host[256];
 	unsigned int		port;
 	char			export_path[256];
-	char			bearer[512];
+	char			bearer[XIOFS_BEARER_MAX];
 	char			hosthdr[288];
 };
 
