@@ -144,6 +144,8 @@ TEST(XioDav, ParseFifoAndDevice)
   EXPECT_TRUE(ents[1].is_chr);
   EXPECT_EQ(static_cast<dev_t>(259), ents[1].rdev);
 }
+
+TEST(XioDav, HrefBasename)
 {
   EXPECT_EQ("file.txt", hrefBasename("/export/file.txt"));
   EXPECT_EQ("dir", hrefBasename("/export/dir/"));
