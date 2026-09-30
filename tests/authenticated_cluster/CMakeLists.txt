@@ -17,7 +17,8 @@ foreach(config common metaman man1 man2 srv1 srv2 srv3 srv4)
 endforeach()
 
 add_test(NAME XRootD::authenticated_cluster::start
-  COMMAND sh -c "${CMAKE_CURRENT_SOURCE_DIR}/setup.sh start")
+  COMMAND sh -c "${CMAKE_CURRENT_SOURCE_DIR}/setup.sh start \
+    || (${CMAKE_CURRENT_SOURCE_DIR}/setup.sh stop; exit 1)")
 set_tests_properties(XRootD::authenticated_cluster::start
   PROPERTIES ENVIRONMENT "${XRDENV}" FIXTURES_SETUP XRootD_Authenticated_Cluster FIXTURES_REQUIRED "XRootD::scitokens;SciTokens")
 

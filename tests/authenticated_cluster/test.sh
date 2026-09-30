@@ -91,7 +91,10 @@ upload_file_to_host() {
     http_url=$(get_http_url_for_host "$host")
 
     echo -e "\nUploading '$file_path' to '${http_url}/$RMTDATADIR/$remote_name'"
-    if ! ${CURL} --location-trusted -v -L -s -H "Authorization: Bearer ${BEARER_TOKEN}" \
+    # --retry-connrefused covers a leftover race after fixture start; Alma 8
+    # curl 7.61 already supports it (added in 7.52).
+    if ! ${CURL} --location-trusted -v -L -s --retry 5 --retry-delay 1 --retry-connrefused \
+        -H "Authorization: Bearer ${BEARER_TOKEN}" \
         "${http_url}/$RMTDATADIR/$remote_name" -T "$file_path"; then
         echo "Upload to $host failed!"
         exit 1
