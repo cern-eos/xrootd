@@ -134,6 +134,15 @@ mount -t xiofs -o host=storage.example,port=1094,path=/export,cacert=ca.pem \
 host/port/path) after a drop. `--actimeo` / `--timeo` set metadata TTL and
 socket wait (seconds). RDMA and GPU-direct are not implemented.
 
+`--krb5` mounts with `krb5` and runs a persistent `WAIT_NEED` loop:
+SPNEGO as each requesting uid, then import with `XIOFS_IMPORT_KRB5`.
+`--workers N` forks N processes. See `kernel/README.md`.
+
+```bash
+xiofsagent --krb5 --workers 4 --cacert ca.pem \
+    https://storage.example:1094/export /mnt/xiofs
+```
+
 ## Layout
 
 ```
@@ -142,6 +151,7 @@ http/                    URL, DAV parser, HTTP/2 session, Client
 fuse/xiofscli.cc           command-line client
 fuse/xiofsd.cc             FUSE daemon
 agent/xiofsagent.cc        Linux TLS handshake + kTLS import
+agent/xiofsagent_krb5.cc   SPNEGO for --krb5 (HAVE_KRB5)
 kernel/                  Linux module for AlmaLinux 9 (5.14) and 10 (6.12):
                          page cache, readahead, writeback, HTTP/1.1 + kTLS
                          import (kbuild, not CMake)

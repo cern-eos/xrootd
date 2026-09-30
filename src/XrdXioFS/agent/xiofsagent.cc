@@ -1,16 +1,17 @@
 //------------------------------------------------------------------------------
-// xiofsagent — userspace TLS handshake / kTLS install for xiofs.ko.
+// xiofsagent - userspace TLS handshake / kTLS install for xiofs.ko.
 //
 // Completes the OpenSSL handshake, lets the kernel take over the TLS
 // record layer (kTLS), and imports the socket into a mounted XIOFS.
 // Steady-state HTTP/1.1 (or serial HTTP/2 with --http2) then stays in the
-// module.
+// module. --krb5 runs a persistent WAIT_NEED loop (rpc.gssd analogue):
+// SPNEGO as the requesting uid, then import with XIOFS_IMPORT_KRB5.
 //
 //   xiofsagent [--cacert FILE] [--insecure] [--token TOK | --tokenfile F]
-//              [--import-only] URL [MOUNTPOINT]
+//              [--import-only] [--krb5] [--workers N] URL [MOUNTPOINT]
 //
 // Also works as /sbin/mount.xiofs (util-linux helper):
-//   mount -t xiofs -o host=...,port=...,path=...,cacert=... none /mnt
+//   mount -t xiofs -o host=...,port=...,path=...,cacert=...,krb5 none /mnt
 //
 // Copyright (c) 2026 by the XRootD Collaboration
 //------------------------------------------------------------------------------
@@ -26,9 +27,12 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <cerrno>
@@ -45,8 +49,13 @@
 #define SSL_OP_ENABLE_KTLS 0
 #endif
 
-static_assert(sizeof(xiofs_import_sock) == 1036,
+static_assert(sizeof(xiofs_import_sock) == 1044,
               "xiofs_import_sock layout must match xiofs.ko");
+
+#ifdef HAVE_KRB5
+int xiofsagentSpnego(int fd, const XioFS::Url &url, uid_t uid,
+                     std::string &err);
+#endif
 
 namespace {
 
@@ -64,6 +73,9 @@ struct Options {
   bool verbose{false};
   bool fake{false};
   bool http2{false};
+  bool krb5{false};
+  bool helper{false};
+  unsigned workers{1};
 };
 
 void usage(const char *argv0)
@@ -71,18 +83,21 @@ void usage(const char *argv0)
   std::cerr
       << "Usage: " << argv0 << " [--cacert FILE] [--insecure]\n"
       << "          [--token TOK | --tokenfile FILE] [--import-only]\n"
-      << "          [--actimeo SEC] [--timeo SEC] [--http2] URL [MOUNTPOINT]\n"
+      << "          [--actimeo SEC] [--timeo SEC] [--http2]\n"
+      << "          [--krb5] [--workers N] URL [MOUNTPOINT]\n"
       << "\n"
       << "  Handshake to URL, install kTLS, import the socket into xiofs.ko.\n"
       << "  With MOUNTPOINT (default), mount -t xiofs first then import.\n"
-      << "  --import-only assumes the filesystem is already mounted.\n"
       << "  --http2: ALPN h2 and XIOFS_IMPORT_H2 (serial in-kernel HTTP/2).\n"
+      << "  --krb5: mount with krb5, then WAIT_NEED loop (SPNEGO per uid).\n"
+      << "  --workers N: N processes in the WAIT_NEED loop (default 1).\n"
       << "  --import-only assumes the filesystem is already mounted.\n"
       << "  --actimeo metadata TTL (default 30, 0 = always revalidate).\n"
       << "  --timeo socket wait/recv timeout seconds (default 30).\n"
       << "\n"
       << "  As mount.xiofs: mount -t xiofs -o host=H,port=P,path=/export none DIR\n"
-      << "  Extra -o keys: cacert, token, tokenfile, insecure, url, actimeo, timeo.\n";
+      << "  Extra -o keys: cacert, token, tokenfile, insecure, url, actimeo,\n"
+      << "  timeo, http2, krb5.\n";
 }
 
 int fail(const std::string &msg, int rc)
@@ -207,7 +222,7 @@ int tlsHandshake(int fd, const XioFS::Url &url, const Options &opt,
                                 "TLS_AES_256_GCM_SHA384:"
                                 "TLS_CHACHA20_POLY1305_SHA256");
 #endif
-  if (opt.http2) {
+  if (opt.http2 && !opt.krb5) {
     static const unsigned char alpn[] = {2, 'h', '2'};
     SSL_CTX_set_alpn_protos(ctx, alpn, sizeof(alpn));
   }
@@ -239,7 +254,7 @@ int tlsHandshake(int fd, const XioFS::Url &url, const Options &opt,
 #ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
   SSL_set1_host(ssl, url.host.c_str());
 #endif
-  if (opt.http2) {
+  if (opt.http2 && !opt.krb5) {
     static const unsigned char alpn[] = {2, 'h', '2'};
     SSL_set_alpn_protos(ssl, alpn, sizeof(alpn));
   }
@@ -304,7 +319,7 @@ int handshakeAndKtls(int *fd, const XioFS::Url &url, const Options &opt,
 }
 
 int importSock(int fd, const XioFS::Url &url, const Options &opt,
-               std::string &err)
+               std::string &err, __u32 uid, bool krb5)
 {
   int ctl = open(kCtlDev, O_RDWR);
   if (ctl < 0) {
@@ -316,9 +331,12 @@ int importSock(int fd, const XioFS::Url &url, const Options &opt,
   xiofs_import_sock im{};
   im.sockfd = fd;
   im.flags = 0;
+  im.uid = uid;
   if (url.tls)
     im.flags |= XIOFS_IMPORT_TLS;
-  if (opt.http2)
+  if (krb5)
+    im.flags |= XIOFS_IMPORT_KRB5;
+  else if (opt.http2)
     im.flags |= XIOFS_IMPORT_H2;
   if (!opt.bearer.empty()) {
     im.flags |= XIOFS_IMPORT_BEARER;
@@ -349,7 +367,9 @@ std::string kernelMountData(const XioFS::Url &url, const Options &opt)
   os << "host=" << url.host << ",port=" << url.port << ",path="
      << (url.path.empty() ? "/" : url.path)
      << ",actimeo=" << opt.actimeo << ",timeo=" << opt.timeo;
-  if (opt.http2)
+  if (opt.krb5)
+    os << ",krb5";
+  else if (opt.http2)
     os << ",http2";
   return os.str();
 }
@@ -412,6 +432,8 @@ bool applyMountOpt(const std::string &kv, Options &opt, XioFS::Url &url,
     opt.timeo = static_cast<unsigned>(std::atoi(val.c_str()));
   else if (key == "http2")
     opt.http2 = true;
+  else if (key == "krb5")
+    opt.krb5 = true;
   else {
     err = "unknown mount option: " + key;
     return false;
@@ -527,6 +549,10 @@ int parseAgentArgs(int argc, char **argv, Options &opt, std::string &err)
       opt.timeo = static_cast<unsigned>(std::atoi(argv[++i]));
     else if (a == "--http2")
       opt.http2 = true;
+    else if (a == "--krb5")
+      opt.krb5 = true;
+    else if (a == "--workers" && i + 1 < argc)
+      opt.workers = static_cast<unsigned>(std::atoi(argv[++i]));
     else if (a == "--verbose" || a == "-v")
       opt.verbose = true;
     else if (a == "-h" || a == "--help") {
@@ -556,8 +582,202 @@ int parseAgentArgs(int argc, char **argv, Options &opt, std::string &err)
   return 0;
 }
 
+#ifdef HAVE_KRB5
+volatile sig_atomic_t gStop = 0;
+
+void onStop(int)
+{
+  gStop = 1;
+}
+
+void installStopHandlers()
+{
+  struct sigaction sa{};
+  sa.sa_handler = onStop;
+  sigemptyset(&sa.sa_mask);
+  sigaction(SIGINT, &sa, nullptr);
+  sigaction(SIGTERM, &sa, nullptr);
+}
+
+void needFail(int ctl, const xiofs_need_conn &need, int errn)
+{
+  xiofs_need_conn fail = need;
+  fail.err = errn ? errn : EACCES;
+  ioctl(ctl, XIOFS_IOC_NEED_FAIL, &fail);
+}
+
+int serveNeed(const Options &opt, const xiofs_need_conn &need, std::string &err)
+{
+  XioFS::Url base;
+  if (!XioFS::parseUrl(opt.url, base, err))
+    return EINVAL;
+
+  XioFS::Url url;
+  url.host = need.host;
+  url.port = need.port ? need.port : base.port;
+  url.path = need.export_path[0] ? need.export_path : "/";
+  url.tls = base.tls;
+  url.scheme = url.tls ? "https" : "http";
+  if (url.host.empty() || url.port <= 0 || url.port > 65535) {
+    err = "invalid host or port from kernel need";
+    return EINVAL;
+  }
+
+  Options work = opt;
+  work.http2 = false;
+  work.krb5 = true;
+
+  int fd = tcpConnect(url, err);
+  if (fd < 0)
+    return errno ? errno : ECONNREFUSED;
+
+  SSL_CTX *ctx = nullptr;
+  SSL *ssl = nullptr;
+  if (url.tls) {
+    if (handshakeAndKtls(&fd, url, work, &ctx, &ssl, err)) {
+      int e = errno ? errno : EACCES;
+      if (fd >= 0)
+        close(fd);
+      return e;
+    }
+  }
+
+  if (xiofsagentSpnego(fd, url, static_cast<uid_t>(need.uid), err)) {
+    int e = errno ? errno : EACCES;
+    if (ssl) {
+      SSL_set_quiet_shutdown(ssl, 1);
+      SSL_free(ssl);
+      SSL_CTX_free(ctx);
+    }
+    close(fd);
+    return e;
+  }
+
+  if (ssl)
+    SSL_set_quiet_shutdown(ssl, 1);
+
+  if (importSock(fd, url, work, err, need.uid, true)) {
+    int e = errno ? errno : EACCES;
+    if (ssl) {
+      SSL_free(ssl);
+      SSL_CTX_free(ctx);
+    }
+    close(fd);
+    return e;
+  }
+
+  if (ssl) {
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+  }
+  close(fd);
+
+  if (opt.verbose)
+    std::cerr << "xiofsagent: imported krb5 socket uid=" << need.uid << " for "
+              << url.host << ":" << url.port << url.path << "\n";
+  return 0;
+}
+
+int waitNeedLoop(const Options &opt)
+{
+  installStopHandlers();
+
+  int ctl = open(kCtlDev, O_RDWR);
+  if (ctl < 0)
+    return fail(std::string("open ") + kCtlDev + ": " + strerror(errno) +
+                    " (is xiofs.ko loaded?)",
+                1);
+
+  while (!gStop) {
+    xiofs_need_conn need{};
+    if (ioctl(ctl, XIOFS_IOC_WAIT_NEED, &need) < 0) {
+      if (gStop)
+        break;
+      if (errno == EINTR || errno == EAGAIN)
+        continue;
+      int saved = errno;
+      close(ctl);
+      return fail(std::string("XIOFS_IOC_WAIT_NEED: ") + strerror(saved), 1);
+    }
+
+    std::string err;
+    int e = serveNeed(opt, need, err);
+    if (e) {
+      needFail(ctl, need, e);
+      std::cerr << "xiofsagent: need uid=" << need.uid << " failed: " << err
+                << "\n";
+    }
+  }
+
+  close(ctl);
+  return 0;
+}
+#endif
+
+int runKrb5(const Options &opt)
+{
+  std::string err;
+  XioFS::Url url;
+  if (!XioFS::parseUrl(opt.url, url, err))
+    return fail(err, 2);
+
+  Options work = opt;
+  work.http2 = false;
+  if (!work.workers)
+    work.workers = 1;
+
+  if (work.fake) {
+    std::cout << "xiofsagent: would mount " << kernelMountData(url, work)
+              << " on " << work.mountpoint << "\n";
+    return 0;
+  }
+
+  bool did_mount = false;
+  if (!work.import_only) {
+    if (doMount(url, work, work.mountpoint, err))
+      return fail(err, 1);
+    did_mount = true;
+  }
+
+  if (work.helper)
+    return 0;
+
+#ifndef HAVE_KRB5
+  (void)did_mount;
+  return fail("xiofsagent was built without Kerberos support", 2);
+#else
+  std::vector<pid_t> kids;
+  for (unsigned i = 1; i < work.workers; ++i) {
+    pid_t pid = fork();
+    if (pid < 0) {
+      int saved = errno;
+      for (pid_t p : kids)
+        kill(p, SIGTERM);
+      if (did_mount)
+        umount(work.mountpoint.c_str());
+      return fail(std::string("fork: ") + strerror(saved), 1);
+    }
+    if (pid == 0)
+      _exit(waitNeedLoop(work));
+    kids.push_back(pid);
+  }
+
+  int rc = waitNeedLoop(work);
+  for (pid_t p : kids)
+    kill(p, SIGTERM);
+  for (pid_t p : kids) {
+    int st = 0;
+    waitpid(p, &st, 0);
+  }
+  return rc;
+#endif
+}
+
 int run(const Options &opt)
 {
+  if (opt.krb5)
+    return runKrb5(opt);
+
   std::string err;
   XioFS::Url url;
   if (!XioFS::parseUrl(opt.url, url, err))
@@ -596,7 +816,7 @@ int run(const Options &opt)
     SSL_set_quiet_shutdown(ssl, 1);
   }
 
-  if (importSock(fd, url, opt, err)) {
+  if (importSock(fd, url, opt, err, 0, false)) {
     if (ssl) {
       SSL_free(ssl);
       SSL_CTX_free(ctx);
@@ -627,9 +847,10 @@ int main(int argc, char **argv)
   Options opt;
   std::string err;
   int prc;
-  if (basenameOf(argv[0]) == "mount.xiofs")
+  if (basenameOf(argv[0]) == "mount.xiofs") {
+    opt.helper = true;
     prc = parseHelperArgs(argc, argv, opt, err);
-  else
+  } else
     prc = parseAgentArgs(argc, argv, opt, err);
   if (prc > 0)
     return 0;

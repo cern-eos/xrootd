@@ -95,15 +95,56 @@ strcpy(im.export_path, "/export");
 ioctl(ctlfd, XIOFS_IOC_IMPORT_SOCK, &im);
 ```
 
-One socket is used with a mutex. HTTP/2 is one stream at a time
-(HPACK from the HTTP/1 request builders). No chunked encoding; XrdHttp
-sends `Content-Length` on HTTP/1.1. Send/recv use `sk_rcvtimeo` /
-`sk_sndtimeo` (`timeo=`, default 30s). On connection errors the socket is
-dropped and the request waits once for `xiofsagent --import-only`. Dirty
-pages are redirtied so writeback can retry after a new kTLS socket.
+A non-krb5 mount uses one socket with a mutex (uid 0). A `krb5` mount
+keeps a uid-to-conn table: each `current_fsuid()` gets its own already
+authenticated HTTP channel. HTTP/2 is one stream at a time (HPACK from
+the HTTP/1 request builders) and is forced off after a Kerberos import.
+No chunked encoding; XrdHttp sends `Content-Length` on HTTP/1.1.
+Send/recv use `sk_rcvtimeo` / `sk_sndtimeo` (`timeo=`, default 30s). On
+connection errors the socket is dropped and the request waits for a new
+import (`xiofsagent --import-only`, or `XIOFS_IOC_WAIT_NEED` on krb5
+mounts). Dirty pages are redirtied so writeback can retry after a new
+kTLS socket.
 
 Metadata uses a dentry/inode TTL (`actimeo=`, default 30s, `0` always
 revalidates). `d_revalidate` issues PROPFIND/HEAD when the cache expires.
+
+## Kerberos (SPNEGO) via xiofsagent
+
+The kernel never runs GSS. `xiofsagent --krb5` is the rpc.gssd analogue:
+it waits on `XIOFS_IOC_WAIT_NEED`, impersonates the requesting uid
+(`seteuid` + default ccache), finishes HTTP/1 Negotiate on a kTLS
+socket, then imports with `XIOFS_IMPORT_KRB5` (and `im.uid`). Failure
+is reported with `XIOFS_IOC_NEED_FAIL`. Several agents or
+`--workers N` can run at once; each `WAIT_NEED` dequeues one uid.
+
+The server identity is the Kerberos principal username, not the client
+numeric uid. krb5 mounts keep the imported socket on HTTP/1.1 (no
+in-kernel HTTP/2 after SPNEGO). Do not set `XIOFS_IMPORT_H2` on a
+Kerberos import.
+
+```bash
+# as the user who will do I/O
+kinit alice@EXAMPLE.ORG
+
+# as root: mount with krb5, then run the agent
+sudo xiofsagent --krb5 --workers 4 --cacert /path/ca.pem \
+    https://storage.example:1094/export /mnt/xiofs
+```
+
+Or mount first, then attach the agent:
+
+```bash
+sudo mount -t xiofs \
+    -o host=storage.example,port=1094,path=/export,krb5 \
+    none /mnt/xiofs
+sudo xiofsagent --krb5 --workers 4 --import-only \
+    https://storage.example:1094/export
+```
+
+`WAIT_NEED` is the automatic handshake upcall. `mount.xiofs` with `-o krb5`
+only mounts; run `xiofsagent --krb5 --import-only` as a separate daemon.
+Non-krb5 remounts still use `xiofsagent --import-only`.
 
 ## Verb map
 
@@ -130,7 +171,6 @@ revalidates). `d_revalidate` issues PROPFIND/HEAD when the cache expires.
 
 ## Explicitly not done
 
-- Automatic handshake upcall (re-import is still `xiofsagent --import-only`)
 - Chunked responses
 - Multiplexed HTTP/2 streams (the kernel client is serial)
 - Writeback congestion / batching PATCH across folios

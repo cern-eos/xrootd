@@ -4,6 +4,7 @@
 
 #include <linux/errno.h>
 #include <linux/fs.h>
+#include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/net.h>
 #include <linux/types.h>
@@ -63,18 +64,37 @@ struct xiofs_http_resp {
 	size_t		body_len;
 };
 
-struct xiofs_sb_info {
-	struct super_block	*sb;
+struct xiofs_sb_info;
+
+/*
+ * One already-authenticated HTTP channel. Non-krb5 mounts use uid 0.
+ * Kerberos mounts key by current_fsuid(); GSS/SPNEGO stays in xiofsagent.
+ */
+struct xiofs_conn {
 	struct list_head	list;
+	struct xiofs_sb_info	*sbi;
+	u32			uid;
 	struct mutex		io_lock;
-	wait_queue_head_t	sock_wait;
+	wait_queue_head_t	wait;
 	struct socket		*sock;
 	bool			tls;
 	bool			http2;
 	bool			h2_ready;
-	bool			shutting_down;
+	bool			pending;
+	int			last_err;
 	u32			h2_next_sid;
 	u32			h2_send_win;
+	char			bearer[512];
+};
+
+struct xiofs_sb_info {
+	struct super_block	*sb;
+	struct list_head	list;
+	struct mutex		conns_lock;
+	struct list_head	conns;
+	bool			krb5;
+	bool			http2;
+	bool			shutting_down;
 	unsigned int		actimeo_sec;
 	unsigned int		timeo_sec;
 	char			host[256];
@@ -138,8 +158,10 @@ void xiofs_session_exit(void);
 void xiofs_session_register(struct xiofs_sb_info *sbi);
 void xiofs_session_unregister(struct xiofs_sb_info *sbi);
 void xiofs_session_close(struct xiofs_sb_info *sbi);
-int xiofs_session_wait(struct xiofs_sb_info *sbi);
-void xiofs_session_drop(struct xiofs_sb_info *sbi);
+int xiofs_conn_get(struct xiofs_sb_info *sbi, struct xiofs_conn **out);
+void xiofs_conn_put(struct xiofs_conn *c);
+int xiofs_conn_wait(struct xiofs_conn *c);
+void xiofs_conn_drop(struct xiofs_conn *c);
 
 int xiofs_http_status_to_errno(int status);
 int xiofs_http_getattr_path(struct xiofs_sb_info *sbi, const char *path,
@@ -177,8 +199,8 @@ int xiofs_http_flock(struct inode *inode, int op);
 int xiofs_sock_send(struct socket *sock, const void *buf, size_t len);
 int xiofs_sock_recv(struct socket *sock, void *buf, size_t len);
 int xiofs_sock_recv_some(struct socket *sock, void *buf, size_t len);
-void xiofs_h2_reset(struct xiofs_sb_info *sbi);
-int xiofs_h2_transact(struct xiofs_sb_info *sbi, const char *req, size_t reqlen,
+void xiofs_h2_reset(struct xiofs_conn *c);
+int xiofs_h2_transact(struct xiofs_conn *c, const char *req, size_t reqlen,
 		      const void *body, size_t bodylen, void *out, size_t outcap,
 		      size_t *outlen, struct xiofs_http_resp *meta);
 

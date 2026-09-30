@@ -8,6 +8,10 @@
  * After OpenSSL finishes the handshake, install kTLS with
  * SSL_OP_ENABLE_KTLS (see xiofsagent) and pass the socket here.
  * Do not extract keys and roll a private TLS record layer.
+ *
+ * Kerberos (SPNEGO) cannot live in-kernel. The agent finishes
+ * Negotiate on the TLS socket, then imports it bound to a uid.
+ * The kernel keeps one already-authenticated HTTP channel per uid.
  */
 #include <linux/ioctl.h>
 #include <linux/types.h>
@@ -17,12 +21,15 @@
 #define XIOFS_IMPORT_TLS		(1u << 0)
 #define XIOFS_IMPORT_BEARER		(1u << 1)
 #define XIOFS_IMPORT_H2			(1u << 2)
+#define XIOFS_IMPORT_KRB5		(1u << 3)
 
 struct xiofs_import_sock {
 	__s32	sockfd;
 	__u32	flags;
 	__u16	port;
 	__u16	reserved;
+	__u32	uid;
+	__u32	pad;
 	char	host[256];
 	char	export_path[256];
 	char	bearer[512];
@@ -44,5 +51,24 @@ struct xiofs_gpu_io {
 	_IOW(XIOFS_IOC_MAGIC, 2, struct xiofs_gpu_io)
 #define XIOFS_IOC_GPU_WRITE \
 	_IOW(XIOFS_IOC_MAGIC, 3, struct xiofs_gpu_io)
+
+/*
+ * Agent upcall: wait until some uid on a krb5 (or reconnecting) mount
+ * needs a socket. One WAIT_NEED dequeues one (sbi, uid) so several
+ * xiofsagent processes can run in parallel.
+ */
+struct xiofs_need_conn {
+	__u32	uid;
+	__s32	err;
+	__u16	port;
+	__u16	flags;
+	char	host[256];
+	char	export_path[256];
+};
+
+#define XIOFS_IOC_WAIT_NEED \
+	_IOWR(XIOFS_IOC_MAGIC, 4, struct xiofs_need_conn)
+#define XIOFS_IOC_NEED_FAIL \
+	_IOW(XIOFS_IOC_MAGIC, 5, struct xiofs_need_conn)
 
 #endif

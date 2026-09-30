@@ -138,6 +138,23 @@ The hostname in the URL must match the service principal (or its DNS alias
 as known to the KDC). curl requests a ticket for `HTTP/hostname@REALM` based
 on the URL host.
 
+## Kernel mount (xiofs)
+
+The in-kernel XIOFS client cannot run GSS. Mount with the `krb5` option
+and run `xiofsagent --krb5` as root. The agent waits on
+`XIOFS_IOC_WAIT_NEED`, completes SPNEGO as the requesting uid using that
+user's default ccache, and imports the kTLS socket with
+`XIOFS_IMPORT_KRB5`. See `src/XrdXioFS/kernel/README.md`.
+
+```bash
+kinit alice@EXAMPLE.ORG
+sudo xiofsagent --krb5 --workers 4 --cacert /path/to/ca.pem \
+    https://myserver.example.org:1094/export /mnt/xiofs
+```
+
+The server sees the Kerberos principal username, not the client numeric
+uid. Imported krb5 sockets stay on HTTP/1.1 (no in-kernel HTTP/2).
+
 ## Authentication flow
 
 ```text

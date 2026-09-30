@@ -89,11 +89,11 @@ static const u8 huff_len[256] = {
 	26, 27, 26, 26, 27, 27, 27, 27, 27, 28, 27, 27, 27, 27, 27, 26
 };
 
-void xiofs_h2_reset(struct xiofs_sb_info *sbi)
+void xiofs_h2_reset(struct xiofs_conn *c)
 {
-	sbi->h2_ready = false;
-	sbi->h2_next_sid = 1;
-	sbi->h2_send_win = H2_INIT_WIN;
+	c->h2_ready = false;
+	c->h2_next_sid = 1;
+	c->h2_send_win = H2_INIT_WIN;
 }
 
 static u32 be24(const u8 *p)
@@ -483,7 +483,7 @@ static int skip_hdr(const char *name)
 	       ncaseeq(name, "content-length");
 }
 
-static int http1_to_hpack(struct xiofs_sb_info *sbi, const char *req,
+static int http1_to_hpack(struct xiofs_conn *c, const char *req,
 			  size_t reqlen, u8 *out, size_t cap, size_t *n)
 {
 	char method[32] = {}, path[XIOFS_PATH_MAX] = {};
@@ -499,10 +499,10 @@ static int http1_to_hpack(struct xiofs_sb_info *sbi, const char *req,
 	err = hpack_lit(out, cap, n, ":path", path);
 	if (err)
 		return err;
-	err = hpack_lit(out, cap, n, ":scheme", sbi->tls ? "https" : "http");
+	err = hpack_lit(out, cap, n, ":scheme", c->tls ? "https" : "http");
 	if (err)
 		return err;
-	err = hpack_lit(out, cap, n, ":authority", sbi->hosthdr);
+	err = hpack_lit(out, cap, n, ":authority", c->sbi->hosthdr);
 	if (err)
 		return err;
 
@@ -555,14 +555,14 @@ static int h2_window_update(struct socket *sock, u32 sid, u32 incr)
 	return h2_send_frame(sock, H2_WINDOW_UPDATE, 0, sid, payload, 4);
 }
 
-static int h2_preface(struct xiofs_sb_info *sbi)
+static int h2_preface(struct xiofs_conn *c)
 {
 	int err, saw = 0;
 	const u32 init_win = 1u << 20;
 
-	if (sbi->h2_ready)
+	if (c->h2_ready)
 		return 0;
-	err = xiofs_sock_send(sbi->sock, XIOFS_H2_PREFACE, XIOFS_H2_PREFACE_LEN);
+	err = xiofs_sock_send(c->sock, XIOFS_H2_PREFACE, XIOFS_H2_PREFACE_LEN);
 	if (err)
 		return err;
 	{
@@ -574,34 +574,34 @@ static int h2_preface(struct xiofs_sb_info *sbi)
 		pl[6] = 0;
 		pl[7] = 0x03;
 		put_be32(pl + 8, 1);
-		err = h2_send_frame(sbi->sock, H2_SETTINGS, 0, 0, pl, 12);
+		err = h2_send_frame(c->sock, H2_SETTINGS, 0, 0, pl, 12);
 	}
 	if (err)
 		return err;
-	sbi->h2_send_win = H2_INIT_WIN;
-	sbi->h2_next_sid = sbi->h2_next_sid ? sbi->h2_next_sid : 1;
+	c->h2_send_win = H2_INIT_WIN;
+	c->h2_next_sid = c->h2_next_sid ? c->h2_next_sid : 1;
 
 	while (saw < 8) {
 		u8 type, flags, *pay = NULL;
 		u32 sid;
 		size_t plen = 0;
 
-		err = h2_recv_frame(sbi->sock, &type, &flags, &sid, &pay, &plen);
+		err = h2_recv_frame(c->sock, &type, &flags, &sid, &pay, &plen);
 		if (err)
 			return err;
 		if (type == H2_SETTINGS && !(flags & H2_ACK)) {
-			err = h2_send_frame(sbi->sock, H2_SETTINGS, H2_ACK, 0,
+			err = h2_send_frame(c->sock, H2_SETTINGS, H2_ACK, 0,
 					    NULL, 0);
 			kvfree(pay);
 			if (err)
 				return err;
-			sbi->h2_ready = true;
+			c->h2_ready = true;
 			return 0;
 		}
 		if (type == H2_WINDOW_UPDATE && plen >= 4)
-			sbi->h2_send_win += get_be32(pay) & 0x7fffffff;
+			c->h2_send_win += get_be32(pay) & 0x7fffffff;
 		if (type == H2_PING && !(flags & H2_ACK) && plen == 8) {
-			err = h2_send_frame(sbi->sock, H2_PING, H2_ACK, 0, pay, 8);
+			err = h2_send_frame(c->sock, H2_PING, H2_ACK, 0, pay, 8);
 			kvfree(pay);
 			if (err)
 				return err;
@@ -613,7 +613,7 @@ static int h2_preface(struct xiofs_sb_info *sbi)
 	return -EPROTO;
 }
 
-int xiofs_h2_transact(struct xiofs_sb_info *sbi, const char *req, size_t reqlen,
+int xiofs_h2_transact(struct xiofs_conn *c, const char *req, size_t reqlen,
 		      const void *body, size_t bodylen, void *out, size_t outcap,
 		      size_t *outlen, struct xiofs_http_resp *meta)
 {
@@ -630,32 +630,32 @@ int xiofs_h2_transact(struct xiofs_sb_info *sbi, const char *req, size_t reqlen,
 	if (outlen)
 		*outlen = 0;
 
-	err = xiofs_session_wait(sbi);
+	err = xiofs_conn_wait(c);
 	if (err)
 		return err;
-	err = h2_preface(sbi);
+	err = h2_preface(c);
 	if (err)
 		return err;
 
 	hpack = kmalloc(2048, GFP_KERNEL);
 	if (!hpack)
 		return -ENOMEM;
-	err = http1_to_hpack(sbi, req, reqlen, hpack, 2048, &hlen);
+	err = http1_to_hpack(c, req, reqlen, hpack, 2048, &hlen);
 	if (err) {
 		kfree(hpack);
 		return err;
 	}
 
-	sid = sbi->h2_next_sid;
+	sid = c->h2_next_sid;
 	if (sid & 1)
-		sbi->h2_next_sid = sid + 2;
+		c->h2_next_sid = sid + 2;
 	else
-		sbi->h2_next_sid = sid + 1;
+		c->h2_next_sid = sid + 1;
 
 	hflags = H2_END_HEADERS;
 	if (!bodylen)
 		hflags |= H2_END_STREAM;
-	err = h2_send_frame(sbi->sock, H2_HEADERS, hflags, sid, hpack, hlen);
+	err = h2_send_frame(c->sock, H2_HEADERS, hflags, sid, hpack, hlen);
 	kfree(hpack);
 	if (err)
 		return err;
@@ -668,13 +668,13 @@ int xiofs_h2_transact(struct xiofs_sb_info *sbi, const char *req, size_t reqlen,
 			size_t chunk = min_t(size_t, left, H2_MAX_FRAME);
 			u8 dflags = (chunk == left) ? H2_END_STREAM : 0;
 
-			if (sbi->h2_send_win < chunk)
-				chunk = sbi->h2_send_win ? sbi->h2_send_win : 1;
-			err = h2_send_frame(sbi->sock, H2_DATA, dflags, sid, bp,
+			if (c->h2_send_win < chunk)
+				chunk = c->h2_send_win ? c->h2_send_win : 1;
+			err = h2_send_frame(c->sock, H2_DATA, dflags, sid, bp,
 					    chunk);
 			if (err)
 				return err;
-			sbi->h2_send_win -= (u32)chunk;
+			c->h2_send_win -= (u32)chunk;
 			bp += chunk;
 			left -= chunk;
 		}
@@ -687,26 +687,26 @@ int xiofs_h2_transact(struct xiofs_sb_info *sbi, const char *req, size_t reqlen,
 		u32 fsid;
 		size_t plen = 0;
 
-		err = h2_recv_frame(sbi->sock, &type, &flags, &fsid, &pay, &plen);
+		err = h2_recv_frame(c->sock, &type, &flags, &fsid, &pay, &plen);
 		if (err)
 			return err;
 		if (type == H2_SETTINGS && !(flags & H2_ACK)) {
 			kvfree(pay);
-			err = h2_send_frame(sbi->sock, H2_SETTINGS, H2_ACK, 0,
+			err = h2_send_frame(c->sock, H2_SETTINGS, H2_ACK, 0,
 					    NULL, 0);
 			if (err)
 				return err;
 			continue;
 		}
 		if (type == H2_PING && !(flags & H2_ACK) && plen == 8) {
-			err = h2_send_frame(sbi->sock, H2_PING, H2_ACK, 0, pay, 8);
+			err = h2_send_frame(c->sock, H2_PING, H2_ACK, 0, pay, 8);
 			kvfree(pay);
 			if (err)
 				return err;
 			continue;
 		}
 		if (type == H2_WINDOW_UPDATE && plen >= 4) {
-			sbi->h2_send_win += get_be32(pay) & 0x7fffffff;
+			c->h2_send_win += get_be32(pay) & 0x7fffffff;
 			kvfree(pay);
 			continue;
 		}
@@ -774,9 +774,9 @@ int xiofs_h2_transact(struct xiofs_sb_info *sbi, const char *req, size_t reqlen,
 				got += take;
 			}
 			if (dl) {
-				err = h2_window_update(sbi->sock, 0, (u32)dl);
+				err = h2_window_update(c->sock, 0, (u32)dl);
 				if (!err)
-					err = h2_window_update(sbi->sock, sid,
+					err = h2_window_update(c->sock, sid,
 							       (u32)dl);
 				if (err) {
 					kvfree(pay);

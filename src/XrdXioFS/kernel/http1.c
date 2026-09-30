@@ -148,7 +148,7 @@ static int xiofs_header_value(const char *hdrs, const char *name, char *out,
 	return -ENOENT;
 }
 
-static int xiofs_transact_once(struct xiofs_sb_info *sbi, const char *req,
+static int xiofs_transact_once(struct xiofs_conn *c, const char *req,
 			     size_t reqlen, const void *body, size_t bodylen,
 			     void *out, size_t outcap, size_t *outlen,
 			     struct xiofs_http_resp *meta)
@@ -165,15 +165,15 @@ static int xiofs_transact_once(struct xiofs_sb_info *sbi, const char *req,
 	memset(meta, 0, sizeof(*meta));
 	meta->content_length = -1;
 
-	err = xiofs_session_wait(sbi);
+	err = xiofs_conn_wait(c);
 	if (err)
 		return err;
 
-	err = xiofs_sock_send(sbi->sock, req, reqlen);
+	err = xiofs_sock_send(c->sock, req, reqlen);
 	if (err)
 		return err;
 	if (bodylen) {
-		err = xiofs_sock_send(sbi->sock, body, bodylen);
+		err = xiofs_sock_send(c->sock, body, bodylen);
 		if (err)
 			return err;
 	}
@@ -183,7 +183,7 @@ static int xiofs_transact_once(struct xiofs_sb_info *sbi, const char *req,
 		return -ENOMEM;
 
 	while (filled < XIOFS_MAX_HDR - 1) {
-		int n = xiofs_sock_recv_some(sbi->sock, hdrbuf + filled,
+		int n = xiofs_sock_recv_some(c->sock, hdrbuf + filled,
 					   XIOFS_MAX_HDR - 1 - filled);
 
 		if (n <= 0) {
@@ -229,7 +229,7 @@ static int xiofs_transact_once(struct xiofs_sb_info *sbi, const char *req,
 			got = take;
 		}
 		if (got < want) {
-			err = xiofs_sock_recv(sbi->sock, (char *)out + got,
+			err = xiofs_sock_recv(c->sock, (char *)out + got,
 					    want - got);
 			if (err < 0)
 				goto out_hdr;
@@ -241,7 +241,7 @@ static int xiofs_transact_once(struct xiofs_sb_info *sbi, const char *req,
 
 			while (skip) {
 				size_t n = min(skip, sizeof(dump));
-				int r = xiofs_sock_recv(sbi->sock, dump, n);
+				int r = xiofs_sock_recv(c->sock, dump, n);
 
 				if (r < 0) {
 					err = r;
@@ -259,7 +259,7 @@ static int xiofs_transact_once(struct xiofs_sb_info *sbi, const char *req,
 			skip = skip > extra_len ? skip - extra_len : 0;
 		while (skip) {
 			size_t n = min(skip, sizeof(dump));
-			int r = xiofs_sock_recv(sbi->sock, dump, n);
+			int r = xiofs_sock_recv(c->sock, dump, n);
 
 			if (r < 0) {
 				err = r;
@@ -283,7 +283,7 @@ out_hdr:
 	return err;
 }
 
-static int xiofs_transact(struct xiofs_sb_info *sbi, const char *req,
+static int xiofs_transact(struct xiofs_conn *c, const char *req,
 			size_t reqlen, const void *body, size_t bodylen,
 			void *out, size_t outcap, size_t *outlen,
 			struct xiofs_http_resp *meta)
@@ -291,26 +291,28 @@ static int xiofs_transact(struct xiofs_sb_info *sbi, const char *req,
 	int err, attempt;
 
 	for (attempt = 0; attempt < 2; attempt++) {
-		if (sbi->http2)
-			err = xiofs_h2_transact(sbi, req, reqlen, body, bodylen,
+		if (c->http2)
+			err = xiofs_h2_transact(c, req, reqlen, body, bodylen,
 						out, outcap, outlen, meta);
 		else
-			err = xiofs_transact_once(sbi, req, reqlen, body, bodylen,
+			err = xiofs_transact_once(c, req, reqlen, body, bodylen,
 						out, outcap, outlen, meta);
 		if (!xiofs_connerr(err))
 			return err;
-		xiofs_session_drop(sbi);
+		xiofs_conn_drop(c);
 	}
 	return err;
 }
 
 static int xiofs_add_auth(char *buf, size_t sz, size_t *n,
-			struct xiofs_sb_info *sbi)
+			struct xiofs_conn *c)
 {
-	if (!sbi->bearer[0])
+	const char *bearer = c->bearer[0] ? c->bearer : c->sbi->bearer;
+
+	if (!bearer[0])
 		return 0;
 	*n += snprintf(buf + *n, sz - *n, "Authorization: Bearer %s\r\n",
-		       sbi->bearer);
+		       bearer);
 	return 0;
 }
 
@@ -548,7 +550,7 @@ static int xiofs_parse_dav(const char *xml, size_t len,
 	return 0;
 }
 
-static int xiofs_do_propfind(struct xiofs_sb_info *sbi, const char *path,
+static int xiofs_do_propfind(struct xiofs_conn *c, const char *path,
 			   int depth, void *body, size_t cap, size_t *len,
 			   struct xiofs_http_resp *meta)
 {
@@ -560,28 +562,31 @@ static int xiofs_do_propfind(struct xiofs_sb_info *sbi, const char *path,
 		      "Host: %s\r\n"
 		      "Depth: %d\r\n"
 		      "Connection: keep-alive\r\n",
-		      path, sbi->hosthdr, depth);
-	xiofs_add_auth(req, sizeof(req), &n, sbi);
+		      path, c->sbi->hosthdr, depth);
+	xiofs_add_auth(req, sizeof(req), &n, c);
 	n += snprintf(req + n, sizeof(req) - n, "\r\n");
-	return xiofs_transact(sbi, req, n, NULL, 0, body, cap, len, meta);
+	return xiofs_transact(c, req, n, NULL, 0, body, cap, len, meta);
 }
 
 int xiofs_http_getattr_path(struct xiofs_sb_info *sbi, const char *path,
 			       struct xiofs_attr *attr)
 {
+	struct xiofs_conn *c;
 	char *body;
 	size_t len = 0;
 	struct xiofs_http_resp meta;
 	int err;
 
 	memset(attr, 0, sizeof(*attr));
-	mutex_lock(&sbi->io_lock);
+	err = xiofs_conn_get(sbi, &c);
+	if (err)
+		return err;
 	body = kvmalloc(XIOFS_MAX_DAV, GFP_KERNEL);
 	if (!body) {
-		mutex_unlock(&sbi->io_lock);
+		xiofs_conn_put(c);
 		return -ENOMEM;
 	}
-	err = xiofs_do_propfind(sbi, path, 0, body, XIOFS_MAX_DAV, &len, &meta);
+	err = xiofs_do_propfind(c, path, 0, body, XIOFS_MAX_DAV, &len, &meta);
 	if (!err)
 		err = xiofs_http_status_to_errno(meta.status);
 	if (!err) {
@@ -596,10 +601,10 @@ int xiofs_http_getattr_path(struct xiofs_sb_info *sbi, const char *path,
 		n += snprintf(req + n, sizeof(req) - n,
 			      "HEAD %s HTTP/1.1\r\nHost: %s\r\n"
 			      "Connection: keep-alive\r\n",
-			      path, sbi->hosthdr);
-		xiofs_add_auth(req, sizeof(req), &n, sbi);
+			      path, c->sbi->hosthdr);
+		xiofs_add_auth(req, sizeof(req), &n, c);
 		n += snprintf(req + n, sizeof(req) - n, "\r\n");
-		err = xiofs_transact(sbi, req, n, NULL, 0, NULL, 0, NULL, &meta);
+		err = xiofs_transact(c, req, n, NULL, 0, NULL, 0, NULL, &meta);
 		if (!err)
 			err = xiofs_http_status_to_errno(meta.status);
 		if (!err) {
@@ -611,7 +616,7 @@ int xiofs_http_getattr_path(struct xiofs_sb_info *sbi, const char *path,
 		}
 	}
 	kvfree(body);
-	mutex_unlock(&sbi->io_lock);
+	xiofs_conn_put(c);
 	return err;
 }
 
@@ -625,6 +630,7 @@ int xiofs_http_readdir(struct inode *dir, struct xiofs_dirent **ents,
 			  size_t *nents)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(dir->i_sb);
+	struct xiofs_conn *c;
 	char *body;
 	size_t len = 0;
 	struct xiofs_http_resp meta;
@@ -632,20 +638,22 @@ int xiofs_http_readdir(struct inode *dir, struct xiofs_dirent **ents,
 
 	*ents = NULL;
 	*nents = 0;
-	mutex_lock(&sbi->io_lock);
+	err = xiofs_conn_get(sbi, &c);
+	if (err)
+		return err;
 	body = kvmalloc(XIOFS_MAX_DAV, GFP_KERNEL);
 	if (!body) {
-		mutex_unlock(&sbi->io_lock);
+		xiofs_conn_put(c);
 		return -ENOMEM;
 	}
-	err = xiofs_do_propfind(sbi, XIOFS_I(dir)->remote_path, 1, body,
+	err = xiofs_do_propfind(c, XIOFS_I(dir)->remote_path, 1, body,
 			      XIOFS_MAX_DAV, &len, &meta);
 	if (!err)
 		err = xiofs_http_status_to_errno(meta.status);
 	if (!err)
 		err = xiofs_parse_dav(body, len, ents, nents, NULL);
 	kvfree(body);
-	mutex_unlock(&sbi->io_lock);
+	xiofs_conn_put(c);
 	return err;
 }
 
@@ -653,6 +661,7 @@ int xiofs_http_read(struct inode *inode, loff_t off, size_t len,
 		       void *buf, size_t *nread)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
+	struct xiofs_conn *c;
 	char req[768];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
@@ -661,21 +670,23 @@ int xiofs_http_read(struct inode *inode, loff_t off, size_t len,
 	*nread = 0;
 	if (!len)
 		return 0;
-	mutex_lock(&sbi->io_lock);
+	err = xiofs_conn_get(sbi, &c);
+	if (err)
+		return err;
 	n += snprintf(req + n, sizeof(req) - n,
 		      "GET %s HTTP/1.1\r\n"
 		      "Host: %s\r\n"
 		      "Range: bytes=%llu-%llu\r\n"
 		      "Connection: keep-alive\r\n",
-		      XIOFS_I(inode)->remote_path, sbi->hosthdr,
+		      XIOFS_I(inode)->remote_path, c->sbi->hosthdr,
 		      (unsigned long long)off,
 		      (unsigned long long)off + len - 1);
-	xiofs_add_auth(req, sizeof(req), &n, sbi);
+	xiofs_add_auth(req, sizeof(req), &n, c);
 	n += snprintf(req + n, sizeof(req) - n, "\r\n");
-	err = xiofs_transact(sbi, req, n, NULL, 0, buf, len, nread, &meta);
+	err = xiofs_transact(c, req, n, NULL, 0, buf, len, nread, &meta);
 	if (!err)
 		err = xiofs_http_status_to_errno(meta.status);
-	mutex_unlock(&sbi->io_lock);
+	xiofs_conn_put(c);
 	return err;
 }
 
@@ -683,6 +694,7 @@ int xiofs_http_write(struct inode *inode, loff_t off, size_t len,
 			const void *buf, size_t *nwritten)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
+	struct xiofs_conn *c;
 	char req[896];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
@@ -691,7 +703,9 @@ int xiofs_http_write(struct inode *inode, loff_t off, size_t len,
 	*nwritten = 0;
 	if (!len)
 		return 0;
-	mutex_lock(&sbi->io_lock);
+	err = xiofs_conn_get(sbi, &c);
+	if (err)
+		return err;
 	n += snprintf(req + n, sizeof(req) - n,
 		      "PATCH %s HTTP/1.1\r\n"
 		      "Host: %s\r\n"
@@ -699,13 +713,13 @@ int xiofs_http_write(struct inode *inode, loff_t off, size_t len,
 		      "Content-Range: bytes %llu-%llu/*\r\n"
 		      "Content-Length: %zu\r\n"
 		      "Connection: keep-alive\r\n",
-		      XIOFS_I(inode)->remote_path, sbi->hosthdr,
+		      XIOFS_I(inode)->remote_path, c->sbi->hosthdr,
 		      (unsigned long long)off,
 		      (unsigned long long)off + len - 1, len);
 	xiofs_add_match(req, sizeof(req), &n, XIOFS_I(inode)->etag);
-	xiofs_add_auth(req, sizeof(req), &n, sbi);
+	xiofs_add_auth(req, sizeof(req), &n, c);
 	n += snprintf(req + n, sizeof(req) - n, "\r\n");
-	err = xiofs_transact(sbi, req, n, buf, len, NULL, 0, NULL, &meta);
+	err = xiofs_transact(c, req, n, buf, len, NULL, 0, NULL, &meta);
 	if (!err)
 		err = xiofs_http_status_to_errno(meta.status);
 	if (!err) {
@@ -714,7 +728,7 @@ int xiofs_http_write(struct inode *inode, loff_t off, size_t len,
 			strscpy(XIOFS_I(inode)->etag, meta.etag,
 				sizeof(XIOFS_I(inode)->etag));
 	}
-	mutex_unlock(&sbi->io_lock);
+	xiofs_conn_put(c);
 	return err;
 }
 
@@ -722,27 +736,30 @@ static int xiofs_put(struct xiofs_sb_info *sbi, const char *path,
 		   const void *buf, size_t len, const char *if_match,
 		   const char *if_none, struct xiofs_attr *attr)
 {
+	struct xiofs_conn *c;
 	char req[896];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
 	int err;
 
+	err = xiofs_conn_get(sbi, &c);
+	if (err)
+		return err;
 	n += snprintf(req + n, sizeof(req) - n,
 		      "PUT %s HTTP/1.1\r\n"
 		      "Host: %s\r\n"
 		      "Content-Type: application/octet-stream\r\n"
 		      "Content-Length: %zu\r\n"
 		      "Connection: keep-alive\r\n",
-		      path, sbi->hosthdr, len);
+		      path, c->sbi->hosthdr, len);
 	xiofs_add_match(req, sizeof(req), &n, if_match);
 	if (if_none && if_none[0])
 		n += snprintf(req + n, sizeof(req) - n,
 			      "If-None-Match: %s\r\n", if_none);
-	xiofs_add_auth(req, sizeof(req), &n, sbi);
+	xiofs_add_auth(req, sizeof(req), &n, c);
 	n += snprintf(req + n, sizeof(req) - n, "\r\n");
-	mutex_lock(&sbi->io_lock);
-	err = xiofs_transact(sbi, req, n, buf, len, NULL, 0, NULL, &meta);
-	mutex_unlock(&sbi->io_lock);
+	err = xiofs_transact(c, req, n, buf, len, NULL, 0, NULL, &meta);
+	xiofs_conn_put(c);
 	if (!err)
 		err = xiofs_http_status_to_errno(meta.status);
 	if (!err && attr) {
@@ -763,20 +780,23 @@ int xiofs_http_create(struct inode *dir, const char *path,
 int xiofs_http_mkdir(struct inode *dir, const char *path)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(dir->i_sb);
+	struct xiofs_conn *c;
 	char req[512];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
 	int err;
 
+	err = xiofs_conn_get(sbi, &c);
+	if (err)
+		return err;
 	n += snprintf(req + n, sizeof(req) - n,
 		      "MKCOL %s HTTP/1.1\r\nHost: %s\r\n"
 		      "Connection: keep-alive\r\n",
-		      path, sbi->hosthdr);
-	xiofs_add_auth(req, sizeof(req), &n, sbi);
+		      path, c->sbi->hosthdr);
+	xiofs_add_auth(req, sizeof(req), &n, c);
 	n += snprintf(req + n, sizeof(req) - n, "\r\n");
-	mutex_lock(&sbi->io_lock);
-	err = xiofs_transact(sbi, req, n, NULL, 0, NULL, 0, NULL, &meta);
-	mutex_unlock(&sbi->io_lock);
+	err = xiofs_transact(c, req, n, NULL, 0, NULL, 0, NULL, &meta);
+	xiofs_conn_put(c);
 	if (!err)
 		err = xiofs_http_status_to_errno(meta.status);
 	return err;
@@ -785,21 +805,24 @@ int xiofs_http_mkdir(struct inode *dir, const char *path)
 int xiofs_http_unlink(struct inode *inode)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
+	struct xiofs_conn *c;
 	char req[640];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
 	int err;
 
+	err = xiofs_conn_get(sbi, &c);
+	if (err)
+		return err;
 	n += snprintf(req + n, sizeof(req) - n,
 		      "DELETE %s HTTP/1.1\r\nHost: %s\r\n"
 		      "Connection: keep-alive\r\n",
-		      XIOFS_I(inode)->remote_path, sbi->hosthdr);
+		      XIOFS_I(inode)->remote_path, c->sbi->hosthdr);
 	xiofs_add_match(req, sizeof(req), &n, XIOFS_I(inode)->etag);
-	xiofs_add_auth(req, sizeof(req), &n, sbi);
+	xiofs_add_auth(req, sizeof(req), &n, c);
 	n += snprintf(req + n, sizeof(req) - n, "\r\n");
-	mutex_lock(&sbi->io_lock);
-	err = xiofs_transact(sbi, req, n, NULL, 0, NULL, 0, NULL, &meta);
-	mutex_unlock(&sbi->io_lock);
+	err = xiofs_transact(c, req, n, NULL, 0, NULL, 0, NULL, &meta);
+	xiofs_conn_put(c);
 	if (!err)
 		err = xiofs_http_status_to_errno(meta.status);
 	return err;
@@ -808,23 +831,26 @@ int xiofs_http_unlink(struct inode *inode)
 int xiofs_http_rename(struct inode *old_inode, const char *new_path)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(old_inode->i_sb);
+	struct xiofs_conn *c;
 	char req[1024];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
 	int err;
 
+	err = xiofs_conn_get(sbi, &c);
+	if (err)
+		return err;
 	n += snprintf(req + n, sizeof(req) - n,
 		      "MOVE %s HTTP/1.1\r\nHost: %s\r\n"
 		      "Destination: https://%s%s\r\n"
 		      "Connection: keep-alive\r\n",
-		      XIOFS_I(old_inode)->remote_path, sbi->hosthdr,
-		      sbi->hosthdr, new_path);
+		      XIOFS_I(old_inode)->remote_path, c->sbi->hosthdr,
+		      c->sbi->hosthdr, new_path);
 	xiofs_add_match(req, sizeof(req), &n, XIOFS_I(old_inode)->etag);
-	xiofs_add_auth(req, sizeof(req), &n, sbi);
+	xiofs_add_auth(req, sizeof(req), &n, c);
 	n += snprintf(req + n, sizeof(req) - n, "\r\n");
-	mutex_lock(&sbi->io_lock);
-	err = xiofs_transact(sbi, req, n, NULL, 0, NULL, 0, NULL, &meta);
-	mutex_unlock(&sbi->io_lock);
+	err = xiofs_transact(c, req, n, NULL, 0, NULL, 0, NULL, &meta);
+	xiofs_conn_put(c);
 	if (!err)
 		err = xiofs_http_status_to_errno(meta.status);
 	if (!err)
@@ -852,22 +878,25 @@ int xiofs_http_truncate(struct inode *inode, loff_t size)
 static int xiofs_http_proppatch(struct inode *inode, const char *body, size_t blen)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
+	struct xiofs_conn *c;
 	char req[896];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
 	int err;
 
+	err = xiofs_conn_get(sbi, &c);
+	if (err)
+		return err;
 	n += snprintf(req + n, sizeof(req) - n,
 		      "PROPPATCH %s HTTP/1.1\r\nHost: %s\r\n"
 		      "Content-Type: application/xml; charset=\"utf-8\"\r\n"
 		      "Content-Length: %zu\r\n"
 		      "Connection: keep-alive\r\n",
-		      XIOFS_I(inode)->remote_path, sbi->hosthdr, blen);
-	xiofs_add_auth(req, sizeof(req), &n, sbi);
+		      XIOFS_I(inode)->remote_path, c->sbi->hosthdr, blen);
+	xiofs_add_auth(req, sizeof(req), &n, c);
 	n += snprintf(req + n, sizeof(req) - n, "\r\n");
-	mutex_lock(&sbi->io_lock);
-	err = xiofs_transact(sbi, req, n, body, blen, NULL, 0, NULL, &meta);
-	mutex_unlock(&sbi->io_lock);
+	err = xiofs_transact(c, req, n, body, blen, NULL, 0, NULL, &meta);
+	xiofs_conn_put(c);
 	if (!err)
 		err = xiofs_http_status_to_errno(meta.status);
 	return err;
@@ -932,22 +961,25 @@ int xiofs_http_utimens(struct inode *inode, time64_t atime, time64_t mtime)
 int xiofs_http_link(struct inode *old_inode, const char *new_path)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(old_inode->i_sb);
+	struct xiofs_conn *c;
 	char req[1024];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
 	int err;
 
+	err = xiofs_conn_get(sbi, &c);
+	if (err)
+		return err;
 	n += snprintf(req + n, sizeof(req) - n,
 		      "LINK %s HTTP/1.1\r\nHost: %s\r\n"
 		      "Destination: https://%s%s\r\n"
 		      "Connection: keep-alive\r\n",
-		      XIOFS_I(old_inode)->remote_path, sbi->hosthdr,
-		      sbi->hosthdr, new_path);
-	xiofs_add_auth(req, sizeof(req), &n, sbi);
+		      XIOFS_I(old_inode)->remote_path, c->sbi->hosthdr,
+		      c->sbi->hosthdr, new_path);
+	xiofs_add_auth(req, sizeof(req), &n, c);
 	n += snprintf(req + n, sizeof(req) - n, "\r\n");
-	mutex_lock(&sbi->io_lock);
-	err = xiofs_transact(sbi, req, n, NULL, 0, NULL, 0, NULL, &meta);
-	mutex_unlock(&sbi->io_lock);
+	err = xiofs_transact(c, req, n, NULL, 0, NULL, 0, NULL, &meta);
+	xiofs_conn_put(c);
 	if (!err)
 		err = xiofs_http_status_to_errno(meta.status);
 	return err;
@@ -956,6 +988,7 @@ int xiofs_http_link(struct inode *old_inode, const char *new_path)
 int xiofs_http_symlink(struct inode *dir, const char *path, const char *target)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(dir->i_sb);
+	struct xiofs_conn *c;
 	char req[1536];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
@@ -963,17 +996,19 @@ int xiofs_http_symlink(struct inode *dir, const char *path, const char *target)
 
 	if (!target || !*target || strpbrk(target, "\r\n"))
 		return -EINVAL;
+	err = xiofs_conn_get(sbi, &c);
+	if (err)
+		return err;
 	n += snprintf(req + n, sizeof(req) - n,
 		      "LINK %s HTTP/1.1\r\nHost: %s\r\n"
 		      "Xrd-Link-Type: symbolic\r\n"
 		      "Xrd-Symlink-Target: %s\r\n"
 		      "Connection: keep-alive\r\n",
-		      path, sbi->hosthdr, target);
-	xiofs_add_auth(req, sizeof(req), &n, sbi);
+		      path, c->sbi->hosthdr, target);
+	xiofs_add_auth(req, sizeof(req), &n, c);
 	n += snprintf(req + n, sizeof(req) - n, "\r\n");
-	mutex_lock(&sbi->io_lock);
-	err = xiofs_transact(sbi, req, n, NULL, 0, NULL, 0, NULL, &meta);
-	mutex_unlock(&sbi->io_lock);
+	err = xiofs_transact(c, req, n, NULL, 0, NULL, 0, NULL, &meta);
+	xiofs_conn_put(c);
 	if (!err)
 		err = xiofs_http_status_to_errno(meta.status);
 	return err;
@@ -982,6 +1017,7 @@ int xiofs_http_symlink(struct inode *dir, const char *path, const char *target)
 int xiofs_http_readlink(struct inode *inode, char *buf, size_t buflen)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
+	struct xiofs_conn *c;
 	char req[768];
 	size_t n = 0, got = 0;
 	struct xiofs_http_resp meta;
@@ -990,16 +1026,18 @@ int xiofs_http_readlink(struct inode *inode, char *buf, size_t buflen)
 	if (!buf || buflen < 2)
 		return -EINVAL;
 	buf[0] = 0;
+	err = xiofs_conn_get(sbi, &c);
+	if (err)
+		return err;
 	n += snprintf(req + n, sizeof(req) - n,
 		      "GET %s HTTP/1.1\r\nHost: %s\r\n"
 		      "Xrd-Readlink: 1\r\n"
 		      "Connection: keep-alive\r\n",
-		      XIOFS_I(inode)->remote_path, sbi->hosthdr);
-	xiofs_add_auth(req, sizeof(req), &n, sbi);
+		      XIOFS_I(inode)->remote_path, c->sbi->hosthdr);
+	xiofs_add_auth(req, sizeof(req), &n, c);
 	n += snprintf(req + n, sizeof(req) - n, "\r\n");
-	mutex_lock(&sbi->io_lock);
-	err = xiofs_transact(sbi, req, n, NULL, 0, buf, buflen - 1, &got, &meta);
-	mutex_unlock(&sbi->io_lock);
+	err = xiofs_transact(c, req, n, NULL, 0, buf, buflen - 1, &got, &meta);
+	xiofs_conn_put(c);
 	if (!err)
 		err = xiofs_http_status_to_errno(meta.status);
 	if (err)
@@ -1016,11 +1054,15 @@ int xiofs_http_readlink(struct inode *inode, char *buf, size_t buflen)
 int xiofs_http_mknod(struct inode *dir, const char *path, umode_t mode, dev_t rdev)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(dir->i_sb);
+	struct xiofs_conn *c;
 	char req[768];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
 	int err;
 
+	err = xiofs_conn_get(sbi, &c);
+	if (err)
+		return err;
 	n += snprintf(req + n, sizeof(req) - n,
 		      "PUT %s HTTP/1.1\r\nHost: %s\r\n"
 		      "Xrd-Mknod: 1\r\n"
@@ -1028,13 +1070,12 @@ int xiofs_http_mknod(struct inode *dir, const char *path, umode_t mode, dev_t rd
 		      "Xrd-Dev: %u:%u\r\n"
 		      "Content-Length: 0\r\n"
 		      "Connection: keep-alive\r\n",
-		      path, sbi->hosthdr, (unsigned int)mode,
+		      path, c->sbi->hosthdr, (unsigned int)mode,
 		      MAJOR(rdev), MINOR(rdev));
-	xiofs_add_auth(req, sizeof(req), &n, sbi);
+	xiofs_add_auth(req, sizeof(req), &n, c);
 	n += snprintf(req + n, sizeof(req) - n, "\r\n");
-	mutex_lock(&sbi->io_lock);
-	err = xiofs_transact(sbi, req, n, NULL, 0, NULL, 0, NULL, &meta);
-	mutex_unlock(&sbi->io_lock);
+	err = xiofs_transact(c, req, n, NULL, 0, NULL, 0, NULL, &meta);
+	xiofs_conn_put(c);
 	if (!err)
 		err = xiofs_http_status_to_errno(meta.status);
 	return err;
@@ -1044,6 +1085,7 @@ int xiofs_http_getxattr(struct inode *inode, const char *name, void *buf,
 			size_t size)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
+	struct xiofs_conn *c;
 	char req[1024];
 	char *tmp;
 	size_t n = 0, got = 0;
@@ -1055,16 +1097,20 @@ int xiofs_http_getxattr(struct inode *inode, const char *name, void *buf,
 	tmp = kvmalloc(XIOFS_MAX_DAV, GFP_KERNEL);
 	if (!tmp)
 		return -ENOMEM;
+	err = xiofs_conn_get(sbi, &c);
+	if (err) {
+		kvfree(tmp);
+		return err;
+	}
 	n += snprintf(req + n, sizeof(req) - n,
 		      "GET %s HTTP/1.1\r\nHost: %s\r\n"
 		      "Xrd-Xattr: %s\r\n"
 		      "Connection: keep-alive\r\n",
-		      XIOFS_I(inode)->remote_path, sbi->hosthdr, name);
-	xiofs_add_auth(req, sizeof(req), &n, sbi);
+		      XIOFS_I(inode)->remote_path, c->sbi->hosthdr, name);
+	xiofs_add_auth(req, sizeof(req), &n, c);
 	n += snprintf(req + n, sizeof(req) - n, "\r\n");
-	mutex_lock(&sbi->io_lock);
-	err = xiofs_transact(sbi, req, n, NULL, 0, tmp, XIOFS_MAX_DAV, &got, &meta);
-	mutex_unlock(&sbi->io_lock);
+	err = xiofs_transact(c, req, n, NULL, 0, tmp, XIOFS_MAX_DAV, &got, &meta);
+	xiofs_conn_put(c);
 	if (!err)
 		err = xiofs_http_status_to_errno(meta.status);
 	if (!err) {
@@ -1108,6 +1154,7 @@ int xiofs_http_setxattr(struct inode *inode, const char *name, const void *buf,
 int xiofs_http_listxattr(struct inode *inode, char *buf, size_t size)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
+	struct xiofs_conn *c;
 	char req[768];
 	char *tmp;
 	size_t n = 0, got = 0;
@@ -1117,16 +1164,20 @@ int xiofs_http_listxattr(struct inode *inode, char *buf, size_t size)
 	tmp = kvmalloc(XIOFS_MAX_DAV, GFP_KERNEL);
 	if (!tmp)
 		return -ENOMEM;
+	err = xiofs_conn_get(sbi, &c);
+	if (err) {
+		kvfree(tmp);
+		return err;
+	}
 	n += snprintf(req + n, sizeof(req) - n,
 		      "GET %s HTTP/1.1\r\nHost: %s\r\n"
 		      "Xrd-Xattr-List: 1\r\n"
 		      "Connection: keep-alive\r\n",
-		      XIOFS_I(inode)->remote_path, sbi->hosthdr);
-	xiofs_add_auth(req, sizeof(req), &n, sbi);
+		      XIOFS_I(inode)->remote_path, c->sbi->hosthdr);
+	xiofs_add_auth(req, sizeof(req), &n, c);
 	n += snprintf(req + n, sizeof(req) - n, "\r\n");
-	mutex_lock(&sbi->io_lock);
-	err = xiofs_transact(sbi, req, n, NULL, 0, tmp, XIOFS_MAX_DAV, &got, &meta);
-	mutex_unlock(&sbi->io_lock);
+	err = xiofs_transact(c, req, n, NULL, 0, tmp, XIOFS_MAX_DAV, &got, &meta);
+	xiofs_conn_put(c);
 	if (!err)
 		err = xiofs_http_status_to_errno(meta.status);
 	if (!err) {
@@ -1162,6 +1213,7 @@ int xiofs_http_lock(struct inode *inode, int cmd, int type, int whence,
 		    loff_t start, loff_t len)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
+	struct xiofs_conn *c;
 	char req[1024];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
@@ -1183,11 +1235,14 @@ int xiofs_http_lock(struct inode *inode, int cmd, int type, int whence,
 	else if (whence == SEEK_END)
 		lwh = "END";
 
+	err = xiofs_conn_get(sbi, &c);
+	if (err)
+		return err;
 	if (type == F_UNLCK) {
 		n += snprintf(req + n, sizeof(req) - n,
 			      "UNLOCK %s HTTP/1.1\r\nHost: %s\r\n"
 			      "Connection: keep-alive\r\n",
-			      XIOFS_I(inode)->remote_path, sbi->hosthdr);
+			      XIOFS_I(inode)->remote_path, c->sbi->hosthdr);
 	} else {
 		n += snprintf(req + n, sizeof(req) - n,
 			      "LOCK %s HTTP/1.1\r\nHost: %s\r\n"
@@ -1197,14 +1252,13 @@ int xiofs_http_lock(struct inode *inode, int cmd, int type, int whence,
 			      "Xrd-Lock-Start: %lld\r\n"
 			      "Xrd-Lock-Len: %lld\r\n"
 			      "Connection: keep-alive\r\n",
-			      XIOFS_I(inode)->remote_path, sbi->hosthdr, lcmd, ltype,
+			      XIOFS_I(inode)->remote_path, c->sbi->hosthdr, lcmd, ltype,
 			      lwh, (long long)start, (long long)len);
 	}
-	xiofs_add_auth(req, sizeof(req), &n, sbi);
+	xiofs_add_auth(req, sizeof(req), &n, c);
 	n += snprintf(req + n, sizeof(req) - n, "\r\n");
-	mutex_lock(&sbi->io_lock);
-	err = xiofs_transact(sbi, req, n, NULL, 0, NULL, 0, NULL, &meta);
-	mutex_unlock(&sbi->io_lock);
+	err = xiofs_transact(c, req, n, NULL, 0, NULL, 0, NULL, &meta);
+	xiofs_conn_put(c);
 	if (!err)
 		err = xiofs_http_status_to_errno(meta.status);
 	return err;
@@ -1213,6 +1267,7 @@ int xiofs_http_lock(struct inode *inode, int cmd, int type, int whence,
 int xiofs_http_flock(struct inode *inode, int op)
 {
 	struct xiofs_sb_info *sbi = XIOFS_SB(inode->i_sb);
+	struct xiofs_conn *c;
 	char req[768];
 	size_t n = 0;
 	struct xiofs_http_resp meta;
@@ -1223,25 +1278,27 @@ int xiofs_http_flock(struct inode *inode, int op)
 		lop = "UN";
 	else if (op & LOCK_SH)
 		lop = "SH";
+	err = xiofs_conn_get(sbi, &c);
+	if (err)
+		return err;
 	if ((op & LOCK_UN)) {
 		n += snprintf(req + n, sizeof(req) - n,
 			      "UNLOCK %s HTTP/1.1\r\nHost: %s\r\n"
 			      "Connection: keep-alive\r\n",
-			      XIOFS_I(inode)->remote_path, sbi->hosthdr);
+			      XIOFS_I(inode)->remote_path, c->sbi->hosthdr);
 	} else {
 		n += snprintf(req + n, sizeof(req) - n,
 			      "LOCK %s HTTP/1.1\r\nHost: %s\r\n"
 			      "Xrd-Lock-Cmd: FLOCK\r\n"
 			      "Xrd-Lock-Op: %s%s\r\n"
 			      "Connection: keep-alive\r\n",
-			      XIOFS_I(inode)->remote_path, sbi->hosthdr, lop,
+			      XIOFS_I(inode)->remote_path, c->sbi->hosthdr, lop,
 			      (op & LOCK_NB) ? "NB" : "");
 	}
-	xiofs_add_auth(req, sizeof(req), &n, sbi);
+	xiofs_add_auth(req, sizeof(req), &n, c);
 	n += snprintf(req + n, sizeof(req) - n, "\r\n");
-	mutex_lock(&sbi->io_lock);
-	err = xiofs_transact(sbi, req, n, NULL, 0, NULL, 0, NULL, &meta);
-	mutex_unlock(&sbi->io_lock);
+	err = xiofs_transact(c, req, n, NULL, 0, NULL, 0, NULL, &meta);
+	xiofs_conn_put(c);
 	if (!err)
 		err = xiofs_http_status_to_errno(meta.status);
 	return err;
