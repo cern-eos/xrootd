@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "remove" ] && [ -x /usr/sbin/dkms ]; then
+    for d in /usr/src/xiofs-*; do
+        [ -d "$d" ] || continue
+        ver=${d#/usr/src/xiofs-}
+        /usr/sbin/dkms remove -m xiofs -v "$ver" --all >/dev/null 2>&1 || true
+    done
+fi
+
+#DEBHELPER#
+
+exit 0

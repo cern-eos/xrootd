@@ -1,0 +1,4 @@
+/usr/bin/xiofscli
+/usr/bin/xiofsd
+/usr/bin/xiofsagent
+/usr/sbin/mount.xiofs

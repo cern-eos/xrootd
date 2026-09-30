@@ -69,6 +69,24 @@ make xiofsd
 make xiofsagent
 ```
 
+## Packages
+
+RPM:
+
+```bash
+dnf install xrootd-xiofs xrootd-xiofs-dkms
+```
+
+Debian/Ubuntu:
+
+```bash
+apt install xrootd-xiofs xrootd-xiofs-dkms
+```
+
+`xrootd-xiofs` has `xiofscli`, `xiofsd`, `xiofsagent`, and `/usr/sbin/mount.xiofs`.
+`xrootd-xiofs-dkms` builds `xiofs.ko` against the running kernel (needs
+`kernel-devel` / `linux-headers`). This is not `xrootdfs` (`xrootd-fuse`).
+
 ## xiofscli
 
 ```bash

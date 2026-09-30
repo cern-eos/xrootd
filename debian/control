@@ -382,6 +382,36 @@ Description: Xrootd FUSE tool
  This package contains the FUSE (file system in user space) xrootd mount
  tool.
 
+Package: xrootd-xiofs
+Architecture: linux-any
+Multi-Arch: foreign
+Depends:
+ fuse,
+ ${shlibs:Depends},
+ ${misc:Depends}
+Description: XRootD HTTP POSIX mount clients
+ POSIX clients for XrdHttp: xiofscli, the xiofsd FUSE daemon, and
+ xiofsagent (kTLS handshake helper for the in-kernel mount). This is
+ not xrootdfs (see xrootd-fuse for the root:// FUSE client).
+ .
+ Install xrootd-xiofs-dkms as well to build xiofs.ko via DKMS.
+
+Package: xrootd-xiofs-dkms
+Architecture: all
+Multi-Arch: foreign
+Section: kernel
+Depends:
+ dkms,
+ gcc,
+ make,
+ ${misc:Depends}
+Recommends:
+ xrootd-xiofs
+Description: XIOFS Linux kernel module (DKMS)
+ Out-of-tree xiofs.ko for Linux 5.14 (RHEL 9) and 6.12 (RHEL 10). DKMS
+ builds it against the running kernel. Needs linux-headers matching the
+ running kernel. The userspace helper is xiofsagent from xrootd-xiofs.
+
 Package: xrootd-voms-plugins
 Architecture: any
 Multi-Arch: same

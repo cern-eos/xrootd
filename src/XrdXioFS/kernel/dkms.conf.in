@@ -1,0 +1,6 @@
+# DKMS configuration for xiofs.ko (AlmaLinux / RHEL 9 and 10).
+PACKAGE_NAME="xiofs"
+PACKAGE_VERSION="@VERSION@"
+BUILT_MODULE_NAME[0]="xiofs"
+DEST_MODULE_LOCATION[0]="/extra"
+AUTOINSTALL="yes"

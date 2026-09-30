@@ -42,6 +42,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(xiofsagent PRIVATE ${KERBEROS5_LIBRARIES})
   endif()
   install(TARGETS xiofsagent RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  # util-linux looks up mount.<type> in sbindir.
+  install(CODE "
+    file(MAKE_DIRECTORY \"\$ENV{DESTDIR}${CMAKE_INSTALL_FULL_SBINDIR}\")
+    execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink
+      \"../${CMAKE_INSTALL_BINDIR}/xiofsagent\"
+      \"\$ENV{DESTDIR}${CMAKE_INSTALL_FULL_SBINDIR}/mount.xiofs\")
+  ")
 endif()
 
 # FUSE daemon: Linux libfuse, or macFUSE (/usr/local, /opt/homebrew, /opt/brew).

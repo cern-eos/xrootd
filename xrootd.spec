@@ -12,7 +12,7 @@ Epoch:		1
 Release:	1%{?dist}%{?with_clang:.clang}%{?with_asan:.asan}
 Summary:	Extended ROOT File Server
 Group:		System Environment/Daemons
-License:	LGPL-3.0-or-later AND BSD-2-Clause AND BSD-3-Clause AND curl AND MIT AND Zlib
+License:	LGPL-3.0-or-later AND BSD-2-Clause AND BSD-3-Clause AND curl AND MIT AND Zlib AND GPL-2.0-only
 URL:		https://xrootd.org
 
 %if !%{with git}
@@ -235,6 +235,35 @@ Requires:	fuse
 This package contains the FUSE (file system in user space) XRootD mount
 tool.
 
+%package xiofs
+Summary:	XRootD HTTP POSIX mount clients
+Group:		Applications/Internet
+Requires:	fuse
+Requires:	openssl
+
+%description xiofs
+POSIX clients for XrdHttp. Contains xiofscli, the xiofsd FUSE daemon,
+and xiofsagent (the kTLS handshake helper for the in-kernel mount).
+This is not xrootdfs (that is the xrootd-fuse package, root://).
+
+Install xrootd-xiofs-dkms as well to build xiofs.ko via DKMS.
+
+%package xiofs-dkms
+Summary:	XIOFS Linux kernel module (DKMS)
+Group:		System Environment/Kernel
+License:	GPL-2.0-only
+BuildArch:	noarch
+Requires:	dkms
+Requires:	gcc
+Requires:	make
+Recommends:	%{name}-xiofs = %{epoch}:%{version}-%{release}
+
+%description xiofs-dkms
+Out-of-tree xiofs.ko for AlmaLinux/RHEL 9 (kernel 5.14) and 10
+(kernel 6.12). DKMS builds it against the running kernel. Needs
+kernel-devel matching uname -r. The userspace helper is xiofsagent
+from xrootd-xiofs.
+
 %package voms
 Summary:	VOMS attribute extractor plugin for XRootD
 Group:		System Environment/Libraries
@@ -425,6 +454,16 @@ mkdir -p %{buildroot}%{_sysconfdir}/logrotate.d
 install -m 644 -p config/%{name}.logrotate \
 	%{buildroot}%{_sysconfdir}/logrotate.d/%{name}
 
+# XIOFS kernel module sources for DKMS
+mkdir -p %{buildroot}/usr/src/xiofs-%{version}
+install -m 644 -p src/XrdXioFS/kernel/Makefile \
+	src/XrdXioFS/kernel/*.c src/XrdXioFS/kernel/*.h \
+	%{buildroot}/usr/src/xiofs-%{version}/
+sed 's/@VERSION@/%{version}/g' src/XrdXioFS/kernel/dkms.conf.in \
+	> %{buildroot}/usr/src/xiofs-%{version}/dkms.conf
+mkdir -p %{buildroot}%{_sbindir}
+ln -sfn ../bin/xiofsagent %{buildroot}%{_sbindir}/mount.xiofs
+
 mkdir -p %{buildroot}%{_datadir}/selinux/packages/%{name}
 install -m 644 -p config/%{name}.pp \
 	%{buildroot}%{_datadir}/selinux/packages/%{name}
@@ -478,6 +517,17 @@ semodule -i %{_datadir}/selinux/packages/%{name}/%{name}.pp >/dev/null 2>&1 || :
 %postun selinux
 if [ $1 -eq 0 ] ; then
 	semodule -r %{name} >/dev/null 2>&1 || :
+fi
+
+%post xiofs-dkms
+if [ -x /usr/sbin/dkms ]; then
+	/usr/sbin/dkms add -m xiofs -v %{version} --rpm_safe_upgrade >/dev/null 2>&1 || :
+	/usr/sbin/dkms install -m xiofs -v %{version} --rpm_safe_upgrade >/dev/null 2>&1 || :
+fi
+
+%preun xiofs-dkms
+if [ $1 -eq 0 ] && [ -x /usr/sbin/dkms ]; then
+	/usr/sbin/dkms remove -m xiofs -v %{version} --all --rpm_safe_upgrade >/dev/null 2>&1 || :
 fi
 
 %files
@@ -665,6 +715,18 @@ fi
 %files fuse
 %{_bindir}/xrootdfs
 %{_mandir}/man1/xrootdfs.1*
+
+%files xiofs
+%{_bindir}/xiofscli
+%{_bindir}/xiofsd
+%{_bindir}/xiofsagent
+%{_sbindir}/mount.xiofs
+%doc src/XrdXioFS/README.md
+%doc src/XrdXioFS/kernel/README.md
+
+%files xiofs-dkms
+%doc src/XrdXioFS/kernel/README.md
+/usr/src/xiofs-%{version}
 
 %files voms
 %{_libdir}/libXrdVoms-6.so

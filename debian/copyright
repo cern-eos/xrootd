@@ -205,6 +205,15 @@ Copyright:
  2000-2006 Lee Thomason (www.grinninglizard.com)
 License: zlib/libpng
 
+Files: src/XrdXioFS/kernel/*
+Copyright:
+ 2026 European Organization for Nuclear Research (CERN)
+Comment:
+ In applying this licence, CERN does not waive the privileges and immunities
+ granted to it by virtue of its status as an Intergovernmental Organization
+ or submit itself to any jurisdiction.
+License: GPL-2
+
 Files: debian/*
 Copyright:
  2020-2024 Mattias Ellert <mattias.ellert@physics.uu.se>
@@ -230,6 +239,19 @@ License: LGPL-3
  .
  On Debian systems the full text of the GNU lesser general public
  license version 3 can be found in /usr/share/common-licenses/LGPL-3.
+
+License: GPL-2
+ This program is free software; you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation; version 2 of the License.
+ .
+ This program is distributed in the hope that it will be useful, but
+ WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ General Public License for more details.
+ .
+ On Debian systems the full text of the GNU General Public License
+ version 2 can be found in /usr/share/common-licenses/GPL-2.
 
 License: zlib/libpng
  This software is provided 'as-is', without any express or implied

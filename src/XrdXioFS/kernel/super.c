@@ -409,3 +409,4 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("XRootD Collaboration");
 MODULE_DESCRIPTION("XIOFS — Cross-transport I/O File System");
 MODULE_SOFTDEP("pre: tls");
+MODULE_ALIAS_FS("xiofs");

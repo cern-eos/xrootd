@@ -128,3 +128,13 @@ override_dh_auto_install:
 	mkdir -p debian/tmp/etc/logrotate.d
 	install -m 644 -p config/xrootd.logrotate \
 	    debian/tmp/etc/logrotate.d/xrootd
+
+	# XIOFS kernel module sources for DKMS
+	ver=$$(dpkg-parsechangelog -S Version | sed -e 's/^[0-9]*://' -e 's/-[^-]*$$//'); \
+	mkdir -p debian/tmp/usr/src/xiofs-$$ver; \
+	cp -a src/XrdXioFS/kernel/*.c src/XrdXioFS/kernel/*.h \
+	    src/XrdXioFS/kernel/Makefile debian/tmp/usr/src/xiofs-$$ver/; \
+	sed "s/@VERSION@/$$ver/g" src/XrdXioFS/kernel/dkms.conf.in \
+	    > debian/tmp/usr/src/xiofs-$$ver/dkms.conf
+	mkdir -p debian/tmp/usr/sbin
+	ln -sfn ../bin/xiofsagent debian/tmp/usr/sbin/mount.xiofs

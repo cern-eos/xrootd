@@ -9,7 +9,19 @@ RHEL** ones:
 | AlmaLinux 9 / RHEL 9 | `5.14.0-*.el9` | `readpage`, `user_namespace`, `write_cache_pages` |
 | AlmaLinux 10 / RHEL 10 | `6.12.0-*.el10` | `read_folio`, `mnt_idmap`, `writeback_iter` |
 
-On the distro you will run:
+From packages:
+
+```bash
+# RPM (AlmaLinux / RHEL 9 or 10)
+sudo dnf install xrootd-xiofs xrootd-xiofs-dkms kernel-devel-$(uname -r)
+# Debian / Ubuntu
+sudo apt install xrootd-xiofs xrootd-xiofs-dkms linux-headers-$(uname -r)
+sudo xiofsagent --cacert /path/ca.pem \
+    https://storage.example:1094/export /mnt/xiofs
+# or: mount -t xiofs -o host=...,port=...,path=...,cacert=... none /mnt/xiofs
+```
+
+From a source tree on the distro you will run:
 
 ```bash
 # AlmaLinux 9 or 10, matching kernel-devel
