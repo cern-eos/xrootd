@@ -43,17 +43,29 @@ kill_pidfile() {
 
 dump_log() {
     local path=$1
-    echo "=== ${path} ===" >&2
+    echo "=== ${path} (last 80 lines) ===" >&2
     if [[ ! -f "${path}" ]]; then
         echo "(missing)" >&2
         return 0
     fi
-    tail -c 65536 "${path}" >&2 || true
+    tail -n 80 "${path}" >&2 || true
+}
+
+dump_listen_state() {
+    echo "=== listening sockets ===" >&2
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltn >&2 || true
+    elif command -v netstat >/dev/null 2>&1; then
+        netstat -ltn >&2 || true
+    else
+        grep -H LISTEN /proc/net/tcp /proc/net/tcp6 2>/dev/null >&2 || true
+    fi
 }
 
 dump_start_failure() {
     local i
     echo "authenticated_cluster failed to become ready" >&2
+    dump_listen_state
     ls -la . >&2 || true
     for i in "${servernames[@]}"; do
         echo "=== ${i}.start.err ===" >&2
@@ -75,14 +87,29 @@ dump_start_failure() {
     done
 }
 
-port_is_open() {
+port_is_listening() {
     local port=$1
+    local hex
+
+    hex=$(printf '%04X' "${port}")
+    # 0A is TCP_LISTEN. Match any local address so IPv6-only binds still count.
+    if [[ -r /proc/net/tcp ]] || [[ -r /proc/net/tcp6 ]]; then
+        if awk -v p="${hex}" '
+            NR > 1 {
+                n = split($2, a, ":")
+                if (toupper(a[n]) == p && $4 == "0A") found = 1
+            }
+            END { exit !found }
+        ' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+            return 0
+        fi
+    fi
     python3 -c '
 import socket, sys
 port = int(sys.argv[1])
-for host in ("127.0.0.1", "::1"):
+for host in ("127.0.0.1", "localhost", "::1"):
     try:
-        s = socket.create_connection((host, port), 0.25)
+        s = socket.create_connection((host, port), 0.5)
         s.close()
         sys.exit(0)
     except OSError:
@@ -101,7 +128,7 @@ wait_for_listen() {
             echo "error: ${name} xrootd died before listening on ${port}" >&2
             return 1
         fi
-        if port_is_open "${port}"; then
+        if port_is_listening "${port}"; then
             return 0
         fi
         sleep 0.25
@@ -165,19 +192,17 @@ start() {
     stop
     create_directories
 
-    for i in "${servernames[@]}"; do
+    for idx in "${!servernames[@]}"; do
+        i="${servernames[idx]}"
         start_daemon "${XROOTD}" "${i}" xrootd.log xrootd.pid "${i}.cfg" "${i}.start.err"
+        if ! wait_for_listen "${i}" "${xrd_ports[idx]}"; then
+            dump_start_failure
+            exit 1
+        fi
     done
 
     for i in "${servernames[@]}"; do
         start_daemon "${CMSD}" "${i}" cmsd.log cmsd.pid "${i}.cfg" "${i}.cmsd.start.err"
-    done
-
-    for idx in "${!servernames[@]}"; do
-        if ! wait_for_listen "${servernames[idx]}" "${xrd_ports[idx]}"; then
-            dump_start_failure
-            exit 1
-        fi
     done
 }
 
