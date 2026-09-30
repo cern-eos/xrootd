@@ -22,8 +22,26 @@ pid_alive() {
 
     [[ -s "${pidfile}" ]] || return 1
     pid=$(tr -d '[:space:]' < "${pidfile}")
-    [[ -n "${pid}" ]] || return 1
-    ps -p "${pid}" >/dev/null 2>&1
+    [[ "${pid}" =~ ^[0-9]+$ ]] || return 1
+    # kill -0 sees daemonized children; ps -p does not on Ubuntu 24.04
+    # (new session after xrootd -b double-fork).
+    if [[ -d "/proc/${pid}" ]]; then
+        return 0
+    fi
+    kill -0 "${pid}" 2>/dev/null
+}
+
+wait_for_pidfile() {
+    local pidfile=$1
+    local tries
+
+    for ((tries = 0; tries < 50; tries++)); do
+        if pid_alive "${pidfile}"; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    return 1
 }
 
 kill_pidfile() {
@@ -31,11 +49,11 @@ kill_pidfile() {
     local pid wait_count
 
     [[ -s "${pidfile}" ]] || return 0
-    pid=$(ps -o pid= "$(cat "${pidfile}")" 2>/dev/null | tr -d ' ')
-    [[ -n "${pid}" ]] || return 0
+    pid=$(tr -d '[:space:]' < "${pidfile}")
+    [[ "${pid}" =~ ^[0-9]+$ ]] || return 0
     kill -s TERM "${pid}" 2>/dev/null || true
     for ((wait_count = 0; wait_count < 20; wait_count++)); do
-        ps -p "${pid}" >/dev/null 2>&1 || return 0
+        kill -0 "${pid}" 2>/dev/null || return 0
         sleep 0.1
     done
     kill -s KILL "${pid}" 2>/dev/null || true
@@ -43,12 +61,12 @@ kill_pidfile() {
 
 dump_log() {
     local path=$1
-    echo "=== ${path} (last 80 lines) ===" >&2
+    echo "=== ${path} (last 120 lines) ===" >&2
     if [[ ! -f "${path}" ]]; then
         echo "(missing)" >&2
         return 0
     fi
-    tail -n 80 "${path}" >&2 || true
+    tail -n 120 "${path}" >&2 || true
 }
 
 dump_listen_state() {
@@ -92,15 +110,15 @@ port_is_listening() {
     local hex
 
     hex=$(printf '%04X' "${port}")
-    # 0A is TCP_LISTEN. Match any local address so IPv6-only binds still count.
+    if command -v ss >/dev/null 2>&1; then
+        if ss -ltn 2>/dev/null | grep -E -q ":${port}[[:space:]]"; then
+            return 0
+        fi
+    fi
+    # 0A is TCP_LISTEN. IPv6 /proc lines are <32hex>:<port>, not colon-separated.
     if [[ -r /proc/net/tcp ]] || [[ -r /proc/net/tcp6 ]]; then
-        if awk -v p="${hex}" '
-            NR > 1 {
-                n = split($2, a, ":")
-                if (toupper(a[n]) == p && $4 == "0A") found = 1
-            }
-            END { exit !found }
-        ' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+        if grep -E -h ":${hex}[[:space:]].*[[:space:]]0A[[:space:]]" \
+                /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q .; then
             return 0
         fi
     fi
@@ -123,7 +141,7 @@ wait_for_listen() {
     local port=$2
     local tries
 
-    for ((tries = 0; tries < 80; tries++)); do
+    for ((tries = 0; tries < 120; tries++)); do
         if ! pid_alive "${name}/xrootd.pid"; then
             echo "error: ${name} xrootd died before listening on ${port}" >&2
             return 1
@@ -131,7 +149,14 @@ wait_for_listen() {
         if port_is_listening "${port}"; then
             return 0
         fi
-        sleep 0.25
+        if grep -a -qE '------ xrootd .+ initialization completed' "${name}/xrootd.log" 2>/dev/null; then
+            return 0
+        fi
+        if grep -a -qE '------ xrootd .+ initialization failed' "${name}/xrootd.log" 2>/dev/null; then
+            echo "error: ${name} initialization failed" >&2
+            return 1
+        fi
+        sleep 0.5
     done
     echo "error: ${name} did not listen on ${port}" >&2
     return 1
@@ -178,7 +203,7 @@ start_daemon() {
     if [[ "${rc}" -ne 0 ]]; then
         echo "warning: ${bin} -b exited ${rc} for ${name}" >&2
     fi
-    if ! pid_alive "${name}/${pidfile}"; then
+    if ! wait_for_pidfile "${name}/${pidfile}"; then
         echo "error: ${bin} -b did not leave a live ${name}/${pidfile}" >&2
         dump_start_failure
         exit 1

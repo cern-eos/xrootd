@@ -50,16 +50,30 @@ function setup() {
 	# Not really needed, since we use kadmin.local
 	# kadmind -P ${PWD}/kadmind.pid
 
-	# Add principals for the server and client to KDC database
-	kadmin.local -r XROOTD.ORG <<-EOF
-	add_principal -randkey -kvno 1 host/localhost@XROOTD.ORG
-	ktadd -k krb5.keytab host/localhost
-	add_principal -randkey -kvno 1 HTTP/localhost@XROOTD.ORG
-	ktadd -k krb5.keytab HTTP/localhost
-	add_principal xrootd@XROOTD.ORG
-	xrootd
-	xrootd
-	EOF
+	# Add principals for the server and client to KDC database.
+	# HTTP/<container-hostname> covers GSS name canonicalization when
+	# curl/GSSAPI does not keep the URL host as "localhost".
+	local http_hosts="localhost"
+	local hn
+	for hn in "$(hostname -s 2>/dev/null || true)" "$(hostname 2>/dev/null || true)"; do
+		[[ -n "${hn}" && "${hn}" != "localhost" ]] || continue
+		case " ${http_hosts} " in
+			*" ${hn} "*) ;;
+			*) http_hosts="${http_hosts} ${hn}" ;;
+		esac
+	done
+
+	{
+		echo "add_principal -randkey -kvno 1 host/localhost@XROOTD.ORG"
+		echo "ktadd -k krb5.keytab host/localhost"
+		for hn in ${http_hosts}; do
+			echo "add_principal -randkey -kvno 1 HTTP/${hn}@XROOTD.ORG"
+			echo "ktadd -k krb5.keytab HTTP/${hn}"
+		done
+		echo "add_principal xrootd@XROOTD.ORG"
+		echo "xrootd"
+		echo "xrootd"
+	} | kadmin.local -r XROOTD.ORG
 
 	# Display KDC database entries
 	kdb5_util tabdump -o - keyinfo
@@ -71,8 +85,8 @@ function setup() {
 function teardown() {
 	export PIDFILE=krb5kdc.pid
 	if test -s "${PIDFILE}"; then
-		PID="$(ps -o pid= "$(cat "${PIDFILE}")" || true)"
-		if test -n "${PID}"; then
+		PID="$(tr -d '[:space:]' < "${PIDFILE}")"
+		if [[ "${PID}" =~ ^[0-9]+$ ]] && kill -0 "${PID}" 2>/dev/null; then
 			kill -s TERM "${PID}"
 			rm "${PIDFILE}"
 		fi

@@ -2,6 +2,14 @@
 
 set -ex
 
+openssl() {
+	if [[ -n "${OPENSSL_BIN}" && -x "${OPENSSL_BIN}" ]]; then
+		command "${OPENSSL_BIN}" "$@"
+	else
+		command openssl "$@"
+	fi
+}
+
 function setup() {
 	rm -rf ca
 	mkdir -p ca

@@ -132,6 +132,49 @@ function printlogs() {
 	tail -n "${MAXLINES:-200}" "${NAME}"/*.log 1>&2
 }
 
+function daemon_pid_alive() {
+	local pidfile=$1
+	local pid
+	[[ -s "${pidfile}" ]] || return 1
+	pid=$(tr -d '[:space:]' < "${pidfile}")
+	[[ "${pid}" =~ ^[0-9]+$ ]] || return 1
+	if [[ -d "/proc/${pid}" ]]; then
+		return 0
+	fi
+	kill -0 "${pid}" 2>/dev/null
+}
+
+function wait_for_pidfile() {
+	local pidfile=$1
+	local n
+	for ((n = 0; n < 50; n++)); do
+		if daemon_pid_alive "${pidfile}"; then
+			return 0
+		fi
+		sleep 0.1
+	done
+	return 1
+}
+
+function wait_for_init_log() {
+	local logfile=$1
+	local pidfile=$2
+	local n
+	for ((n = 0; n < 100; n++)); do
+		if grep -a -qE '------ xrootd .+ initialization completed' "${logfile}" 2>/dev/null; then
+			return 0
+		fi
+		if grep -a -qE '------ xrootd .+ initialization failed' "${logfile}" 2>/dev/null; then
+			return 1
+		fi
+		if ! daemon_pid_alive "${pidfile}"; then
+			return 1
+		fi
+		sleep 0.2
+	done
+	return 1
+}
+
 function setup() {
 	# Make sure to start with a fresh configuration
 	[[ -d "${LOCAL_DIR}" ]] && teardown "${NAME}"
@@ -154,10 +197,20 @@ function setup() {
 	# Those must not leak into the server process: they make GSI pick the
 	# client proxy instead of the host cert, and xrootd -b then fails after
 	# HTTPS init with no extra diagnostic.
-	if ! (
-		unset XrdSecPROTOCOL X509_USER_CERT X509_USER_KEY X509_USER_PROXY
+	# Unset KRB5CCNAME so the HTTP Kerberos acceptor uses the keytab, not
+	# the client's TGT ccache.
+	set +e
+	(
+		unset XrdSecPROTOCOL X509_USER_CERT X509_USER_KEY X509_USER_PROXY KRB5CCNAME
 		xrootd -b -l xrootd.log -s xrootd.pid -c "${CONF}" -n "${NAME}"
-	); then
+	)
+	set -e
+	if ! wait_for_pidfile "${NAME}/xrootd.pid"; then
+		printlogs "${NAME}"
+		teardown "${NAME}"
+		error "failed to start XRootD server"
+	fi
+	if ! wait_for_init_log "${NAME}/xrootd.log" "${NAME}/xrootd.pid"; then
 		printlogs "${NAME}"
 		teardown "${NAME}"
 		error "failed to start XRootD server"
@@ -203,8 +256,8 @@ function teardown() {
 	# Kill all processes that created pid files and are still running
 	for PIDFILE in *.pid; do
 		test -s "${PIDFILE}" || continue
-		PID="$(ps -o pid= "$(cat "${PIDFILE}")" || true)"
-		if test -n "${PID}"; then
+		PID="$(tr -d '[:space:]' < "${PIDFILE}")"
+		if [[ "${PID}" =~ ^[0-9]+$ ]] && kill -0 "${PID}" 2>/dev/null; then
 			kill -s TERM "${PID}"
 		fi
 	done

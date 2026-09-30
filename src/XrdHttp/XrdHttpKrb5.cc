@@ -11,6 +11,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <unistd.h>
 #include <vector>
 
 extern "C" {
@@ -118,11 +119,12 @@ bool XrdHttpKrb5::Init(XrdSysError &eDest, const char *keytab,
     return false;
   }
 
-  // Point GSS at the keytab before registering it. A leftover KRB5CCNAME
-  // from kinit (client TGT) can make gss_acquire_cred(ACCEPT) look at the
-  // ccache instead of the acceptor keytab.
+  // Point GSS at the keytab. A leftover KRB5CCNAME from kinit (client TGT)
+  // can make gss_acquire_cred(ACCEPT) look at the ccache instead of the
+  // acceptor keytab. An empty MEMORY: ccache is worse: MIT krb5 1.22 then
+  // fails gss_accept_sec_context with "No credentials were supplied".
+  unsetenv("KRB5CCNAME");
   setenv("KRB5_KTNAME", keytab, 1);
-  setenv("KRB5CCNAME", "MEMORY:xrdhttp_acceptor", 1);
 
   if (krb5_gss_register_acceptor_identity(keytab) != 0) {
     eDest.Emsg(TraceID, "Unable to register Kerberos acceptor keytab:", keytab);

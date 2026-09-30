@@ -72,7 +72,6 @@ commonName_default = XrdClHttp CA
 basicConstraints = critical,CA:true
 keyUsage = keyCertSign,cRLSign
 subjectKeyIdentifier = hash
-authorityKeyIdentifier = keyid
 
 [ signing_policy ]
 countryName            = optional
@@ -214,6 +213,7 @@ xrd.protocol http:9443 libXrdHttp.so
 xrd.tls $CA_DIR/tls.crt $CA_DIR/tls.key
 xrd.tlsca certfile $CA_DIR/tlsca.pem
 http.tlsclientauth off
+http.h2 off
 sec.protbind * none
 
 http.header2cgi Authorization authz strip-on-redirect
@@ -242,7 +242,7 @@ xrd.trace conn
 cms.trace debug
 http.trace all
 xrootd.tls all
-xrd.network nodnr
+xrd.network nodnr assumev4
 scitokens.trace debug info warning error
 
 ofs.osslib ++ $BINARY_DIR/lib/libXrdOssSlowOpen.so
@@ -295,7 +295,7 @@ all.export /
 xrootd.chksum max 2 md5 adler32 crc32 crc32c
 xrootd.trace emsg login stall redirect
 xrootd.tls all
-xrd.network nodnr
+xrd.network nodnr assumev4
 
 pfc.blocksize 128k
 pfc.prefetch 0
@@ -397,6 +397,7 @@ echo > "$BINARY_DIR/tests/$TEST_NAME/client.log"
 # Launch XRootD services. #
 ###########################
 echo > "$BINARY_DIR/tests/$TEST_NAME/origin.log"
+echo > "$BINARY_DIR/tests/$TEST_NAME/cache.log"
 # Cap RSA at TLS 1.2 on the origin. curl --tls-max 1.2 still offers TLS 1.3
 # here; without the cap, SSL_accept fails tls_choose_sigalg. Do not set
 # this on the cache: SSL_CTX_set_max_proto_version there segfaulted OpenSSL

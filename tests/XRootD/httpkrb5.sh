@@ -25,17 +25,25 @@ function test_httpkrb5() {
 	# Upload with curl using SPNEGO (Negotiate) authentication.
 	# Disable Expect: 100-continue: curl 7.61 (Alma 8) will otherwise
 	# complete a Negotiate PUT without sending the body, so GET is empty.
-	assert curl --negotiate -u : -f -H 'Expect:' \
-		--cacert "${CURL_CA}" \
+	# Do not pass -f: older curl treats the 401 Negotiate challenge as a
+	# hard failure and never sends the AP-REQ.
+	HTTP_CODE=$(curl --negotiate -u : -s -o /dev/null -w '%{http_code}' \
+		-H 'Expect:' --cacert "${CURL_CA}" \
 		-T "${TESTFILE}" \
-		"${HTTPS_HOST}/krb5test.txt"
+		"${HTTPS_HOST}/krb5test.txt")
+	if [[ "${HTTP_CODE}" != "201" && "${HTTP_CODE}" != "200" ]]; then
+		curl --negotiate -u : -v -H 'Expect:' --cacert "${CURL_CA}" \
+			-T "${TESTFILE}" \
+			"${HTTPS_HOST}/krb5test.txt" || true
+		error "authenticated PUT should return 201/200, got ${HTTP_CODE}"
+	fi
 
 	# Download and verify contents
 	DOWNLOAD="${TMPDIR}/krb5test.out"
-	assert curl --negotiate -u : -f \
+	HTTP_CODE=$(curl --negotiate -u : -s -o "${DOWNLOAD}" -w '%{http_code}' \
 		--cacert "${CURL_CA}" \
-		-o "${DOWNLOAD}" \
-		"${HTTPS_HOST}/krb5test.txt"
+		"${HTTPS_HOST}/krb5test.txt")
+	assert_eq 200 "${HTTP_CODE}" "authenticated GET should return 200"
 
 	assert diff -u "${TESTFILE}" "${DOWNLOAD}"
 

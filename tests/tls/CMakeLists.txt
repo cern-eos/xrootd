@@ -1,5 +1,6 @@
 cmake_host_system_information(RESULT HOSTNAME QUERY FQDN)
 
+find_program(OPENSSL_BIN openssl REQUIRED)
 configure_file(tls.conf tls.conf @ONLY)
 
 add_test(NAME TLS::setup
@@ -8,5 +9,6 @@ add_test(NAME TLS::setup
 add_test(NAME TLS::teardown
   COMMAND sh -c "${CMAKE_CURRENT_SOURCE_DIR}/tls.sh teardown")
 
-set_tests_properties(TLS::setup    PROPERTIES FIXTURES_SETUP   TLS)
+set_tests_properties(TLS::setup    PROPERTIES FIXTURES_SETUP   TLS
+  ENVIRONMENT "OPENSSL_BIN=${OPENSSL_BIN}")
 set_tests_properties(TLS::teardown PROPERTIES FIXTURES_CLEANUP TLS)

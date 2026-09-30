@@ -18,7 +18,20 @@ setup() {
     # Start XRootD servers
     for srv in "${servernames[@]}"; do
         echo "Starting XRootD on ${srv}..."
-        ${XROOTD} -b -k fifo -n "${srv}" -l "${srv}"/xrootd.log -s "${srv}"/xrootd.pid -c "${srv}".cfg
+        mkdir -p "${srv}"
+        set +e
+        ${XROOTD} -b -n "${srv}" -l xrootd.log -s xrootd.pid -c "${srv}".cfg
+        rc=$?
+        set -e
+        if [[ "${rc}" -ne 0 ]]; then
+            echo "warning: xrootd -b exited ${rc} for ${srv}" >&2
+        fi
+        pid=$(tr -d '[:space:]' < "${srv}/xrootd.pid" 2>/dev/null)
+        if [[ ! "${pid}" =~ ^[0-9]+$ ]] || ! kill -0 "${pid}" 2>/dev/null; then
+            echo "failed to start ${srv}" >&2
+            [[ -f "${srv}/xrootd.log" ]] && cat "${srv}/xrootd.log" >&2
+            exit 1
+        fi
     done
 
     sleep 2

@@ -323,14 +323,31 @@ kill_pidfile() {
        local pid wait_count
 
        [[ -s "${pidfile}" ]] || return 0
-       pid=$(ps -o pid= "$(cat "${pidfile}")" 2>/dev/null | tr -d ' ')
-       [[ -n "${pid}" ]] || return 0
+       pid=$(tr -d '[:space:]' < "${pidfile}")
+       [[ "${pid}" =~ ^[0-9]+$ ]] || return 0
        kill -s TERM "${pid}" 2>/dev/null || true
        for ((wait_count = 0; wait_count < 50; wait_count++)); do
-              ps -p "${pid}" >/dev/null 2>&1 || return 0
+              kill -0 "${pid}" 2>/dev/null || return 0
               sleep 0.1
        done
        kill -s KILL "${pid}" 2>/dev/null || true
+}
+
+wait_for_pidfile() {
+       local pidfile=$1
+       local pid tries
+       for ((tries = 0; tries < 50; tries++)); do
+              if [[ -s "${pidfile}" ]]; then
+                     pid=$(tr -d '[:space:]' < "${pidfile}")
+                     if [[ "${pid}" =~ ^[0-9]+$ ]]; then
+                            if [[ -d "/proc/${pid}" ]] || kill -0 "${pid}" 2>/dev/null; then
+                                   return 0
+                            fi
+                     fi
+              fi
+              sleep 0.1
+       done
+       return 1
 }
 
 wait_for_cluster() {
@@ -388,7 +405,7 @@ start(){
               need_cleanup=1
        }
        start_exit_cleanup() {
-              if [[ ${need_cleanup} -eq 1 ]]; then
+              if [[ ${need_cleanup:-0} -eq 1 ]]; then
                      stop
               fi
        }
@@ -399,14 +416,30 @@ start(){
        set -x
        need_cleanup=1
 
-       # start for each component
+       # Do not use -k fifo: an unread log pipe makes xrootd -b fail while
+       # the child is still initializing (Alpine CI).
        for i in "${servernames[@]}"; do
-              ${XROOTD} -b -k fifo -n ${i} -l xrootd.log -s xrootd.pid -c ${i}.cfg
+              mkdir -p "${i}"
+              set +e
+              ${XROOTD} -b -n ${i} -l xrootd.log -s xrootd.pid -c ${i}.cfg
+              set -e
+              if ! wait_for_pidfile "${i}/xrootd.pid"; then
+                     echo "error: failed to start xrootd ${i}" >&2
+                     [[ -f "${i}/xrootd.log" ]] && tail -n 80 "${i}/xrootd.log" >&2
+                     exit 1
+              fi
        done
 
        # start cmsd in the redirectors
        for i in "${servernames[@]}"; do
-              ${CMSD} -b -k fifo -n ${i} -l cmsd.log -s cmsd.pid -c ${i}.cfg
+              set +e
+              ${CMSD} -b -n ${i} -l cmsd.log -s cmsd.pid -c ${i}.cfg
+              set -e
+              if ! wait_for_pidfile "${i}/cmsd.pid"; then
+                     echo "error: failed to start cmsd ${i}" >&2
+                     [[ -f "${i}/cmsd.log" ]] && tail -n 80 "${i}/cmsd.log" >&2
+                     exit 1
+              fi
        done
 
        wait_for_cluster

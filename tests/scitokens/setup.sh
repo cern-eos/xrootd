@@ -71,7 +71,6 @@ commonName_default = Xrootd CA
 basicConstraints = critical,CA:true
 keyUsage = keyCertSign,cRLSign
 subjectKeyIdentifier = hash
-authorityKeyIdentifier = keyid
 
 [ signing_policy ]
 countryName            = optional

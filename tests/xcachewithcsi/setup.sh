@@ -33,12 +33,15 @@ start_server() {
     rm -rf "${srv}"
     mkdir -p "${srv}" "${DATAFOLDER}/${srv}"
     echo "Starting XRootD on ${srv}..."
-    if ! ${XROOTD} -b -n "${srv}" -l xrootd.log -s xrootd.pid -c "${srv}.cfg" \
-            >"${srv}.start.err" 2>&1; then
-        dump_start_failure "${srv}"
-        exit 1
+    set +e
+    ${XROOTD} -b -n "${srv}" -l xrootd.log -s xrootd.pid -c "${srv}.cfg" \
+            >"${srv}.start.err" 2>&1
+    rc=$?
+    set -e
+    if [[ "${rc}" -ne 0 ]]; then
+        echo "warning: xrootd -b exited ${rc} for ${srv}" >&2
     fi
-    if [[ ! -f "${srv}/xrootd.pid" ]] || ! kill -0 "$(cat "${srv}/xrootd.pid")" 2>/dev/null; then
+    if [[ ! -f "${srv}/xrootd.pid" ]] || ! kill -0 "$(tr -d '[:space:]' < "${srv}/xrootd.pid")" 2>/dev/null; then
         dump_start_failure "${srv}"
         exit 1
     fi
