@@ -12,7 +12,9 @@
  * Kerberos (SPNEGO) and JWT bearer files cannot live in-kernel.
  * The agent finishes Negotiate or copies a uid-owned token file, then
  * imports the socket bound to that uid. The kernel keeps one
- * already-authenticated HTTP channel per uid.
+ * already-authenticated HTTP channel per uid. kdestroy / token
+ * replacement does not touch that channel; xiofsagent --drop (this
+ * ioctl) throws the uid's sockets away so the next I/O re-auths.
  */
 #include <linux/ioctl.h>
 #include <linux/types.h>
@@ -77,5 +79,12 @@ struct xiofs_need_conn {
 	_IOWR(XIOFS_IOC_MAGIC, 4, struct xiofs_need_conn)
 #define XIOFS_IOC_NEED_FAIL \
 	_IOW(XIOFS_IOC_MAGIC, 5, struct xiofs_need_conn)
+/*
+ * Drop imported sockets for uc.uid. On /dev/xiofsctl (root) also match
+ * host/port/path. On a file or directory of the mount, the superblock
+ * selects the mount; a non-admin caller may only drop current_fsuid().
+ */
+#define XIOFS_IOC_DROP_CONN \
+	_IOW(XIOFS_IOC_MAGIC, 6, struct xiofs_need_conn)
 
 #endif

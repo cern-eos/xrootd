@@ -248,6 +248,7 @@ int xiofs_conn_get(struct xiofs_sb_info *sbi, struct xiofs_conn **out);
 void xiofs_conn_put(struct xiofs_conn *c);
 int xiofs_conn_wait(struct xiofs_conn *c);
 void xiofs_conn_drop(struct xiofs_conn *c);
+int xiofs_fs_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 
 /* http1.c */
 int xiofs_http_status_to_errno(int status);

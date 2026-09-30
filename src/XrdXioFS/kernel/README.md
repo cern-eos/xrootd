@@ -207,6 +207,22 @@ sudo xiofsagent --krb5 --workers 4 --import-only \
 or `-o jwt` only mounts; run `xiofsagent --krb5` or `--jwt --import-only`
 as a separate daemon. Non-krb5 remounts still use `xiofsagent --import-only`.
 
+Imported sockets stay authenticated until they are dropped. `kdestroy` and
+replacing `bt_u<uid>` do not touch them. After destroying a ticket or
+token, drop that uid's channels so the next I/O re-authenticates (or
+fails with `EACCES` if nothing is left):
+
+```bash
+kdestroy
+xiofsagent --drop /mnt/xiofs
+# root, any uid, by URL:
+sudo xiofsagent --drop --uid 1000 https://storage.example:1094/export
+```
+
+`--drop` on a mount path uses `XIOFS_IOC_DROP_CONN` on that filesystem
+(any user, own uid; `--uid` needs `CAP_SYS_ADMIN`). A URL talks to
+`/dev/xiofsctl` (root). There is no in-kernel ccache/token watch.
+
 ## JWT / OIDC bearer (WLCG `bt_u<uid>`)
 
 The kernel never reads or parses the token. `xiofsagent --jwt` waits on

@@ -512,6 +512,9 @@ static long xiofs_ioctl(struct file *file, unsigned int cmd,
 	struct xiofs_gpu_io req;
 	int err;
 
+	err = xiofs_fs_ioctl(file, cmd, arg);
+	if (err != -ENOTTY)
+		return err;
 	if (cmd != XIOFS_IOC_GPU_READ && cmd != XIOFS_IOC_GPU_WRITE)
 		return -ENOTTY;
 	if (copy_from_user(&req, (void __user *)arg, sizeof(req)))

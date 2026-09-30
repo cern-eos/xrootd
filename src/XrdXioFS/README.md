@@ -169,6 +169,8 @@ xiofsagent --krb5 --workers 4 --cacert ca.pem \
     https://storage.example:1094/export /mnt/xiofs
 xiofsagent --jwt --workers 4 --cacert ca.pem \
     https://storage.example:1094/export /mnt/xiofs
+# after kdestroy / replacing bt_u<uid>:
+xiofsagent --drop /mnt/xiofs
 ```
 
 ## Layout

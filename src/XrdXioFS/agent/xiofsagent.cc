@@ -9,6 +9,7 @@
 //
 //   xiofsagent [--cacert FILE] [--insecure] [--token TOK | --tokenfile F]
 //              [--import-only] [--krb5] [--jwt] [--workers N] URL [MOUNTPOINT]
+//   xiofsagent --drop [--uid N] URL|MOUNTPOINT
 //
 // Also works as /sbin/mount.xiofs (util-linux helper):
 //   mount -t xiofs -o host=...,port=...,path=...,cacert=...,krb5|jwt none /mnt
@@ -77,6 +78,9 @@ struct Options {
   bool krb5{false};
   bool jwt{false};
   bool helper{false};
+  bool drop{false};
+  bool uid_set{false};
+  __u32 uid{0};
   unsigned workers{1};
   unsigned conns{4};
   bool defer{true};
@@ -89,6 +93,7 @@ void usage(const char *argv0)
       << "          [--token TOK | --tokenfile FILE] [--import-only]\n"
       << "          [--actimeo SEC] [--timeo SEC] [--http2] [--conns N]\n"
       << "          [--nodefer] [--krb5] [--jwt] [--workers N] URL [MOUNTPOINT]\n"
+      << "       " << argv0 << " --drop [--uid N] URL|MOUNTPOINT\n"
       << "\n"
       << "  Handshake to URL, install kTLS, import the socket into xiofs.ko.\n"
       << "  With MOUNTPOINT (default), mount -t xiofs first then import.\n"
@@ -101,6 +106,11 @@ void usage(const char *argv0)
       << "  --import-only assumes the filesystem is already mounted.\n"
       << "  --actimeo metadata TTL (default 30, 0 = always revalidate).\n"
       << "  --timeo socket wait/recv timeout seconds (default 30).\n"
+      << "  --drop: throw away imported sockets for a uid (after kdestroy or\n"
+      << "          replacing bt_u<uid>). Next I/O re-authenticates. A path is\n"
+      << "          the mount (any user, own uid); a URL uses /dev/xiofsctl\n"
+      << "          (root). Default uid is the caller; --uid N requires root\n"
+      << "          on the mount.\n"
       << "\n"
       << "  As mount.xiofs: mount -t xiofs -o host=H,port=P,path=/export none DIR\n"
       << "  Extra -o keys: cacert, token, tokenfile, insecure, url, actimeo,\n"
@@ -577,7 +587,12 @@ int parseAgentArgs(int argc, char **argv, Options &opt, std::string &err)
       opt.krb5 = true;
     else if (a == "--jwt")
       opt.jwt = true;
-    else if (a == "--workers" && i + 1 < argc)
+    else if (a == "--drop")
+      opt.drop = true;
+    else if (a == "--uid" && i + 1 < argc) {
+      opt.uid_set = true;
+      opt.uid = static_cast<__u32>(std::strtoul(argv[++i], nullptr, 10));
+    } else if (a == "--workers" && i + 1 < argc)
       opt.workers = static_cast<unsigned>(std::atoi(argv[++i]));
     else if (a == "--verbose" || a == "-v")
       opt.verbose = true;
@@ -595,6 +610,13 @@ int parseAgentArgs(int argc, char **argv, Options &opt, std::string &err)
     return 1;
   }
   opt.url = pos[0];
+  if (opt.drop) {
+    if (pos.size() > 1) {
+      err = "too many arguments";
+      return -1;
+    }
+    return 0;
+  }
   if (pos.size() >= 2)
     opt.mountpoint = pos[1];
   if (pos.size() > 2) {
@@ -873,8 +895,67 @@ int runPerUid(const Options &opt)
   return rc;
 }
 
+bool looksLikeUrl(const std::string &s)
+{
+  return s.compare(0, 7, "http://") == 0 || s.compare(0, 8, "https://") == 0;
+}
+
+int runDrop(const Options &opt)
+{
+  xiofs_need_conn uc{};
+  uc.uid = opt.uid_set ? opt.uid : static_cast<__u32>(getuid());
+
+  if (opt.fake) {
+    std::cout << "xiofsagent: would drop uid=" << uc.uid << " on " << opt.url
+              << "\n";
+    return 0;
+  }
+
+  if (looksLikeUrl(opt.url)) {
+    std::string err;
+    XioFS::Url url;
+    if (!XioFS::parseUrl(opt.url, url, err))
+      return fail(err, 2);
+    int ctl = open(kCtlDev, O_RDWR);
+    if (ctl < 0)
+      return fail(std::string("open ") + kCtlDev + ": " + strerror(errno) +
+                      " (is xiofs.ko loaded?)",
+                  1);
+    uc.port = static_cast<__u16>(url.port);
+    std::snprintf(uc.host, sizeof(uc.host), "%s", url.host.c_str());
+    std::snprintf(uc.export_path, sizeof(uc.export_path), "%s",
+                  url.path.empty() ? "/" : url.path.c_str());
+    int rc = ioctl(ctl, XIOFS_IOC_DROP_CONN, &uc);
+    int saved = errno;
+    close(ctl);
+    if (rc < 0) {
+      err = std::string("XIOFS_IOC_DROP_CONN: ") + strerror(saved);
+      if (saved == ENOENT)
+        err += " (no mount matching host/port/path)";
+      return fail(err, 1);
+    }
+  } else {
+    int fd = open(opt.url.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+      return fail(std::string("open ") + opt.url + ": " + strerror(errno), 1);
+    int rc = ioctl(fd, XIOFS_IOC_DROP_CONN, &uc);
+    int saved = errno;
+    close(fd);
+    if (rc < 0)
+      return fail(std::string("XIOFS_IOC_DROP_CONN: ") + strerror(saved) +
+                      " (is this an xiofs mount?)",
+                  1);
+  }
+  if (opt.verbose)
+    std::cerr << "xiofsagent: dropped uid=" << uc.uid << " on " << opt.url
+              << "\n";
+  return 0;
+}
+
 int run(const Options &opt)
 {
+  if (opt.drop)
+    return runDrop(opt);
   if (opt.krb5 || opt.jwt)
     return runPerUid(opt);
 

@@ -10,6 +10,7 @@
  * Each (mount, uid) may hold up to nconns channels; every missing
  * socket is one WAIT_NEED answered by one IMPORT_SOCK.
  */
+#include <linux/capability.h>
 #include <linux/cred.h>
 #include <linux/jiffies.h>
 #include <linux/miscdevice.h>
@@ -148,6 +149,55 @@ void xiofs_conn_drop(struct xiofs_conn *c)
 	xiofs_conn_sock_release(c);
 	c->pending = false;
 	c->last_err = 0;
+	c->bearer[0] = 0;
+}
+
+/*
+ * Throw away this uid's imported sockets. Idle channels are dropped
+ * under io_lock. A busy channel is shut down so the in-flight request
+ * fails and retries via WAIT_NEED. Next I/O re-authenticates.
+ */
+static int xiofs_drop_uid(struct xiofs_sb_info *sbi, u32 uid)
+{
+	struct xiofs_conn *c;
+
+	if (!sbi)
+		return -EINVAL;
+	mutex_lock(&sbi->conns_lock);
+	list_for_each_entry(c, &sbi->conns, list) {
+		if (c->uid != uid)
+			continue;
+		if (mutex_trylock(&c->io_lock)) {
+			xiofs_conn_drop(c);
+			mutex_unlock(&c->io_lock);
+			wake_up_all(&c->wait);
+		} else if (c->sock) {
+			kernel_sock_shutdown(c->sock, SHUT_RDWR);
+		}
+	}
+	mutex_unlock(&sbi->conns_lock);
+	xiofs_need_cancel(sbi, uid);
+	wake_up(&sbi->conn_free);
+	return 0;
+}
+
+int xiofs_fs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+	struct xiofs_need_conn uc;
+	struct super_block *sb;
+	u32 self;
+
+	if (cmd != XIOFS_IOC_DROP_CONN)
+		return -ENOTTY;
+	if (copy_from_user(&uc, (void __user *)arg, sizeof(uc)))
+		return -EFAULT;
+	sb = file_inode(file)->i_sb;
+	self = from_kuid(&init_user_ns, current_fsuid());
+	if (self == (u32)-1)
+		return -EOVERFLOW;
+	if (uc.uid != self && !capable(CAP_SYS_ADMIN))
+		return -EPERM;
+	return xiofs_drop_uid(XIOFS_SB(sb), uc.uid);
 }
 
 int xiofs_conn_wait(struct xiofs_conn *c)
@@ -618,6 +668,22 @@ static long xiofs_ctl_ioctl(struct file *file, unsigned int cmd,
 		if (!uc.err)
 			uc.err = -EACCES;
 		return xiofs_need_fail(&uc);
+	}
+	if (cmd == XIOFS_IOC_DROP_CONN) {
+		struct xiofs_need_conn uc;
+		struct xiofs_sb_info *sbi;
+		int err = -ENOENT;
+
+		if (copy_from_user(&uc, (void __user *)arg, sizeof(uc)))
+			return -EFAULT;
+		uc.host[sizeof(uc.host) - 1] = 0;
+		uc.export_path[sizeof(uc.export_path) - 1] = 0;
+		mutex_lock(&xiofs_mounts_lock);
+		sbi = xiofs_find_sbi(uc.host, uc.port, uc.export_path);
+		if (sbi)
+			err = xiofs_drop_uid(sbi, uc.uid);
+		mutex_unlock(&xiofs_mounts_lock);
+		return err;
 	}
 	return -ENOTTY;
 }

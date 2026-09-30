@@ -947,8 +947,15 @@ const struct inode_operations xiofs_symlink_inode_ops = {
 	.listxattr	= xiofs_listxattr,
 };
 
+static long xiofs_dir_ioctl(struct file *file, unsigned int cmd,
+			    unsigned long arg)
+{
+	return xiofs_fs_ioctl(file, cmd, arg);
+}
+
 const struct file_operations xiofs_dir_ops = {
 	.owner		= THIS_MODULE,
 	.iterate_shared	= xiofs_iterate,
 	.llseek		= generic_file_llseek,
+	.unlocked_ioctl	= xiofs_dir_ioctl,
 };
