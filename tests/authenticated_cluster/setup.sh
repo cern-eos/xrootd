@@ -34,7 +34,7 @@ kill_pidfile() {
     pid=$(ps -o pid= "$(cat "${pidfile}")" 2>/dev/null | tr -d ' ')
     [[ -n "${pid}" ]] || return 0
     kill -s TERM "${pid}" 2>/dev/null || true
-    for ((wait_count = 0; wait_count < 50; wait_count++)); do
+    for ((wait_count = 0; wait_count < 20; wait_count++)); do
         ps -p "${pid}" >/dev/null 2>&1 || return 0
         sleep 0.1
     done
@@ -44,32 +44,11 @@ kill_pidfile() {
 dump_log() {
     local path=$1
     echo "=== ${path} ===" >&2
-    if [[ ! -e "${path}" ]]; then
+    if [[ ! -f "${path}" ]]; then
         echo "(missing)" >&2
         return 0
     fi
-    # -k fifo makes the log a pipe; a blocking cat would hang CTest.
-    python3 - "${path}" <<'PY' >&2 || true
-import os, select, sys, time
-path = sys.argv[1]
-try:
-    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
-except OSError as exc:
-    sys.stderr.write("(%s)\n" % exc)
-    sys.exit(0)
-deadline = time.time() + 2
-data = b""
-while time.time() < deadline and len(data) < 65536:
-    ready, _, _ = select.select([fd], [], [], max(0.0, deadline - time.time()))
-    if not ready:
-        break
-    chunk = os.read(fd, 4096)
-    if not chunk:
-        break
-    data += chunk
-os.close(fd)
-sys.stderr.buffer.write(data if data else b"(empty)\n")
-PY
+    tail -c 65536 "${path}" >&2 || true
 }
 
 dump_start_failure() {
@@ -87,6 +66,11 @@ dump_start_failure() {
             echo "${i} xrootd.pid=$(cat "${i}/xrootd.pid") alive=$(pid_alive "${i}/xrootd.pid" && echo yes || echo no)" >&2
         else
             echo "${i} xrootd.pid missing" >&2
+        fi
+        if [[ -s "${i}/cmsd.pid" ]]; then
+            echo "${i} cmsd.pid=$(cat "${i}/cmsd.pid") alive=$(pid_alive "${i}/cmsd.pid" && echo yes || echo no)" >&2
+        else
+            echo "${i} cmsd.pid missing" >&2
         fi
     done
 }
@@ -145,6 +129,10 @@ stop() {
     set -e
 }
 
+# Do not use -k fifo: an unread log pipe can make xrootd -b report failure
+# while the child is still initializing (see tests/xcachewithcsi/setup.sh).
+# The parent exit code is also not a reliable ready signal, so we only
+# require a live pidfile here and wait for the HTTP port in start().
 start_daemon() {
     local bin=$1
     local name=$2
@@ -152,11 +140,19 @@ start_daemon() {
     local pidfile=$4
     local cfg=$5
     local errfile=$6
+    local rc=0
 
     mkdir -p "${name}"
-    if ! "${bin}" -b -k fifo -n "${name}" -l "${logfile}" -s "${pidfile}" -c "${cfg}" \
-            >"${errfile}" 2>&1; then
-        echo "error: ${bin} -b failed for ${name}" >&2
+    set +e
+    "${bin}" -b -n "${name}" -l "${logfile}" -s "${pidfile}" -c "${cfg}" \
+            >"${errfile}" 2>&1
+    rc=$?
+    set -e
+    if [[ "${rc}" -ne 0 ]]; then
+        echo "warning: ${bin} -b exited ${rc} for ${name}" >&2
+    fi
+    if ! pid_alive "${name}/${pidfile}"; then
+        echo "error: ${bin} -b did not leave a live ${name}/${pidfile}" >&2
         dump_start_failure
         exit 1
     fi
