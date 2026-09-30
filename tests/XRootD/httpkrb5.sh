@@ -6,8 +6,20 @@ export KRB5_CONFIG=${BINARY_DIR}/tests/krb5/krb5.conf
 # stops MIT krb5 from turning HTTP/localhost into HTTP/localhost.<search>.
 export LOCALDOMAIN=
 
+# Stock Alpine curl has --negotiate in the CLI but libcurl is built
+# without SPNEGO. Skip this client test in that case; Alma 8 curl 7.61
+# does have SPNEGO and must keep running.
+curl_has_spnego() {
+	command curl -V 2>&1 | grep -Eq '(^|[[:space:]])(GSS-Negotiate|SPNEGO)([[:space:]]|$)'
+}
+
 function setup_httpkrb5() {
 	require_commands kinit curl
+	if ! curl_has_spnego; then
+		echo "Skipping httpkrb5: curl was not built with GSS-Negotiate/SPNEGO"
+		command curl -V || true
+		exit 77
+	fi
 	assert kinit -p xrootd@XROOTD.ORG <<< xrootd
 	assert klist -e
 }

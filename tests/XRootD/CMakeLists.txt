@@ -75,6 +75,13 @@ foreach(CONFIG ${XROOTD_CONFIGS})
   )
 endforeach()
 
+# httpkrb5 exits 77 when this curl has no SPNEGO. Alma 8 curl does.
+if(BUILD_KRB5 AND NOT APPLE)
+  set_tests_properties(XRootD::httpkrb5::setup XRootD::httpkrb5::test
+                       XRootD::httpkrb5::teardown
+    PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
 if(BUILD_SCITOKENS AND HAVE_SCITOKEN_CONFIG_SET_STR)
   set_tests_properties(XRootD::scitokens::setup
     PROPERTIES
