@@ -138,6 +138,8 @@ function setup() {
 
 	rm -rf "${NAME}"
 	mkdir -p "${LOCAL_DIR}" "${REMOTE_DIR}"
+	# CTest ATTACHED_FILES_ON_FAIL errors if client.log was never opened.
+	touch "${XRD_LOGFILE}"
 
 	if [[ $(type -t "setup_${NAME}") == "function" ]]; then
 		"setup_${NAME}"

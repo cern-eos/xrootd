@@ -324,11 +324,19 @@ function test_httph2() {
 		echo "payload ${i}" > "${tmpdir}/p${i}.txt"
 		assert h2 -s -T "${tmpdir}/p${i}.txt" "${HTTPS_HOST}/h2-par-${i}.txt"
 	done
-	assert h2 --parallel --parallel-immediate -s \
-		-o "${tmpdir}/g1" "${HTTPS_HOST}/h2-par-1.txt" \
-		-o "${tmpdir}/g2" "${HTTPS_HOST}/h2-par-2.txt" \
-		-o "${tmpdir}/g3" "${HTTPS_HOST}/h2-par-3.txt" \
-		-o "${tmpdir}/g4" "${HTTPS_HOST}/h2-par-4.txt"
+	# curl --parallel is 7.66+ (Alma 8 ships 7.61.1).
+	if curl --help 2>&1 | grep -q -- '--parallel'; then
+		assert h2 --parallel --parallel-immediate -s \
+			-o "${tmpdir}/g1" "${HTTPS_HOST}/h2-par-1.txt" \
+			-o "${tmpdir}/g2" "${HTTPS_HOST}/h2-par-2.txt" \
+			-o "${tmpdir}/g3" "${HTTPS_HOST}/h2-par-3.txt" \
+			-o "${tmpdir}/g4" "${HTTPS_HOST}/h2-par-4.txt"
+	else
+		echo "curl --parallel not available; fetching sequentially"
+		for i in 1 2 3 4; do
+			assert h2 -s -o "${tmpdir}/g${i}" "${HTTPS_HOST}/h2-par-${i}.txt"
+		done
+	fi
 	for i in 1 2 3 4; do
 		assert diff -u "${tmpdir}/p${i}.txt" "${tmpdir}/g${i}"
 	done
@@ -339,11 +347,18 @@ function test_httph2() {
 		dd if=/dev/urandom of="${tmpdir}/lg${j}.bin" bs=1024 count=512 status=none
 		assert h2 -s -T "${tmpdir}/lg${j}.bin" "${HTTPS_HOST}/h2-lg-${j}.bin"
 	done
-	assert h2 --parallel --parallel-immediate -s \
-		-o "${tmpdir}/lg1.out" "${HTTPS_HOST}/h2-lg-1.bin" \
-		-o "${tmpdir}/lg2.out" "${HTTPS_HOST}/h2-lg-2.bin" \
-		-o "${tmpdir}/lg3.out" "${HTTPS_HOST}/h2-lg-3.bin" \
-		-o "${tmpdir}/lg4.out" "${HTTPS_HOST}/h2-lg-4.bin"
+	if curl --help 2>&1 | grep -q -- '--parallel'; then
+		assert h2 --parallel --parallel-immediate -s \
+			-o "${tmpdir}/lg1.out" "${HTTPS_HOST}/h2-lg-1.bin" \
+			-o "${tmpdir}/lg2.out" "${HTTPS_HOST}/h2-lg-2.bin" \
+			-o "${tmpdir}/lg3.out" "${HTTPS_HOST}/h2-lg-3.bin" \
+			-o "${tmpdir}/lg4.out" "${HTTPS_HOST}/h2-lg-4.bin"
+	else
+		echo "curl --parallel not available; fetching large objects sequentially"
+		for j in 1 2 3 4; do
+			assert h2 -s -o "${tmpdir}/lg${j}.out" "${HTTPS_HOST}/h2-lg-${j}.bin"
+		done
+	fi
 	for j in 1 2 3 4; do
 		assert cmp "${tmpdir}/lg${j}.bin" "${tmpdir}/lg${j}.out"
 	done

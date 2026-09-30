@@ -51,10 +51,39 @@ function test_httpparser() {
 	assert curl -s -o "${out}" "${HTTP_HOST}/llhttp-chunked.txt"
 	assert diff -u "${alphabet}" "${out}"
 
-	# Malformed request line must not crash the server
-	code=$(printf 'NOTHTTP\r\n\r\n' | curl -s -o /dev/null -w '%{http_code}' \
-		--http0.9 -X GET "${HTTP_HOST}/" --data-binary @- || echo 000)
-	assert_ne 000 "${code}" "malformed request should get an HTTP response"
+	# Malformed request line must not crash the server.
+	# curl --http0.9 is 7.64+ (Alma 8 ships 7.61.1), so speak TCP directly.
+	if command -v python3 >/dev/null 2>&1; then
+		code=$(HTTP_HOST="${HTTP_HOST}" python3 -c '
+import os, socket
+from urllib.parse import urlparse
+u = urlparse(os.environ["HTTP_HOST"])
+s = socket.create_connection((u.hostname, u.port or 80), timeout=10)
+s.sendall(b"NOTHTTP\r\n\r\n")
+s.settimeout(5)
+buf = b""
+try:
+    while True:
+        chunk = s.recv(4096)
+        if not chunk:
+            break
+        buf += chunk
+except socket.timeout:
+    pass
+s.close()
+if buf.startswith(b"HTTP/") and buf.count(b" ") >= 2:
+    print(buf.split(b" ", 2)[1].decode("ascii", "replace"))
+else:
+    print("000")
+')
+		assert_ne 000 "${code}" "malformed request should get an HTTP response"
+	elif curl --help 2>&1 | grep -q -- '--http0.9'; then
+		code=$(printf 'NOTHTTP\r\n\r\n' | curl -s -o /dev/null -w '%{http_code}' \
+			--http0.9 -X GET "${HTTP_HOST}/" --data-binary @- || echo 000)
+		assert_ne 000 "${code}" "malformed request should get an HTTP response"
+	else
+		echo "python3 and curl --http0.9 unavailable; skipping malformed request line check"
+	fi
 
 	echo "Testing incomplete header size cap (16384 bytes)"
 	if command -v python3 >/dev/null 2>&1; then

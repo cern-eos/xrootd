@@ -22,15 +22,17 @@ function test_httpkrb5() {
 	TESTFILE="${TMPDIR}/krb5test.txt"
 	echo "kerberos over https" > "${TESTFILE}"
 
-	# Upload with curl using SPNEGO (Negotiate) authentication
-	assert curl --negotiate -u : \
+	# Upload with curl using SPNEGO (Negotiate) authentication.
+	# Disable Expect: 100-continue: curl 7.61 (Alma 8) will otherwise
+	# complete a Negotiate PUT without sending the body, so GET is empty.
+	assert curl --negotiate -u : -f -H 'Expect:' \
 		--cacert "${CURL_CA}" \
 		-T "${TESTFILE}" \
 		"${HTTPS_HOST}/krb5test.txt"
 
 	# Download and verify contents
 	DOWNLOAD="${TMPDIR}/krb5test.out"
-	assert curl --negotiate -u : \
+	assert curl --negotiate -u : -f \
 		--cacert "${CURL_CA}" \
 		-o "${DOWNLOAD}" \
 		"${HTTPS_HOST}/krb5test.txt"
