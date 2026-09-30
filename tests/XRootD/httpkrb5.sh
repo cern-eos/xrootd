@@ -22,17 +22,24 @@ function test_httpkrb5() {
 	TESTFILE="${TMPDIR}/krb5test.txt"
 	echo "kerberos over https" > "${TESTFILE}"
 
+	# GSS/Negotiate must keep the host-based name HTTP/localhost. Connecting
+	# through ::1 makes curl reverse-resolve the Azure/GHA IPv6 address and
+	# request krbtgt/<vm-fqdn>@XROOTD.ORG, which is not in this test KDC.
+	KRB5_CURL=( --negotiate -u : -4
+		--resolve "localhost:${XRD_PORT}:127.0.0.1"
+		--cacert "${CURL_CA}" )
+
 	# Upload with curl using SPNEGO (Negotiate) authentication.
 	# Disable Expect: 100-continue: curl 7.61 (Alma 8) will otherwise
 	# complete a Negotiate PUT without sending the body, so GET is empty.
 	# Do not pass -f: older curl treats the 401 Negotiate challenge as a
 	# hard failure and never sends the AP-REQ.
-	HTTP_CODE=$(curl --negotiate -u : -s -o /dev/null -w '%{http_code}' \
-		-H 'Expect:' --cacert "${CURL_CA}" \
+	HTTP_CODE=$(curl "${KRB5_CURL[@]}" -s -o /dev/null -w '%{http_code}' \
+		-H 'Expect:' \
 		-T "${TESTFILE}" \
 		"${HTTPS_HOST}/krb5test.txt")
 	if [[ "${HTTP_CODE}" != "201" && "${HTTP_CODE}" != "200" ]]; then
-		curl --negotiate -u : -v -H 'Expect:' --cacert "${CURL_CA}" \
+		curl "${KRB5_CURL[@]}" -v -H 'Expect:' \
 			-T "${TESTFILE}" \
 			"${HTTPS_HOST}/krb5test.txt" || true
 		error "authenticated PUT should return 201/200, got ${HTTP_CODE}"
@@ -40,29 +47,26 @@ function test_httpkrb5() {
 
 	# Download and verify contents
 	DOWNLOAD="${TMPDIR}/krb5test.out"
-	HTTP_CODE=$(curl --negotiate -u : -s -o "${DOWNLOAD}" -w '%{http_code}' \
-		--cacert "${CURL_CA}" \
+	HTTP_CODE=$(curl "${KRB5_CURL[@]}" -s -o "${DOWNLOAD}" -w '%{http_code}' \
 		"${HTTPS_HOST}/krb5test.txt")
 	assert_eq 200 "${HTTP_CODE}" "authenticated GET should return 200"
 
 	assert diff -u "${TESTFILE}" "${DOWNLOAD}"
 
 	# Unauthenticated request must be rejected
-	HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+	HTTP_CODE=$(curl -4 --resolve "localhost:${XRD_PORT}:127.0.0.1" \
+		-s -o /dev/null -w '%{http_code}' \
 		--cacert "${CURL_CA}" \
 		"${HTTPS_HOST}/krb5test.txt")
 	assert_eq 401 "${HTTP_CODE}" "unauthenticated GET should return 401"
 
 	# HEAD request with Kerberos auth
-	HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
-		--negotiate -u : \
-		--cacert "${CURL_CA}" \
+	HTTP_CODE=$(curl "${KRB5_CURL[@]}" -s -o /dev/null -w '%{http_code}' \
 		-I "${HTTPS_HOST}/krb5test.txt")
 	assert_eq 200 "${HTTP_CODE}" "authenticated HEAD should return 200"
 
 	# Clean up remote file
-	assert curl --negotiate -u : \
-		--cacert "${CURL_CA}" \
+	assert curl "${KRB5_CURL[@]}" \
 		-X DELETE \
 		"${HTTPS_HOST}/krb5test.txt"
 }

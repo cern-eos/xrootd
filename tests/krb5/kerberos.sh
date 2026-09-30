@@ -55,7 +55,9 @@ function setup() {
 	# curl/GSSAPI does not keep the URL host as "localhost".
 	local http_hosts="localhost"
 	local hn
-	for hn in "$(hostname -s 2>/dev/null || true)" "$(hostname 2>/dev/null || true)"; do
+	for hn in "$(hostname -s 2>/dev/null || true)" \
+		"$(hostname 2>/dev/null || true)" \
+		"$(hostname -f 2>/dev/null || true)"; do
 		[[ -n "${hn}" && "${hn}" != "localhost" ]] || continue
 		case " ${http_hosts} " in
 			*" ${hn} "*) ;;
