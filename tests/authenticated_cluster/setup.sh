@@ -149,10 +149,10 @@ wait_for_listen() {
         if port_is_listening "${port}"; then
             return 0
         fi
-        if grep -a -qE '------ xrootd .+ initialization completed' "${name}/xrootd.log" 2>/dev/null; then
+        if grep -a -qE -e 'xrootd [^[:space:]]+:[0-9]+ initialization completed' "${name}/xrootd.log" 2>/dev/null; then
             return 0
         fi
-        if grep -a -qE '------ xrootd .+ initialization failed' "${name}/xrootd.log" 2>/dev/null; then
+        if grep -a -qE -e 'xrootd [^[:space:]]+:[0-9]+ initialization failed' "${name}/xrootd.log" 2>/dev/null; then
             echo "error: ${name} initialization failed" >&2
             return 1
         fi

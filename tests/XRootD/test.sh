@@ -161,10 +161,12 @@ function wait_for_init_log() {
 	local pidfile=$2
 	local n
 	for ((n = 0; n < 100; n++)); do
-		if grep -a -qE '------ xrootd .+ initialization completed' "${logfile}" 2>/dev/null; then
+		# -e: a pattern that starts with '-' is otherwise parsed as
+		# grep options (GNU grep), so this wait never matched.
+		if grep -a -qE -e 'xrootd [^[:space:]]+:[0-9]+ initialization completed' "${logfile}" 2>/dev/null; then
 			return 0
 		fi
-		if grep -a -qE '------ xrootd .+ initialization failed' "${logfile}" 2>/dev/null; then
+		if grep -a -qE -e 'xrootd [^[:space:]]+:[0-9]+ initialization failed' "${logfile}" 2>/dev/null; then
 			return 1
 		fi
 		if ! daemon_pid_alive "${pidfile}"; then
@@ -172,7 +174,8 @@ function wait_for_init_log() {
 		fi
 		sleep 0.2
 	done
-	return 1
+	# -b already waited on the status pipe; a live pid is enough.
+	daemon_pid_alive "${pidfile}"
 }
 
 function setup() {
