@@ -51,22 +51,33 @@ function setup() {
 	# kadmind -P ${PWD}/kadmind.pid
 
 	# Add principals for the server and client to KDC database.
-	# HTTP/<container-hostname> covers GSS name canonicalization when
-	# curl/GSSAPI does not keep the URL host as "localhost".
+	# HTTP/localhost.<resolv-search> is what curl/GSS requests on GHA
+	# Azure images that qualify short names with the VM search domain.
 	local http_hosts="localhost"
-	local hn
+	local hn d key rest
 	local host_re='^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$'
-	for hn in "$(hostname -s 2>/dev/null || true)" "$(hostname 2>/dev/null || true)"; do
-		# Host-based principals only accept a DNS-ish instance name.
-		# hostname -f is not used here: on CI it can be an Azure FQDN
-		# or garbage on stdout, and a failed add_principal aborts setup.
-		[[ "${hn}" =~ ${host_re} ]] || continue
-		[[ "${hn}" != "localhost" ]] || continue
+	add_http_host() {
+		local name=$1
+		[[ "${name}" =~ ${host_re} ]] || return 0
 		case " ${http_hosts} " in
-			*" ${hn} "*) ;;
-			*) http_hosts="${http_hosts} ${hn}" ;;
+			*" ${name} "*) ;;
+			*) http_hosts="${http_hosts} ${name}" ;;
 		esac
+	}
+	for hn in "$(hostname -s 2>/dev/null || true)" "$(hostname 2>/dev/null || true)"; do
+		add_http_host "${hn}"
 	done
+	if [[ -r /etc/resolv.conf ]]; then
+		while read -r key rest || [[ -n "${key}" ]]; do
+			case "${key}" in
+			domain|search)
+				for d in ${rest}; do
+					add_http_host "localhost.${d}"
+				done
+				;;
+			esac
+		done < /etc/resolv.conf
+	fi
 
 	{
 		echo "add_principal -randkey -kvno 1 host/localhost@XROOTD.ORG"

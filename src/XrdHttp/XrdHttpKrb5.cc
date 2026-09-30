@@ -156,16 +156,22 @@ bool XrdHttpKrb5::Init(XrdSysError &eDest, const char *keytab,
   gss_release_name(&min, &gssName);
 
   if (maj != GSS_S_COMPLETE) {
-    // Fall back to any acceptor identity in the keytab.
-    maj = gss_acquire_cred(&min, GSS_C_NO_NAME, GSS_C_INDEFINITE,
-                          GSS_C_NO_OID_SET, GSS_C_ACCEPT, &gssCreds,
-                          nullptr, nullptr);
-  }
-
-  if (maj != GSS_S_COMPLETE) {
     eDest.Emsg(TraceID, "Unable to acquire Kerberos acceptor credentials for",
                kprinc.c_str(), gssErrMsg(maj, min).c_str());
     return false;
+  }
+
+  // Prefer every acceptor identity in the keytab. MIT krb5 qualifies
+  // HTTP/localhost with the resolver search domain, so the AP-REQ may be
+  // for HTTP/localhost.<search> even when the URL host is localhost.
+  gss_cred_id_t anyCreds = GSS_C_NO_CREDENTIAL;
+  OM_uint32 amaj, amin;
+  amaj = gss_acquire_cred(&amin, GSS_C_NO_NAME, GSS_C_INDEFINITE,
+                          GSS_C_NO_OID_SET, GSS_C_ACCEPT, &anyCreds,
+                          nullptr, nullptr);
+  if (amaj == GSS_S_COMPLETE && anyCreds != GSS_C_NO_CREDENTIAL) {
+    gss_release_cred(&min, &gssCreds);
+    gssCreds = anyCreds;
   }
 
   creds_ = gssCreds;

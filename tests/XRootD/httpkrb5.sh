@@ -2,6 +2,9 @@
 
 export KRB5CCNAME=${BINARY_DIR}/tests/krb5/krb5cc
 export KRB5_CONFIG=${BINARY_DIR}/tests/krb5/krb5.conf
+# glibc uses this instead of resolv.conf search/domain. An empty value
+# stops MIT krb5 from turning HTTP/localhost into HTTP/localhost.<search>.
+export LOCALDOMAIN=
 
 function setup_httpkrb5() {
 	require_commands kinit curl
