@@ -1161,6 +1161,20 @@ namespace XrdCl
         req->chown.gid = htonl( req->chown.gid );
         break;
 
+      case kXR_mknod:
+        req->mknod.mode = htonl( req->mknod.mode );
+        {
+          kXR_int64 rdev;
+          memcpy( &rdev, req->mknod.rdev, 8 );
+          rdev = htonll( rdev );
+          memcpy( req->mknod.rdev, &rdev, 8 );
+        }
+        break;
+
+      case kXR_fcntlLock:
+        req->fcntlLock.cmd = htons( req->fcntlLock.cmd );
+        break;
+
       case kXR_utimes:
       {
         kXR_int64 as, ms;
@@ -3465,6 +3479,23 @@ namespace XrdCl
         char *fn = GetDataAsString( msg );
         o << "path: " << fn << ")";
         delete [] fn;
+        break;
+      }
+
+      case kXR_mknod:
+      {
+        ClientMknodRequest *sreq = (ClientMknodRequest *)msg;
+        o << "kXR_mknod (";
+        char *fn = GetDataAsString( msg );
+        o << "path: " << fn << ", mode: " << sreq->mode << ")";
+        delete [] fn;
+        break;
+      }
+
+      case kXR_fcntlLock:
+      {
+        o << "kXR_fcntlLock (cmd: "
+          << ((ClientFcntlLockRequest *)msg)->cmd << ")";
         break;
       }
 

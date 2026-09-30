@@ -9,6 +9,10 @@
 #include <functional>
 #include <sstream>
 #include <sys/stat.h>
+#include <sys/types.h>
+#ifdef __linux__
+#include <sys/sysmacros.h>
+#endif
 
 namespace XioFS {
 
@@ -34,6 +38,8 @@ int httpToErrno(int status)
       return ESTALE;
     case 416:
       return 0;
+    case 423:
+      return EAGAIN;
     case 507:
       return ENOSPC;
     default:
@@ -71,6 +77,10 @@ void attrFromDav(const DavEntry &e, Attr &out)
   out.gid = e.gid;
   out.is_dir = e.is_dir;
   out.is_lnk = e.is_lnk && !e.is_dir;
+  out.is_fifo = e.is_fifo;
+  out.is_chr = e.is_chr;
+  out.is_blk = e.is_blk;
+  out.rdev = e.rdev;
 }
 
 } // namespace
@@ -484,6 +494,142 @@ int Client::readlink(const std::string &relpath, std::string &target,
          (target.back() == '\n' || target.back() == '\r' ||
           target.back() == '\0'))
     target.pop_back();
+  return 0;
+}
+
+int Client::mknod(const std::string &relpath, mode_t mode, dev_t rdev,
+                  std::string &err)
+{
+  char modebuf[16];
+  std::snprintf(modebuf, sizeof(modebuf), "%o", static_cast<unsigned>(mode));
+  char devbuf[32];
+  if (S_ISCHR(mode) || S_ISBLK(mode))
+    std::snprintf(devbuf, sizeof(devbuf), "%u:%u",
+                  static_cast<unsigned>(major(rdev)),
+                  static_cast<unsigned>(minor(rdev)));
+  else
+    std::snprintf(devbuf, sizeof(devbuf), "%llu",
+                  static_cast<unsigned long long>(rdev));
+  std::vector<std::pair<std::string, std::string>> hdrs{
+      {"xrd-mode", modebuf}, {"xrd-dev", devbuf}};
+  HttpResponse resp;
+  int rc = doReq("MKNOD", relpath, hdrs, {}, resp, err);
+  if (rc)
+    return rc;
+  if (resp.status == 405 || resp.status == 501) {
+    hdrs.emplace_back("xrd-mknod", "1");
+    rc = doReq("PUT", relpath, hdrs, {}, resp, err);
+    if (rc)
+      return rc;
+  }
+  if (int e = httpToErrno(resp.status)) {
+    err = "MKNOD status " + std::to_string(resp.status);
+    return -e;
+  }
+  return 0;
+}
+
+int Client::getxattr(const std::string &relpath, const std::string &name,
+                     std::string &value, std::string &err)
+{
+  HttpResponse resp;
+  int rc = doReq("GET", relpath, {{"xrd-xattr", name}}, {}, resp, err);
+  if (rc)
+    return rc;
+  if (int e = httpToErrno(resp.status)) {
+    err = "GET xattr status " + std::to_string(resp.status);
+    return -e;
+  }
+  value = resp.body;
+  return 0;
+}
+
+int Client::setxattr(const std::string &relpath, const std::string &name,
+                     const std::string &value, std::string &err)
+{
+  std::ostringstream body;
+  body << "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+          "<D:propertyupdate xmlns:D=\"DAV:\" xmlns:X=\"http://xrootd.org/ns\">"
+          "<D:set><D:prop>"
+          "<X:xattr-name>"
+       << name << "</X:xattr-name><X:xattr-value>" << value
+       << "</X:xattr-value></D:prop></D:set></D:propertyupdate>";
+  return proppatch(relpath, body.str(), err);
+}
+
+int Client::listxattr(const std::string &relpath, std::string &names,
+                      std::string &err)
+{
+  HttpResponse resp;
+  int rc = doReq("GET", relpath, {{"xrd-xattr-list", "1"}}, {}, resp, err);
+  if (rc)
+    return rc;
+  if (int e = httpToErrno(resp.status)) {
+    err = "GET xattr-list status " + std::to_string(resp.status);
+    return -e;
+  }
+  names = resp.body;
+  return 0;
+}
+
+int Client::removexattr(const std::string &relpath, const std::string &name,
+                        std::string &err)
+{
+  std::ostringstream body;
+  body << "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+          "<D:propertyupdate xmlns:D=\"DAV:\" xmlns:X=\"http://xrootd.org/ns\">"
+          "<D:set><D:prop><X:xattr-del>"
+       << name << "</X:xattr-del></D:prop></D:set></D:propertyupdate>";
+  return proppatch(relpath, body.str(), err);
+}
+
+int Client::lock(const std::string &relpath, const std::string &cmd,
+                 const std::string &type, const std::string &whence,
+                 long long start, long long len, std::string &err)
+{
+  std::vector<std::pair<std::string, std::string>> hdrs{
+      {"xrd-lock-cmd", cmd.empty() ? "SETLK" : cmd},
+      {"xrd-lock-type", type.empty() ? "WRLCK" : type},
+      {"xrd-lock-whence", whence.empty() ? "SET" : whence},
+      {"xrd-lock-start", std::to_string(start)},
+      {"xrd-lock-len", std::to_string(len)}};
+  HttpResponse resp;
+  int rc = doReq("LOCK", relpath, hdrs, {}, resp, err);
+  if (rc)
+    return rc;
+  if (int e = httpToErrno(resp.status)) {
+    err = "LOCK status " + std::to_string(resp.status);
+    return -e;
+  }
+  return 0;
+}
+
+int Client::flock(const std::string &relpath, const std::string &op,
+                  std::string &err)
+{
+  HttpResponse resp;
+  int rc = doReq("LOCK", relpath,
+                 {{"xrd-lock-cmd", "FLOCK"}, {"xrd-lock-op", op}}, {}, resp,
+                 err);
+  if (rc)
+    return rc;
+  if (int e = httpToErrno(resp.status)) {
+    err = "FLOCK status " + std::to_string(resp.status);
+    return -e;
+  }
+  return 0;
+}
+
+int Client::unlock(const std::string &relpath, std::string &err)
+{
+  HttpResponse resp;
+  int rc = doReq("UNLOCK", relpath, {}, {}, resp, err);
+  if (rc)
+    return rc;
+  if (int e = httpToErrno(resp.status)) {
+    err = "UNLOCK status " + std::to_string(resp.status);
+    return -e;
+  }
   return 0;
 }
 

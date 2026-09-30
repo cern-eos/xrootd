@@ -54,6 +54,8 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <map>
+#include <string>
 #include <openssl/ssl.h>
 #include <sys/types.h>
 #include <sys/uio.h>
@@ -421,6 +423,7 @@ private:
     long        fileflags{0};
     long        filemodtime{0};
   } fileCache_;
+  std::map<std::string, std::string> lockHolds_;
   bool fileCacheHoldReqstate_{false};
   bool fileCacheVerifyPending_{false};
   bool fileCacheReopenPending_{false};
@@ -441,6 +444,11 @@ private:
   void fileCacheMarkReopenPending() { fileCacheReopenPending_ = true; }
   bool fileCacheTakeReopenPending();
   bool fileCacheStale(long long filesize, long fileflags, long filemodtime) const;
+
+  void lockHoldPut(const std::string &key, const char fh[4]);
+  bool lockHoldGet(const std::string &key, char fh[4]) const;
+  void lockHoldErase(const std::string &key);
+  bool lockHoldHas(const std::string &key) const;
 
   /// Indicates whether we've attempted to send app info.
   bool DoneSetInfo;

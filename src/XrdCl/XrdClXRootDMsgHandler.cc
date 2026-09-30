@@ -1369,6 +1369,8 @@ namespace XrdCl
       case kXR_chmod:
       case kXR_chown:
       case kXR_utimes:
+      case kXR_mknod:
+      case kXR_fcntlLock:
       case kXR_readlink:
       case kXR_symlink:
       case kXR_ping:

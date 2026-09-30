@@ -40,12 +40,16 @@ TEST(XrdClPosixProto, RequestCodesAndNames)
    EXPECT_EQ(3035, (int)kXR_symlink);
    EXPECT_EQ(3036, (int)kXR_readlink);
    EXPECT_EQ(3037, (int)kXR_utimes);
-   EXPECT_EQ(kXR_utimes + 1, kXR_REQFENCE);
+   EXPECT_EQ(3038, (int)kXR_mknod);
+   EXPECT_EQ(3039, (int)kXR_fcntlLock);
+   EXPECT_EQ(kXR_fcntlLock + 1, kXR_REQFENCE);
    EXPECT_STREQ("link", XProtocol::reqName(kXR_link));
    EXPECT_STREQ("chown", XProtocol::reqName(kXR_chown));
    EXPECT_STREQ("symlink", XProtocol::reqName(kXR_symlink));
    EXPECT_STREQ("readlink", XProtocol::reqName(kXR_readlink));
    EXPECT_STREQ("utimes", XProtocol::reqName(kXR_utimes));
+   EXPECT_STREQ("mknod", XProtocol::reqName(kXR_mknod));
+   EXPECT_STREQ("fcntlLock", XProtocol::reqName(kXR_fcntlLock));
    EXPECT_STREQ("fattr", XProtocol::reqName(kXR_fattr));
    EXPECT_STREQ("!unknown", XProtocol::reqName(kXR_REQFENCE));
 }
@@ -57,6 +61,8 @@ TEST(XrdClPosixProto, StructSizes)
    EXPECT_EQ(24u, sizeof(ClientSymlinkRequest));
    EXPECT_EQ(24u, sizeof(ClientReadlinkRequest));
    EXPECT_EQ(24u, sizeof(ClientUtimesRequest));
+   EXPECT_EQ(24u, sizeof(ClientMknodRequest));
+   EXPECT_EQ(24u, sizeof(ClientFcntlLockRequest));
    EXPECT_EQ(24u, sizeof(ClientLinkRequest));
    EXPECT_EQ(24u, sizeof(ClientRequestHdr));
 }
@@ -272,6 +278,9 @@ TEST(XrdClPosixProto, FattrCodeAndFence)
    EXPECT_GT((int)kXR_symlink, (int)kXR_chown);
    EXPECT_GT((int)kXR_readlink, (int)kXR_symlink);
    EXPECT_GT((int)kXR_utimes, (int)kXR_readlink);
+   EXPECT_GT((int)kXR_mknod, (int)kXR_utimes);
+   EXPECT_GT((int)kXR_fcntlLock, (int)kXR_mknod);
+   EXPECT_EQ((int)kXR_fcntlLock + 1, (int)kXR_REQFENCE);
 }
 
 TEST(XrdClPosixProto, MarshallUtimesBothTimes)

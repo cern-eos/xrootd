@@ -116,7 +116,7 @@ const char *reqNames[kXR_REQFENCE-kXR_auth] =
               "bind",        "readv",       "pgwrite",     "locate",
               "truncate",    "sigver",      "pgread",      "writev",
               "clone",       "link",        "chown",       "symlink",
-              "readlink",    "utimes"
+              "readlink",    "utimes",      "mknod",       "fcntlLock"
              };
 
 // Following value is used to determine if the error or request code is

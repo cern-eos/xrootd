@@ -12,6 +12,8 @@
 #include <linux/timekeeping.h>
 #include <linux/uidgid.h>
 #include <linux/user_namespace.h>
+#include <linux/xattr.h>
+#include <linux/kdev_t.h>
 
 #include "xiofs.h"
 #include "xiofs_compat.h"
@@ -339,6 +341,77 @@ static const char *xiofs_get_link(struct dentry *dentry, struct inode *inode,
 	return ki->link_target;
 }
 
+static int xiofs_mknod(xiofs_idmap_t idmap, struct inode *dir,
+		       struct dentry *dentry, umode_t mode, dev_t rdev)
+{
+	struct xiofs_attr attr = {};
+	struct inode *inode;
+	char path[XIOFS_PATH_MAX];
+	int err;
+
+	(void)idmap;
+	err = xiofs_join_path(path, sizeof(path),
+			      XIOFS_I(dir)->remote_path, dentry->d_name.name);
+	if (err)
+		return err;
+	if (S_ISREG(mode) || (mode & S_IFMT) == 0)
+		err = xiofs_http_create(dir, path, &attr);
+	else
+		err = xiofs_http_mknod(dir, path, mode, rdev);
+	if (err)
+		return err;
+	attr.mode = mode & 07777;
+	attr.is_fifo = S_ISFIFO(mode);
+	attr.is_chr = S_ISCHR(mode);
+	attr.is_blk = S_ISBLK(mode);
+	attr.rdev = new_encode_dev(rdev);
+	inode = xiofs_iget(dir->i_sb, path, &attr);
+	if (IS_ERR(inode))
+		return PTR_ERR(inode);
+	d_instantiate(dentry, inode);
+	return 0;
+}
+
+static int xiofs_listxattr(struct dentry *dentry, char *buffer, size_t size)
+{
+	return xiofs_http_listxattr(d_inode(dentry), buffer, size);
+}
+
+static int xiofs_xattr_get(const struct xattr_handler *handler,
+			   struct dentry *dentry, struct inode *inode,
+			   const char *name, void *buffer, size_t size)
+{
+	(void)handler;
+	(void)dentry;
+	return xiofs_http_getxattr(inode, name, buffer, size);
+}
+
+static int xiofs_xattr_set(const struct xattr_handler *handler,
+			   XIOFS_XATTR_SET_IDMAP,
+			   struct dentry *dentry, struct inode *inode,
+			   const char *name, const void *buffer, size_t size,
+			   int flags)
+{
+	(void)handler;
+	(void)idmap;
+	(void)dentry;
+	(void)flags;
+	if (!buffer)
+		return xiofs_http_removexattr(inode, name);
+	return xiofs_http_setxattr(inode, name, buffer, size);
+}
+
+static const struct xattr_handler xiofs_xattr_handler = {
+	.prefix	= "",
+	.get	= xiofs_xattr_get,
+	.set	= xiofs_xattr_set,
+};
+
+const struct xattr_handler * const xiofs_xattr_handlers[] = {
+	&xiofs_xattr_handler,
+	NULL
+};
+
 static int xiofs_iterate(struct file *file, struct dir_context *ctx)
 {
 	struct inode *dir = file_inode(file);
@@ -361,6 +434,12 @@ static int xiofs_iterate(struct file *file, struct dir_context *ctx)
 			type = DT_DIR;
 		else if (ents[i].is_lnk)
 			type = DT_LNK;
+		else if (ents[i].is_fifo)
+			type = DT_FIFO;
+		else if (ents[i].is_chr)
+			type = DT_CHR;
+		else if (ents[i].is_blk)
+			type = DT_BLK;
 
 		if (ctx->pos > pos)
 			continue;
@@ -386,18 +465,22 @@ const struct inode_operations xiofs_dir_inode_ops = {
 	.rename		= xiofs_rename,
 	.link		= xiofs_link,
 	.symlink	= xiofs_symlink,
+	.mknod		= xiofs_mknod,
 	.setattr	= xiofs_setattr,
+	.listxattr	= xiofs_listxattr,
 };
 
 const struct inode_operations xiofs_file_inode_ops = {
 	.getattr	= xiofs_getattr,
 	.setattr	= xiofs_setattr,
+	.listxattr	= xiofs_listxattr,
 };
 
 const struct inode_operations xiofs_symlink_inode_ops = {
 	.get_link	= xiofs_get_link,
 	.getattr	= xiofs_getattr,
 	.setattr	= xiofs_setattr,
+	.listxattr	= xiofs_listxattr,
 };
 
 const struct file_operations xiofs_dir_ops = {

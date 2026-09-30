@@ -72,6 +72,12 @@ struct xiofs_io {
  *   link           -> LINK (Destination, POSIX hard link)
  *   symlink        -> SYMLINK or LINK + Xrd-Link-Type: symbolic
  *   readlink       -> READLINK or GET + Xrd-Readlink: 1
+ *   mknod          -> MKNOD or PUT + Xrd-Mknod: 1 (fifo/chr/blk)
+ *   getxattr       -> GET + Xrd-Xattr
+ *   setxattr       -> PROPPATCH X:xattr-name / X:xattr-value
+ *   listxattr      -> GET + Xrd-Xattr-List: 1
+ *   removexattr    -> PROPPATCH X:xattr-del
+ *   lock / flock   -> LOCK / UNLOCK (fcntl or Xrd-Lock-Cmd: FLOCK)
  */
 struct xiofs_transport_ops {
   int (*connect)(void *ctx);

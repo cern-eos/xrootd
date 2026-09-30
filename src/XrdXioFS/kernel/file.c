@@ -20,6 +20,9 @@
 
 #include "xiofs.h"
 #include "xiofs_compat.h"
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+#include <linux/filelock.h>
+#endif
 
 static int xiofs_fill_page(struct inode *inode, struct page *page,
 			      const void *src, loff_t src_pos, size_t src_len)
@@ -376,6 +379,28 @@ static long xiofs_ioctl(struct file *file, unsigned int cmd,
 	return xiofs_rdma_gpu_io(file, &req, cmd == XIOFS_IOC_GPU_WRITE);
 }
 
+static int xiofs_file_lock(struct file *file, int cmd, struct file_lock *fl)
+{
+	loff_t len;
+
+	if (!fl)
+		return -EINVAL;
+	if (fl->fl_end == OFFSET_MAX)
+		len = 0;
+	else if (fl->fl_end < fl->fl_start)
+		return -EINVAL;
+	else
+		len = fl->fl_end - fl->fl_start + 1;
+	return xiofs_http_lock(file_inode(file), cmd, fl->fl_type, 0,
+			       fl->fl_start, len);
+}
+
+static int xiofs_file_flock(struct file *file, int cmd, struct file_lock *fl)
+{
+	(void)fl;
+	return xiofs_http_flock(file_inode(file), cmd);
+}
+
 const struct file_operations xiofs_file_ops = {
 	.owner		= THIS_MODULE,
 	.read_iter	= generic_file_read_iter,
@@ -389,4 +414,6 @@ const struct file_operations xiofs_file_ops = {
 	.splice_read	= generic_file_splice_read,
 #endif
 	.unlocked_ioctl	= xiofs_ioctl,
+	.lock		= xiofs_file_lock,
+	.flock		= xiofs_file_flock,
 };

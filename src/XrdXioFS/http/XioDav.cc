@@ -260,6 +260,27 @@ bool parseMultistatus(const std::string &xml, std::vector<DavEntry> &out,
       }
     }
 
+    std::string ftype;
+    if (extractLocal(block, "file-type", ftype)) {
+      const std::string ft = toLower(ftype);
+      if (ft == "fifo")
+        e.is_fifo = true;
+      else if (ft == "chr")
+        e.is_chr = true;
+      else if (ft == "blk")
+        e.is_blk = true;
+      else if (ft == "lnk")
+        e.is_lnk = true;
+    }
+
+    std::string rdev;
+    if (extractLocal(block, "rdev", rdev)) {
+      try {
+        e.rdev = static_cast<dev_t>(std::stoull(rdev));
+      } catch (...) {
+      }
+    }
+
     if (e.is_dir)
       e.is_lnk = false;
 

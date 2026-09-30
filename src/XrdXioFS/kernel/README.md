@@ -59,11 +59,12 @@ write(2)
 | Dcache | `lookup` + `d_splice_alias`; getattr refreshes size/mtime/ETag |
 | Identity | URL path + ETag (`If-Match` on PATCH/DELETE) |
 
-## HTTP/1.1 + kTLS
+## HTTP/1.1 or serial HTTP/2 + kTLS
 
 XrdHttp serves the same verbs on HTTP/1.1 and HTTP/2. The kernel
-transport is HTTP/1.1 on a socket that userspace has already wrapped
-with **kTLS**:
+transport is HTTP/1.1 by default, or **serial HTTP/2** (`http2` mount
+option / `xiofsagent --http2` / `XIOFS_IMPORT_H2`) on a socket that
+userspace has already wrapped with **kTLS**:
 
 ```
 userspace TLS handshake agent
@@ -73,7 +74,7 @@ userspace TLS handshake agent
 /dev/xiofsctl
         |
         v
-xiofs.ko  -- plaintext HTTP/1.1 -->  kTLS  --> TCP  --> XrdHttp
+xiofs.ko  -- plaintext HTTP/1.1 or serial HTTP/2 -->  kTLS  --> TCP  --> XrdHttp
 ```
 
 Do **not** extract TLS keys and implement a private record layer. The
@@ -94,8 +95,9 @@ strcpy(im.export_path, "/export");
 ioctl(ctlfd, XIOFS_IOC_IMPORT_SOCK, &im);
 ```
 
-One socket is used with a mutex (HTTP/1.1 cannot multiplex). No chunked
-encoding; XrdHttp sends `Content-Length`. Send/recv use `sk_rcvtimeo` /
+One socket is used with a mutex. HTTP/2 is one stream at a time
+(HPACK from the HTTP/1 request builders). No chunked encoding; XrdHttp
+sends `Content-Length` on HTTP/1.1. Send/recv use `sk_rcvtimeo` /
 `sk_sndtimeo` (`timeo=`, default 30s). On connection errors the socket is
 dropped and the request waits once for `xiofsagent --import-only`. Dirty
 pages are redirtied so writeback can retry after a new kTLS socket.
@@ -121,14 +123,16 @@ revalidates). `d_revalidate` issues PROPFIND/HEAD when the cache expires.
 | hard link | `LINK` + `Destination` |
 | symlink | `LINK` + `Xrd-Link-Type: symbolic` + `Xrd-Symlink-Target` |
 | readlink | `GET` + `Xrd-Readlink: 1` |
+| mknod (fifo/chr/blk) | `PUT` + `Xrd-Mknod: 1` (`Xrd-Mode`, `Xrd-Dev`) |
+| getxattr / listxattr | `GET` + `Xrd-Xattr` / `Xrd-Xattr-List` |
+| setxattr / removexattr | `PROPPATCH` `X:xattr-*` |
+| fcntl lock / flock | `LOCK` / `UNLOCK` |
 
 ## Explicitly not done
 
-- HTTP/2 in-kernel (HPACK / streams / flow control)
 - Automatic handshake upcall (re-import is still `xiofsagent --import-only`)
 - Chunked responses
-- Byte-range locks (local VFS locks still apply)
-- mknod for fifo/device nodes
+- Multiplexed HTTP/2 streams (the kernel client is serial)
 - Writeback congestion / batching PATCH across folios
 - RDMA / GPU-direct (`XIOFS_IOC_GPU_READ` returns `-EOPNOTSUPP`)
 

@@ -20,12 +20,16 @@ struct DavEntry {
   std::string href;
   bool        is_dir{false};
   bool        is_lnk{false};
+  bool        is_fifo{false};
+  bool        is_chr{false};
+  bool        is_blk{false};
   int64_t     size{-1};
   time_t      mtime{0};
   time_t      atime{0};
   mode_t      mode{0};
   uid_t       uid{static_cast<uid_t>(-1)};
   gid_t       gid{static_cast<gid_t>(-1)};
+  dev_t       rdev{0};
 };
 
 // Parse a DAV:multistatus document produced by XrdHttp (207 Multi-Status).

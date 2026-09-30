@@ -148,6 +148,8 @@ enum XRequestTypes {
    kXR_symlink, // 3035 POSIX symlink
    kXR_readlink,// 3036 POSIX readlink
    kXR_utimes,  // 3037 POSIX utimens (atime/mtime seconds)
+   kXR_mknod,   // 3038 POSIX mknod (fifo/device/regular)
+   kXR_fcntlLock,// 3039 POSIX fcntl F_SETLK / flock on an open handle
    kXR_REQFENCE // Always last valid request code +1
 };
 
@@ -528,6 +530,37 @@ struct ClientUtimesRequest {
    kXR_char  times[16];
    kXR_int32 dlen;
 };
+
+/******************************************************************************/
+/*                     k X R _ m k n o d   R e q u e s t                      */
+/******************************************************************************/
+
+// mode includes S_IFMT. rdev is host dev_t in network order (8 bytes).
+struct ClientMknodRequest {
+   kXR_char  streamid[2];
+   kXR_unt16 requestid;
+   kXR_unt32 mode;
+   kXR_char  rdev[8];
+   kXR_char  reserved[4];
+   kXR_int32 dlen;
+};
+
+/******************************************************************************/
+/*                 k X R _ f c n t l L o c k   R e q u e s t                  */
+/******************************************************************************/
+
+// cmd is F_GETLK/F_SETLK/F_SETLKW, or (0x8000 | flock op) for BSD flock().
+// Data (when dlen >= 20) is: type(2) whence(2) start(8) len(8), network order.
+struct ClientFcntlLockRequest {
+   kXR_char  streamid[2];
+   kXR_unt16 requestid;
+   kXR_char  fhandle[4];
+   kXR_unt16 cmd;
+   kXR_char  reserved[10];
+   kXR_int32 dlen;
+};
+
+static const kXR_unt16 kXR_flockCmd = 0x8000;
 
 /******************************************************************************/
 /*                      k X R _ o p e n   R e q u e s t                       */
@@ -968,6 +1001,8 @@ typedef union {
    struct ClientSymlinkRequest symlink;
    struct ClientReadlinkRequest readlink;
    struct ClientUtimesRequest utimes;
+   struct ClientMknodRequest mknod;
+   struct ClientFcntlLockRequest fcntlLock;
    struct ClientLocateRequest locate;
    struct ClientLoginRequest login;
    struct ClientMkdirRequest mkdir;

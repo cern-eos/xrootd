@@ -16,6 +16,7 @@
 
 #define XIOFS_IMPORT_TLS		(1u << 0)
 #define XIOFS_IMPORT_BEARER		(1u << 1)
+#define XIOFS_IMPORT_H2			(1u << 2)
 
 struct xiofs_import_sock {
 	__s32	sockfd;

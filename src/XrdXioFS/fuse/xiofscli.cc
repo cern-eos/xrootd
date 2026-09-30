@@ -21,6 +21,9 @@
 #include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
+#ifdef __linux__
+#include <sys/sysmacros.h>
+#endif
 #include <ctime>
 #include <vector>
 
@@ -48,7 +51,15 @@ static void usage(const char *argv0)
       << "    chown UID GID\n"
       << "    symlink TARGET\n"
       << "    readlink\n"
-      << "    utime ATIME MTIME\n";
+      << "    utime ATIME MTIME\n"
+      << "    mknod MODE [MAJOR MINOR]\n"
+      << "    getxattr NAME\n"
+      << "    setxattr NAME VALUE\n"
+      << "    listxattr\n"
+      << "    rmxattr NAME\n"
+      << "    lock [SETLK|SETLKW|GETLK] [RDLCK|WRLCK] START LEN\n"
+      << "    unlock\n"
+      << "    flock [SH|EX|UN]\n";
 }
 
 static int fail(const std::string &msg, int rc)
@@ -103,7 +114,10 @@ int main(int argc, char **argv)
     char mbuf[16];
     std::snprintf(mbuf, sizeof(mbuf), "%04o",
                   static_cast<unsigned>(a.mode & 07777));
-    std::cout << (a.is_dir ? "dir" : (a.is_lnk ? "lnk" : "file"))
+    std::cout << (a.is_dir ? "dir" : (a.is_lnk ? "lnk"
+                                               : (a.is_fifo ? "fifo"
+                                                            : (a.is_chr ? "chr"
+                                                                        : (a.is_blk ? "blk" : "file")))))
               << " size=" << a.size << " mtime=" << a.mtime
               << " atime=" << a.atime << " mode=" << mbuf
               << " uid=" << a.uid << " gid=" << a.gid << " ino=" << a.ino;
@@ -119,7 +133,10 @@ int main(int argc, char **argv)
     if (rc)
       return fail(err, 1);
     for (const auto &e : ents) {
-      std::cout << (e.is_dir ? "d " : (e.is_lnk ? "l " : "f ")) << e.size
+      std::cout << (e.is_dir ? "d " : (e.is_lnk ? "l " : (e.is_fifo ? "p "
+                                                                   : (e.is_chr ? "c "
+                                                                               : (e.is_blk ? "b " : "f ")))))
+                << e.size
                 << " " << e.name << "\n";
     }
     return 0;
@@ -273,6 +290,92 @@ int main(int argc, char **argv)
     tv[0].tv_sec = static_cast<time_t>(std::strtoll(args[2].c_str(), nullptr, 10));
     tv[1].tv_sec = static_cast<time_t>(std::strtoll(args[3].c_str(), nullptr, 10));
     rc = c.utimens(rel, tv, err);
+    if (rc)
+      return fail(err, 1);
+    return 0;
+  }
+
+  if (cmd == "mknod") {
+    if (args.size() < 3)
+      return fail("mknod MODE [MAJOR MINOR]", 2);
+    mode_t mode = static_cast<mode_t>(std::strtoul(args[2].c_str(), nullptr, 8));
+    dev_t rdev = 0;
+    if (args.size() >= 5)
+      rdev = makedev(static_cast<unsigned>(std::strtoul(args[3].c_str(), nullptr, 10)),
+                     static_cast<unsigned>(std::strtoul(args[4].c_str(), nullptr, 10)));
+    rc = c.mknod(rel, mode, rdev, err);
+    if (rc)
+      return fail(err, 1);
+    return 0;
+  }
+
+  if (cmd == "getxattr") {
+    if (args.size() < 3)
+      return fail("getxattr NAME", 2);
+    std::string value;
+    rc = c.getxattr(rel, args[2], value, err);
+    if (rc)
+      return fail(err, 1);
+    std::cout << value << "\n";
+    return 0;
+  }
+
+  if (cmd == "setxattr") {
+    if (args.size() < 4)
+      return fail("setxattr NAME VALUE", 2);
+    rc = c.setxattr(rel, args[2], args[3], err);
+    if (rc)
+      return fail(err, 1);
+    return 0;
+  }
+
+  if (cmd == "listxattr") {
+    std::string names;
+    rc = c.listxattr(rel, names, err);
+    if (rc)
+      return fail(err, 1);
+    size_t i = 0;
+    while (i < names.size()) {
+      auto z = names.find('\0', i);
+      if (z == std::string::npos)
+        z = names.size();
+      if (z > i)
+        std::cout << names.substr(i, z - i) << "\n";
+      i = z + 1;
+    }
+    return 0;
+  }
+
+  if (cmd == "rmxattr") {
+    if (args.size() < 3)
+      return fail("rmxattr NAME", 2);
+    rc = c.removexattr(rel, args[2], err);
+    if (rc)
+      return fail(err, 1);
+    return 0;
+  }
+
+  if (cmd == "lock") {
+    std::string lcmd = args.size() > 2 ? args[2] : "SETLK";
+    std::string typ = args.size() > 3 ? args[3] : "WRLCK";
+    long long start = args.size() > 4 ? std::strtoll(args[4].c_str(), nullptr, 10) : 0;
+    long long len = args.size() > 5 ? std::strtoll(args[5].c_str(), nullptr, 10) : 0;
+    rc = c.lock(rel, lcmd, typ, "SET", start, len, err);
+    if (rc)
+      return fail(err, 1);
+    return 0;
+  }
+
+  if (cmd == "unlock") {
+    rc = c.unlock(rel, err);
+    if (rc)
+      return fail(err, 1);
+    return 0;
+  }
+
+  if (cmd == "flock") {
+    std::string op = args.size() > 2 ? args[2] : "EX";
+    rc = c.flock(rel, op, err);
     if (rc)
       return fail(err, 1);
     return 0;

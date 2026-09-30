@@ -267,6 +267,8 @@ enum RD_func {RD_chmod = 0, RD_chksum,  RD_dirlist, RD_locate, RD_mkdir,
        int   do_Symlink();
        int   do_Readlink();
        int   do_Utimes();
+       int   do_Mknod();
+       int   do_FcntlLock();
        int   do_Offload(int (XrdXrootdProtocol::*Invoke)(), int pathID);
        int   do_OffloadIO();
        int   do_Open();

@@ -102,6 +102,12 @@ static inline void xiofs_copy_to_page(struct page *page, const void *src)
 #endif
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
+#define XIOFS_XATTR_SET_IDMAP struct mnt_idmap *idmap
+#else
+#define XIOFS_XATTR_SET_IDMAP struct user_namespace *idmap
+#endif
+
 typedef int (*xiofs_writepage_cb_t)(struct page *, struct writeback_control *,
 				  void *);
 

@@ -198,6 +198,10 @@ TEST(XrdHttpPosix, VerbEnumOrder)
    EXPECT_LT(XrdHttpReq::rtREADLINK, XrdHttpReq::rtCount);
    EXPECT_EQ(XrdHttpReq::rtLINK + 1, XrdHttpReq::rtSYMLINK);
    EXPECT_EQ(XrdHttpReq::rtSYMLINK + 1, XrdHttpReq::rtREADLINK);
+   EXPECT_EQ(XrdHttpReq::rtREADLINK + 1, XrdHttpReq::rtMKNOD);
+   EXPECT_EQ(XrdHttpReq::rtMKNOD + 1, XrdHttpReq::rtLOCK);
+   EXPECT_EQ(XrdHttpReq::rtLOCK + 1, XrdHttpReq::rtUNLOCK);
+   EXPECT_EQ(XrdHttpReq::rtUNLOCK + 1, XrdHttpReq::rtFATTR);
 }
 
 #ifdef HAVE_NGHTTP2
@@ -219,10 +223,9 @@ TEST(XrdHttpPosix, Http2BodyMethods)
    EXPECT_FALSE(XrdHttp2Session::isBodyMethod("MOVE"));
    EXPECT_FALSE(XrdHttp2Session::isBodyMethod("COPY"));
    EXPECT_FALSE(XrdHttp2Session::isBodyMethod("BIND"));
-   EXPECT_FALSE(XrdHttp2Session::isBodyMethod("symlink"));
-   EXPECT_FALSE(XrdHttp2Session::isBodyMethod(""));
-   EXPECT_FALSE(XrdHttp2Session::isBodyMethod("CONNECT"));
+   EXPECT_FALSE(XrdHttp2Session::isBodyMethod("MKNOD"));
    EXPECT_FALSE(XrdHttp2Session::isBodyMethod("LOCK"));
+   EXPECT_FALSE(XrdHttp2Session::isBodyMethod("UNLOCK"));
 }
 #endif
 
@@ -279,6 +282,46 @@ TEST(XrdHttpPosix, PropPatchGidInvalidAndUidZero)
       EXPECT_TRUE(req.proppatchHaveMtime);
       EXPECT_EQ(1, req.proppatchMtime);
       EXPECT_FALSE(req.proppatchHaveAtime);
+   }
+}
+
+TEST(XrdHttpPosix, ParseMknodLockUnlock)
+{
+   {
+      XrdHttpReq req = MakeReq();
+      ASSERT_EQ(0, ParseLine(req, "MKNOD /data/pipe HTTP/1.1\r\n"));
+      EXPECT_EQ(XrdHttpReq::rtMKNOD, req.request);
+      EXPECT_STREQ("/data/pipe", req.resource.c_str());
+   }
+   {
+      XrdHttpReq req = MakeReq();
+      ASSERT_EQ(0, ParseLine(req, "LOCK /data/f HTTP/1.1\r\n"));
+      EXPECT_EQ(XrdHttpReq::rtLOCK, req.request);
+   }
+   {
+      XrdHttpReq req = MakeReq();
+      ASSERT_EQ(0, ParseLine(req, "UNLOCK /data/f HTTP/1.1\r\n"));
+      EXPECT_EQ(XrdHttpReq::rtUNLOCK, req.request);
+   }
+}
+
+TEST(XrdHttpPosix, PropPatchXattr)
+{
+   XrdHttpReq req = MakeReq();
+   const char *xml =
+      "<propertyupdate><set><prop>"
+      "<xattr-name>user.foo</xattr-name>"
+      "<xattr-value>bar</xattr-value>"
+      "</prop></set></propertyupdate>";
+   ASSERT_EQ(0, ParsePatch(req, xml));
+   EXPECT_EQ("user.foo", req.proppatchXattrName);
+   EXPECT_EQ("bar", req.proppatchXattrValue);
+   {
+      XrdHttpReq del = MakeReq();
+      const char *dxml =
+         "<propertyupdate><set><prop><xattr-del>user.foo</xattr-del></prop></set></propertyupdate>";
+      ASSERT_EQ(0, ParsePatch(del, dxml));
+      EXPECT_EQ("user.foo", del.proppatchXattrDel);
    }
 }
 

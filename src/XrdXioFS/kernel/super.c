@@ -26,6 +26,7 @@ enum {
 	Opt_path,
 	Opt_actimeo,
 	Opt_timeo,
+	Opt_http2,
 };
 
 static const struct fs_parameter_spec xiofs_fs_parameters[] = {
@@ -34,6 +35,7 @@ static const struct fs_parameter_spec xiofs_fs_parameters[] = {
 	fsparam_string("path", Opt_path),
 	fsparam_u32("actimeo", Opt_actimeo),
 	fsparam_u32("timeo", Opt_timeo),
+	fsparam_flag("http2", Opt_http2),
 	{}
 };
 
@@ -43,6 +45,7 @@ struct xiofs_fc_ctx {
 	char		export_path[256];
 	unsigned int	actimeo_sec;
 	unsigned int	timeo_sec;
+	bool		http2;
 };
 
 static void xiofs_set_hosthdr(struct xiofs_sb_info *sbi)
@@ -169,6 +172,26 @@ struct inode *xiofs_iget(struct super_block *sb, const char *path,
 		inode->i_fop = NULL;
 		set_nlink(inode, 1);
 		inode->i_size = attr->size;
+	} else if (attr && attr->is_fifo) {
+		inode->i_mode = S_IFIFO | (attr->mode ? (attr->mode & 07777) : 0666);
+		inode->i_op = &xiofs_file_inode_ops;
+		inode->i_fop = &xiofs_file_ops;
+		set_nlink(inode, 1);
+		inode->i_size = 0;
+	} else if (attr && attr->is_chr) {
+		inode->i_mode = S_IFCHR | (attr->mode ? (attr->mode & 07777) : 0666);
+		inode->i_op = &xiofs_file_inode_ops;
+		inode->i_fop = &xiofs_file_ops;
+		inode->i_rdev = attr->rdev;
+		set_nlink(inode, 1);
+		inode->i_size = 0;
+	} else if (attr && attr->is_blk) {
+		inode->i_mode = S_IFBLK | (attr->mode ? (attr->mode & 07777) : 0666);
+		inode->i_op = &xiofs_file_inode_ops;
+		inode->i_fop = &xiofs_file_ops;
+		inode->i_rdev = attr->rdev;
+		set_nlink(inode, 1);
+		inode->i_size = 0;
 	} else {
 		inode->i_mode = S_IFREG | ((attr && attr->mode) ? (attr->mode & 07777) : 0644);
 		inode->i_op = &xiofs_file_inode_ops;
@@ -204,6 +227,8 @@ int xiofs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sbi->port = ctx->port ? ctx->port : 443;
 	sbi->actimeo_sec = ctx->actimeo_sec;
 	sbi->timeo_sec = ctx->timeo_sec ? ctx->timeo_sec : XIOFS_DEF_TIMEO_SEC;
+	sbi->http2 = ctx->http2;
+	xiofs_h2_reset(sbi);
 	strscpy(sbi->host, ctx->host, sizeof(sbi->host));
 	strscpy(sbi->export_path,
 		ctx->export_path[0] ? ctx->export_path : "/",
@@ -213,6 +238,7 @@ int xiofs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sb->s_magic = XIOFS_MAGIC;
 	sb->s_op = &xiofs_sops;
 	sb->s_d_op = &xiofs_dops;
+	sb->s_xattr = xiofs_xattr_handlers;
 	sb->s_time_gran = 1;
 	sb->s_blocksize = PAGE_SIZE;
 	sb->s_blocksize_bits = PAGE_SHIFT;
@@ -271,6 +297,9 @@ static int xiofs_fc_parse_param(struct fs_context *fc,
 		return 0;
 	case Opt_timeo:
 		ctx->timeo_sec = result.uint_32;
+		return 0;
+	case Opt_http2:
+		ctx->http2 = true;
 		return 0;
 	default:
 		return -EINVAL;

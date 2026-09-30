@@ -30,6 +30,10 @@ struct Attr {
   gid_t    gid{static_cast<gid_t>(-1)};
   bool     is_dir{false};
   bool     is_lnk{false};
+  bool     is_fifo{false};
+  bool     is_chr{false};
+  bool     is_blk{false};
+  dev_t    rdev{0};
   std::string etag;
   std::string path;
 };
@@ -63,6 +67,19 @@ public:
   int symlink(const std::string &linkpath, const std::string &target,
               std::string &err);
   int readlink(const std::string &relpath, std::string &target, std::string &err);
+  int mknod(const std::string &relpath, mode_t mode, dev_t rdev, std::string &err);
+  int getxattr(const std::string &relpath, const std::string &name,
+               std::string &value, std::string &err);
+  int setxattr(const std::string &relpath, const std::string &name,
+               const std::string &value, std::string &err);
+  int listxattr(const std::string &relpath, std::string &names, std::string &err);
+  int removexattr(const std::string &relpath, const std::string &name,
+                  std::string &err);
+  int lock(const std::string &relpath, const std::string &cmd,
+           const std::string &type, const std::string &whence,
+           long long start, long long len, std::string &err);
+  int flock(const std::string &relpath, const std::string &op, std::string &err);
+  int unlock(const std::string &relpath, std::string &err);
 
   const Url &base() const { return base_; }
   bool connected() const { return sess_.connected(); }

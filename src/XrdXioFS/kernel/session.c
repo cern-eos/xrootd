@@ -72,6 +72,7 @@ void xiofs_session_drop(struct xiofs_sb_info *sbi)
 		sockfd_put(sbi->sock);
 		sbi->sock = NULL;
 	}
+	xiofs_h2_reset(sbi);
 }
 
 int xiofs_session_wait(struct xiofs_sb_info *sbi)
@@ -157,6 +158,9 @@ static int xiofs_import_sock(struct xiofs_import_sock *im)
 	sbi->sock = sock;
 	sock = NULL;
 	sbi->tls = !!(im->flags & XIOFS_IMPORT_TLS);
+	if (im->flags & XIOFS_IMPORT_H2)
+		sbi->http2 = true;
+	xiofs_h2_reset(sbi);
 	if (im->flags & XIOFS_IMPORT_BEARER)
 		strscpy(sbi->bearer, im->bearer, sizeof(sbi->bearer));
 	xiofs_sock_set_timeo(sbi->sock, sbi->timeo_sec);

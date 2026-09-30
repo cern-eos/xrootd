@@ -68,10 +68,16 @@
 #include "XrdHttpStatic.hh"
 
 #include <sys/stat.h>
+#include <fcntl.h>
+#include <sys/file.h>
+#ifdef __linux__
+#include <sys/sysmacros.h>
+#endif
 #include <pwd.h>
 #include <grp.h>
 #include <cstdio>
 #include <cstdlib>
+#include <vector>
 
 #define MAX_TK_LEN      256
 #define MAX_RESOURCE_LEN 16384
@@ -223,9 +229,11 @@ void fillDirListFromStat(const char *s, DirListInfo &e)
   unsigned mode = 0;
   char owner[128] = {};
   char group[128] = {};
-  int n = sscanf(s, "%lld %lld %ld %ld %ld %ld %o %127s %127s",
+  char ftype[16] = {};
+  unsigned long long rdev = 0;
+  int n = sscanf(s, "%lld %lld %ld %ld %ld %ld %o %127s %127s %15s %llu",
                  &id, &e.size, &e.flags, &e.modtime, &ctime, &e.atime, &mode,
-                 owner, group);
+                 owner, group, ftype, &rdev);
   if (n < 4)
     return;
   e.id = static_cast<long>(id);
@@ -244,6 +252,10 @@ void fillDirListFromStat(const char *s, DirListInfo &e)
     e.uid = nameToUid(owner);
   if (n >= 9)
     e.gid = nameToGid(group);
+  if (n >= 10)
+    e.ftype = ftype;
+  if (n >= 11)
+    e.rdev = rdev;
 }
 
 void davAppendPosixProps(std::string &s, const DirListInfo &e)
@@ -252,13 +264,28 @@ void davAppendPosixProps(std::string &s, const DirListInfo &e)
   if (e.flags & kXR_isDir) {
     s += "<lp1:resourcetype><D:collection/></lp1:resourcetype>\n";
     s += "<lp1:iscollection>1</lp1:iscollection>\n";
-  } else if (e.flags & kXR_other) {
+  } else if (e.ftype == "fifo") {
+    s += "<lp1:resourcetype/>\n";
+    s += "<lp1:iscollection>0</lp1:iscollection>\n";
+    s += "<X:file-type>fifo</X:file-type>\n";
+  } else if (e.ftype == "chr" || e.ftype == "blk") {
+    s += "<lp1:resourcetype/>\n";
+    s += "<lp1:iscollection>0</lp1:iscollection>\n";
+    snprintf(tmp, sizeof(tmp), "<X:file-type>%s</X:file-type>\n<X:rdev>%llu</X:rdev>\n",
+             e.ftype.c_str(), e.rdev);
+    s += tmp;
+  } else if (e.flags & kXR_other || e.ftype == "lnk") {
     s += "<lp1:resourcetype><D:symlink/></lp1:resourcetype>\n";
     s += "<lp1:iscollection>0</lp1:iscollection>\n";
     s += "<X:other>1</X:other>\n";
+    s += "<X:file-type>lnk</X:file-type>\n";
   } else {
     s += "<lp1:resourcetype/>\n";
     s += "<lp1:iscollection>0</lp1:iscollection>\n";
+    if (!e.ftype.empty()) {
+      snprintf(tmp, sizeof(tmp), "<X:file-type>%s</X:file-type>\n", e.ftype.c_str());
+      s += tmp;
+    }
   }
   if (e.flags & kXR_xset)
     s += "<lp2:executable>T</lp2:executable>\n";
@@ -325,6 +352,10 @@ int XrdHttpReq::parsePropPatch(char *body, long long len)
   proppatchHaveAtime = proppatchHaveMtime = false;
   proppatchAtime = proppatchMtime = -1;
   proppatchDone = 0;
+  proppatchXattrName.clear();
+  proppatchXattrValue.clear();
+  proppatchXattrDel.clear();
+  fattrSubcode = -1;
   if (!body || len <= 0)
     return 0;
 
@@ -469,6 +500,15 @@ int XrdHttpReq::parsePropPatch(char *body, long long len)
           } else {
             item.status = 400;
           }
+        } else if (plocal == "xattr-name") {
+          item.status = 200;
+          proppatchXattrName = value;
+        } else if (plocal == "xattr-value") {
+          item.status = 200;
+          proppatchXattrValue = value;
+        } else if (plocal == "xattr-del") {
+          item.status = 200;
+          proppatchXattrDel = value;
         } else if (davIsLiveProp(plocal)) {
           item.status = 403;
         }
@@ -597,6 +637,15 @@ int XrdHttpReq::runPropPatchOps()
     return 1;
   }
 
+  if (!proppatchXattrDel.empty() && !(proppatchDone & 8)) {
+    proppatchDone |= 8;
+    return runFattrReq(kXR_fattrDel, proppatchXattrDel, {});
+  }
+  if (!proppatchXattrName.empty() && !(proppatchDone & 16)) {
+    proppatchDone |= 16;
+    return runFattrReq(kXR_fattrSet, proppatchXattrName, proppatchXattrValue);
+  }
+
   return sendPropPatchResult();
 }
 
@@ -671,6 +720,175 @@ int XrdHttpReq::runReadlinkReq()
   if (!prot->Bridge->Run((char *) &xrdreq,
                          (char *) resourceplusopaque.c_str(), l)) {
     prot->SendSimpleResp(500, NULL, NULL, (char *) "Could not run readlink request.", 0, false);
+    return -1;
+  }
+  return 1;
+}
+
+int XrdHttpReq::runMknodReq()
+{
+  request = rtMKNOD;
+  if (prot->fileCacheCloseIfOpen())
+    return 0;
+
+  mode_t mode = S_IFIFO | 0666;
+  auto mit = allheaders.find("xrd-mode");
+  if (mit != allheaders.end() && !mit->second.empty()) {
+    char *end = 0;
+    unsigned long mv = strtoul(mit->second.c_str(), &end, 8);
+    if (end != mit->second.c_str())
+      mode = static_cast<mode_t>(mv);
+  }
+  kXR_int64 rdev = 0;
+  auto dit = allheaders.find("xrd-dev");
+  if (dit != allheaders.end() && !dit->second.empty()) {
+    unsigned maj = 0, mino = 0;
+    if (sscanf(dit->second.c_str(), "%u:%u", &maj, &mino) == 2)
+      rdev = static_cast<kXR_int64>(makedev(maj, mino));
+    else
+      rdev = strtoll(dit->second.c_str(), 0, 10);
+  }
+
+  memset(&xrdreq, 0, sizeof(ClientRequest));
+  xrdreq.mknod.requestid = htons(kXR_mknod);
+  xrdreq.mknod.mode = htonl(static_cast<kXR_unt32>(mode));
+  kXR_int64 nr = htonll(rdev);
+  memcpy(xrdreq.mknod.rdev, &nr, 8);
+  int l = resourceplusopaque.length() + 1;
+  xrdreq.mknod.dlen = htonl(l);
+  if (!prot->Bridge->Run((char *)&xrdreq, (char *)resourceplusopaque.c_str(), l)) {
+    prot->SendSimpleResp(500, NULL, NULL, (char *)"Could not run mknod request.", 0, false);
+    return -1;
+  }
+  return 1;
+}
+
+int XrdHttpReq::runFattrReq(int subcode, const std::string &name,
+                            const std::string &value)
+{
+  if (request != rtPROPPATCH)
+    request = rtFATTR;
+  fattrSubcode = subcode;
+  std::vector<char> buf;
+  const char *path = resourceplusopaque.c_str();
+  size_t plen = strlen(path) + 1;
+  buf.insert(buf.end(), path, path + plen);
+  if (subcode != kXR_fattrList) {
+    size_t extra = name.size() + 3 + (subcode == kXR_fattrSet ? value.size() + 4 : 0);
+    buf.resize(buf.size() + extra);
+    char *p = buf.data() + plen;
+    p = ClientFattrRequest::NVecInsert(name.c_str(), p);
+    if (subcode == kXR_fattrSet)
+      p = ClientFattrRequest::VVecInsert(value.c_str(), p);
+    buf.resize(static_cast<size_t>(p - buf.data()));
+  }
+  memset(&xrdreq, 0, sizeof(ClientRequest));
+  xrdreq.fattr.requestid = htons(kXR_fattr);
+  xrdreq.fattr.subcode = static_cast<kXR_char>(subcode);
+  xrdreq.fattr.numattr = (subcode == kXR_fattrList) ? 0 : 1;
+  xrdreq.fattr.dlen = htonl(static_cast<kXR_int32>(buf.size()));
+  if (!prot->Bridge->Run((char *)&xrdreq, buf.data(),
+                         static_cast<int>(buf.size()))) {
+    prot->SendSimpleResp(500, NULL, NULL, (char *)"Could not run fattr request.", 0, false);
+    return -1;
+  }
+  return 1;
+}
+
+int XrdHttpReq::runLockReq(bool unlocking)
+{
+  request = unlocking ? rtUNLOCK : rtLOCK;
+  char fh[4] = {};
+  const std::string key = prot->fileCacheKey(*this);
+  bool have = prot->lockHoldGet(key, fh);
+  if (!have && prot->fileCacheApply(*this, true))
+    memcpy(fh, fhandle, 4), have = true;
+
+  if (!have && reqstate == 0 && !unlocking) {
+    if (prot->fileCacheCloseIfDifferent(*this))
+      return 0;
+    memset(&xrdreq, 0, sizeof(ClientRequest));
+    xrdreq.open.requestid = htons(kXR_open);
+    xrdreq.open.options = htons(kXR_open_updt | kXR_retstat);
+    int l = resourceplusopaque.length() + 1;
+    xrdreq.open.dlen = htonl(l);
+    if (!prot->Bridge->Run((char *)&xrdreq, (char *)resourceplusopaque.c_str(), l)) {
+      prot->SendSimpleResp(500, NULL, NULL, (char *)"Could not open for lock.", 0, false);
+      return -1;
+    }
+    return 1;
+  }
+
+  if (!have && unlocking) {
+    prot->SendSimpleResp(200, NULL, NULL, (char *)"OK", 0, keepalive);
+    return keepalive ? 1 : -1;
+  }
+
+  if (!have)
+    memcpy(fh, fhandle, 4);
+
+  auto cmdit = allheaders.find("xrd-lock-cmd");
+  std::string cmdname = cmdit != allheaders.end() ? cmdit->second : "SETLK";
+  for (char &c : cmdname)
+    c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+
+  memset(&xrdreq, 0, sizeof(ClientRequest));
+  xrdreq.fcntlLock.requestid = htons(kXR_fcntlLock);
+  memcpy(xrdreq.fcntlLock.fhandle, fh, 4);
+
+  if (cmdname == "FLOCK" || cmdname == "BSD") {
+    int op = unlocking ? LOCK_UN : LOCK_EX;
+    auto opit = allheaders.find("xrd-lock-op");
+    if (opit != allheaders.end()) {
+      std::string o = opit->second;
+      if (o == "SH" || o == "LOCK_SH" || o == "1") op = LOCK_SH;
+      else if (o == "EX" || o == "LOCK_EX" || o == "2") op = LOCK_EX;
+      else if (o == "UN" || o == "LOCK_UN" || o == "8") op = LOCK_UN;
+      if (o.find("NB") != std::string::npos || o.find("LOCK_NB") != std::string::npos)
+        op |= LOCK_NB;
+    }
+    if (unlocking) op = LOCK_UN;
+    xrdreq.fcntlLock.cmd = htons(static_cast<kXR_unt16>(kXR_flockCmd | op));
+    xrdreq.fcntlLock.dlen = htonl(0);
+    if (!prot->Bridge->Run((char *)&xrdreq, 0, 0)) {
+      prot->SendSimpleResp(500, NULL, NULL, (char *)"Could not run flock.", 0, false);
+      return -1;
+    }
+    return 1;
+  }
+
+  int fcmd = F_SETLK;
+  if (cmdname == "SETLKW") fcmd = F_SETLKW;
+  else if (cmdname == "GETLK") fcmd = F_GETLK;
+  if (unlocking) fcmd = F_SETLK;
+  xrdreq.fcntlLock.cmd = htons(static_cast<kXR_unt16>(fcmd));
+
+  kXR_int16 typ = htons(static_cast<kXR_int16>(unlocking ? F_UNLCK : F_WRLCK));
+  auto tit = allheaders.find("xrd-lock-type");
+  if (tit != allheaders.end() && !unlocking) {
+    std::string t = tit->second;
+    if (t == "RDLCK" || t == "R" || t == "1") typ = htons(F_RDLCK);
+    else if (t == "UNLCK" || t == "U" || t == "2") typ = htons(F_UNLCK);
+  }
+  kXR_int16 whence = htons(SEEK_SET);
+  auto wit = allheaders.find("xrd-lock-whence");
+  if (wit != allheaders.end()) {
+    if (wit->second == "CUR") whence = htons(SEEK_CUR);
+    else if (wit->second == "END") whence = htons(SEEK_END);
+  }
+  kXR_int64 start = 0, len = 0;
+  auto sit = allheaders.find("xrd-lock-start");
+  if (sit != allheaders.end()) start = htonll(strtoll(sit->second.c_str(), 0, 10));
+  auto lit = allheaders.find("xrd-lock-len");
+  if (lit != allheaders.end()) len = htonll(strtoll(lit->second.c_str(), 0, 10));
+  char payload[20];
+  memcpy(payload, &typ, 2);
+  memcpy(payload + 2, &whence, 2);
+  memcpy(payload + 4, &start, 8);
+  memcpy(payload + 12, &len, 8);
+  xrdreq.fcntlLock.dlen = htonl(20);
+  if (!prot->Bridge->Run((char *)&xrdreq, payload, 20)) {
+    prot->SendSimpleResp(500, NULL, NULL, (char *)"Could not run fcntlLock.", 0, false);
     return -1;
   }
   return 1;
@@ -992,6 +1210,12 @@ int XrdHttpReq::parseFirstLine(char *line, int len) {
       request = rtSYMLINK;
     } else if (!strcmp(key, "READLINK")) {
       request = rtREADLINK;
+    } else if (!strcmp(key, "MKNOD")) {
+      request = rtMKNOD;
+    } else if (!strcmp(key, "LOCK")) {
+      request = rtLOCK;
+    } else if (!strcmp(key, "UNLOCK")) {
+      request = rtUNLOCK;
     } else {
       request = rtUnknown;
     }
@@ -1825,6 +2049,10 @@ int XrdHttpReq::ProcessHTTPReq() {
 
         if (hdrTruthy(allheaders, "xrd-readlink"))
           return runReadlinkReq();
+        if (allheaders.count("xrd-xattr"))
+          return runFattrReq(kXR_fattrGet, allheaders["xrd-xattr"], {});
+        if (hdrTruthy(allheaders, "xrd-xattr-list"))
+          return runFattrReq(kXR_fattrList, {}, {});
 
         if (resource.beginswith("/static/")) {
 
@@ -2159,6 +2387,8 @@ int XrdHttpReq::ProcessHTTPReq() {
 
     case XrdHttpReq::rtPUT:
     {
+      if (hdrTruthy(allheaders, "xrd-mknod"))
+        return runMknodReq();
       //if (prot->ishttps) {
       //prot->SendSimpleResp(501, NULL, NULL, (char *) "HTTPS not supported yet for direct writing. Sorry.", 0);
       //return -1;
@@ -2215,7 +2445,7 @@ int XrdHttpReq::ProcessHTTPReq() {
     }
     case XrdHttpReq::rtOPTIONS:
     {
-      prot->SendSimpleResp(200, NULL, (char *) "DAV: 1\r\nDAV: bind\r\nDAV: <http://apache.org/dav/propset/fs/1>\r\nAllow: HEAD,GET,PUT,PATCH,PROPFIND,PROPPATCH,DELETE,OPTIONS,MOVE,MKCOL,LINK,BIND,SYMLINK,READLINK", NULL, 0, keepalive);
+      prot->SendSimpleResp(200, NULL, (char *) "DAV: 1\r\nDAV: bind\r\nDAV: <http://apache.org/dav/propset/fs/1>\r\nAllow: HEAD,GET,PUT,PATCH,PROPFIND,PROPPATCH,DELETE,OPTIONS,MOVE,MKCOL,LINK,BIND,SYMLINK,READLINK,MKNOD,LOCK,UNLOCK", NULL, 0, keepalive);
       bool ret_keepalive = keepalive; // reset() clears keepalive
       reset();
       return ret_keepalive ? 1 : -1;
@@ -2519,6 +2749,27 @@ int XrdHttpReq::ProcessHTTPReq() {
     case XrdHttpReq::rtREADLINK:
     {
       return runReadlinkReq();
+    }
+    case XrdHttpReq::rtMKNOD:
+    {
+      return runMknodReq();
+    }
+    case XrdHttpReq::rtLOCK:
+    {
+      return runLockReq(false);
+    }
+    case XrdHttpReq::rtUNLOCK:
+    {
+      return runLockReq(true);
+    }
+    case XrdHttpReq::rtFATTR:
+    {
+      if (allheaders.count("xrd-xattr-list"))
+        return runFattrReq(kXR_fattrList, {}, {});
+      if (allheaders.count("xrd-xattr"))
+        return runFattrReq(kXR_fattrGet, allheaders["xrd-xattr"], {});
+      prot->SendSimpleResp(400, NULL, NULL, (char *) "FATTR requires Xrd-Xattr.", 0, false);
+      return -1;
     }
     case XrdHttpReq::rtLINK:
     {
@@ -3572,6 +3823,74 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
                            (char *) "Content-Type: text/plain; charset=utf-8",
                            target.empty() ? NULL : (char *) target.c_str(),
                            target.length(), keepalive);
+      return keepalive ? 1 : -1;
+    }
+    case XrdHttpReq::rtMKNOD:
+    {
+      if (xrdresp != kXR_ok) {
+        prot->SendSimpleResp(httpStatusCode, NULL, NULL, (char *) etext.c_str(), 0, false);
+        return -1;
+      }
+      prot->SendSimpleResp(201, NULL, NULL, (char *) "Created", 0, keepalive);
+      return keepalive ? 1 : -1;
+    }
+    case XrdHttpReq::rtLOCK:
+    case XrdHttpReq::rtUNLOCK:
+    {
+      if (xrdresp != kXR_ok) {
+        prot->SendSimpleResp(httpStatusCode, NULL, NULL, (char *) etext.c_str(), 0, false);
+        return -1;
+      }
+      if (ntohs(xrdreq.header.requestid) == kXR_open) {
+        getfhandle();
+        prot->lockHoldPut(prot->fileCacheKey(*this), fhandle);
+        prot->fileCacheStore(*this, true);
+        return 0;
+      }
+      if (request == rtUNLOCK)
+        prot->lockHoldErase(prot->fileCacheKey(*this));
+      else
+        prot->lockHoldPut(prot->fileCacheKey(*this), fhandle);
+      std::string hdr;
+      if (iovN > 0 && iovP && iovP[0].iov_base && iovP[0].iov_len) {
+        hdr = "Content-Type: application/octet-stream";
+        prot->SendSimpleResp(200, NULL, (char *)hdr.c_str(),
+                             (char *)iovP[0].iov_base, iovP[0].iov_len, keepalive);
+      } else {
+        prot->SendSimpleResp(200, NULL, NULL, (char *) "OK", 0, keepalive);
+      }
+      return keepalive ? 1 : -1;
+    }
+    case XrdHttpReq::rtFATTR:
+    {
+      if (xrdresp != kXR_ok) {
+        prot->SendSimpleResp(httpStatusCode, NULL, NULL, (char *) etext.c_str(), 0, false);
+        return -1;
+      }
+      std::string body;
+      if (iovN > 0 && iovP && iovP[0].iov_base && iovP[0].iov_len)
+        body.assign(static_cast<const char *>(iovP[0].iov_base),
+                    static_cast<size_t>(iovP[0].iov_len));
+      if (fattrSubcode == kXR_fattrGet && body.size() >= 8) {
+        size_t i = 4;
+        while (i < body.size() && body[i])
+          i++;
+        if (i < body.size()) {
+          i++;
+          if (i + 4 <= body.size()) {
+            kXR_int32 vlen = 0;
+            memcpy(&vlen, body.data() + i, 4);
+            vlen = ntohl(vlen);
+            i += 4;
+            if (vlen >= 0 && i + static_cast<size_t>(vlen) <= body.size())
+              body = body.substr(i, static_cast<size_t>(vlen));
+          }
+        }
+      }
+      prot->SendSimpleResp(200, NULL,
+                           (char *) "Content-Type: application/octet-stream",
+                           body.empty() ? NULL : (char *) body.c_str(),
+                           body.length(), keepalive);
       return keepalive ? 1 : -1;
     }
     case XrdHttpReq::rtLINK:

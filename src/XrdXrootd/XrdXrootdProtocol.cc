@@ -597,6 +597,8 @@ int XrdXrootdProtocol::Process2()
           case kXR_symlink:   return do_Symlink();
           case kXR_readlink:  return do_Readlink();
           case kXR_utimes:    return do_Utimes();
+          case kXR_mknod:     return do_Mknod();
+          case kXR_fcntlLock: return do_FcntlLock();
           case kXR_query:     return do_Query();
           case kXR_prepare:   return do_Prepare();
           case kXR_rm:        return do_Rm();
@@ -848,6 +850,24 @@ int XrdXrootdProtocol::StatGen(struct stat &buf, char *xxBuff, int xxLen,
        if (!(n = XrdOucUtils::GidName(buf.st_gid,xxBuff,xxLen,keepT))) return m;
       }
    xxBuff += n+1;
+
+// Tack on file type and rdev so HTTP/FUSE can distinguish fifo/device/symlink.
+//
+   {
+      const char *ft = "reg";
+      if (S_ISDIR(buf.st_mode))       ft = "dir";
+      else if (S_ISLNK(buf.st_mode))  ft = "lnk";
+      else if (S_ISFIFO(buf.st_mode)) ft = "fifo";
+      else if (S_ISCHR(buf.st_mode))  ft = "chr";
+      else if (S_ISBLK(buf.st_mode))  ft = "blk";
+      else if (S_ISSOCK(buf.st_mode)) ft = "sock";
+      n = snprintf(xxBuff, xxLen, " %s %llu", ft,
+                   (unsigned long long)buf.st_rdev);
+      if (n < xxLen) {
+         xxBuff += n;
+         xxLen -= n;
+      }
+   }
 
 // All done, return full response
 //

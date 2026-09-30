@@ -61,6 +61,8 @@ struct DirListInfo {
   unsigned mode{0};
   uid_t uid{(uid_t)-1};
   gid_t gid{(gid_t)-1};
+  std::string ftype;
+  unsigned long long rdev{0};
 };
 
 
@@ -97,6 +99,10 @@ public:
     rtLINK,
     rtSYMLINK,
     rtREADLINK,
+    rtMKNOD,
+    rtLOCK,
+    rtUNLOCK,
+    rtFATTR,
     rtCount
   };
 
@@ -277,6 +283,15 @@ public:
   /// READLINK (or GET with Xrd-Readlink: 1).
   int runReadlinkReq();
 
+  /// MKNOD (or PUT with Xrd-Mknod: 1).
+  int runMknodReq();
+
+  /// Path-based kXR_fattr (GET Xrd-Xattr / PROPPATCH xattr-*).
+  int runFattrReq(int subcode, const std::string &name, const std::string &value);
+
+  /// LOCK / UNLOCK (fcntl or flock on an open handle).
+  int runLockReq(bool unlocking);
+
   /// Prepare the buffers for sending a readv request
   int ReqReadV(const XrdHttpIOList &cl);
   std::vector<readahead_list> ralist;
@@ -426,6 +441,10 @@ public:
   long long proppatchAtime{-1};
   long long proppatchMtime{-1};
   int proppatchDone{0};
+  std::string proppatchXattrName;
+  std::string proppatchXattrValue;
+  std::string proppatchXattrDel;
+  int fattrSubcode{-1};
 
   int mScitag;
 

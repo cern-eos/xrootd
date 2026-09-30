@@ -114,7 +114,36 @@ TEST(XioDav, ParsePosixProps)
   EXPECT_EQ(static_cast<time_t>(1335840133), ents[0].mtime);
 }
 
-TEST(XioDav, HrefBasename)
+TEST(XioDav, ParseFifoAndDevice)
+{
+  const char *xml =
+      "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+      "<D:multistatus xmlns:D=\"DAV:\" xmlns:X=\"http://xrootd.org/ns\">\n"
+      "<D:response>\n"
+      "<D:href>/export/pipe</D:href>\n"
+      "<D:propstat><D:prop>\n"
+      "<X:file-type>fifo</X:file-type>\n"
+      "<X:unix-mode>0644</X:unix-mode>\n"
+      "</D:prop></D:propstat></D:response>\n"
+      "<D:response>\n"
+      "<D:href>/export/null</D:href>\n"
+      "<D:propstat><D:prop>\n"
+      "<X:file-type>chr</X:file-type>\n"
+      "<X:rdev>259</X:rdev>\n"
+      "<X:unix-mode>0666</X:unix-mode>\n"
+      "</D:prop></D:propstat></D:response>\n"
+      "</D:multistatus>\n";
+
+  std::vector<DavEntry> ents;
+  std::string err;
+  ASSERT_TRUE(parseMultistatus(xml, ents, err)) << err;
+  ASSERT_EQ(2u, ents.size());
+  EXPECT_TRUE(ents[0].is_fifo);
+  EXPECT_FALSE(ents[0].is_dir);
+  EXPECT_EQ("pipe", ents[0].name);
+  EXPECT_TRUE(ents[1].is_chr);
+  EXPECT_EQ(static_cast<dev_t>(259), ents[1].rdev);
+}
 {
   EXPECT_EQ("file.txt", hrefBasename("/export/file.txt"));
   EXPECT_EQ("dir", hrefBasename("/export/dir/"));

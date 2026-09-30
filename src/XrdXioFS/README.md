@@ -23,7 +23,7 @@ Later, `xiofs.ko` keeps the data path in-kernel on **AlmaLinux 9
 
 ```
 VFS -> page cache / readahead / writeback
-    -> xiofs.ko -> HTTP/1.1 -> kTLS -> TCP -> XrdHttp
+    -> xiofs.ko -> HTTP/1.1 or serial HTTP/2 -> kTLS -> TCP -> XrdHttp
 ```
 
 `xiofsagent` (Linux) does the TLS handshake and certificate checks, installs
@@ -48,6 +48,11 @@ kTLS, and imports the socket via `/dev/xiofsctl`. See
 | hard link | `LINK` (`Destination:`) |
 | symlink | `SYMLINK` (`Xrd-Symlink-Target`) or `LINK` + `Xrd-Link-Type: symbolic` |
 | readlink | `READLINK` or `GET` + `Xrd-Readlink: 1` |
+| mknod (fifo/device) | `MKNOD` or `PUT` + `Xrd-Mknod: 1` (`Xrd-Mode`, `Xrd-Dev`) |
+| getxattr | `GET` + `Xrd-Xattr` |
+| setxattr / removexattr | `PROPPATCH` `X:xattr-name` / `X:xattr-value` / `X:xattr-del` |
+| listxattr | `GET` + `Xrd-Xattr-List: 1` |
+| POSIX lock / flock | `LOCK` / `UNLOCK` |
 
 Identity is **URL path + ETag** (XrdHttp `ETag` from `StatGen`).
 
@@ -76,6 +81,9 @@ xiofscli --cacert ca.pem https://localhost:7097/path/file.txt chmod 0644
 xiofscli --cacert ca.pem https://localhost:7097/path/file.txt chown 1000 1000
 xiofscli --cacert ca.pem https://localhost:7097/path/link symlink /target
 xiofscli --cacert ca.pem https://localhost:7097/path/link readlink
+xiofscli --cacert ca.pem https://localhost:7097/path/pipe mknod 010644
+xiofscli --cacert ca.pem https://localhost:7097/path/file.txt setxattr user.foo bar
+xiofscli --cacert ca.pem https://localhost:7097/path/file.txt lock SETLK WRLCK 0 0
 ```
 
 XrdHttp's `xrd.tls` context did not advertise ALPN `h2`, and TLS 1.3
@@ -97,8 +105,10 @@ are MKCOL / DELETE / MOVE. `chmod` is PROPPATCH; `chown` and `utimens` are
 PROPPATCH `X:uid`/`X:gid`/`X:atime`/`X:mtime`. `link` is LINK. `symlink` is
 SYMLINK (HTTP/2) with a LINK + `Xrd-Link-Type: symbolic` fallback. `readlink`
 is READLINK, or GET + `Xrd-Readlink: 1` on HTTP/1. getattr uses PROPFIND
-`X:unix-mode`/`X:uid`/`X:gid`/`D:symlink`. Regular `mknod` is PUT; fifo/device
-nodes remain `EPERM`. `auto_cache` repeated 4 KiB reads; `xiofscli` remains the
+`X:unix-mode`/`X:uid`/`X:gid`/`X:file-type`/`X:rdev`/`D:symlink`. `mknod` of
+fifo/device is MKNOD (PUT + `Xrd-Mknod` fallback). xattrs are GET
+`Xrd-Xattr` / PROPPATCH. POSIX `lock`/`flock` are LOCK/UNLOCK. `auto_cache`
+repeated 4 KiB reads; `xiofscli` remains the
 non-FUSE client.
 
 The HTTP/2 session keeps one TLS connection and multiplexes streams on
@@ -108,7 +118,8 @@ other to finish.
 ## xiofsagent (Linux kernel mount)
 
 Needs `xiofs.ko` (`modprobe tls; insmod xiofs.ko`) and OpenSSL built with
-`enable-ktls`. The kernel path speaks HTTP/1.1; kTLS RX on Alma 9's OpenSSL
+`enable-ktls`. The kernel path speaks HTTP/1.1 by default, or serial HTTP/2 with `--http2`
+(ALPN `h2`, mount option `http2`). kTLS RX on Alma 9's OpenSSL
 3.0 needs TLS 1.2 AES-GCM or ChaCha20 (the agent retries TLS 1.2 if TLS 1.3
 only got TX).
 

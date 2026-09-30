@@ -7,6 +7,8 @@
 // to empty use PUT. mkdir/unlink/rename map to MKCOL/DELETE/MOVE.
 // chmod/chown/utimens are PROPPATCH. symlink is SYMLINK (LINK fallback);
 // readlink is READLINK (GET + Xrd-Readlink: 1 fallback).
+// mknod of fifo/device is MKNOD (PUT + Xrd-Mknod fallback). xattrs are GET
+// Xrd-Xattr / PROPPATCH. POSIX locks are LOCK/UNLOCK.
 // Writes send If-Match from the ETag captured at open.
 //
 // Copyright (c) 2026 by the XRootD Collaboration
@@ -30,6 +32,11 @@
 #include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
+#ifdef __linux__
+#include <sys/file.h>
+#include <sys/sysmacros.h>
+#include <sys/xattr.h>
+#endif
 #include <time.h>
 #include <unistd.h>
 #include <vector>
@@ -59,8 +66,15 @@ void fillStat(const XioFS::Attr &a, struct stat *st)
     type = S_IFDIR;
   else if (a.is_lnk)
     type = S_IFLNK;
+  else if (a.is_fifo)
+    type = S_IFIFO;
+  else if (a.is_chr)
+    type = S_IFCHR;
+  else if (a.is_blk)
+    type = S_IFBLK;
   const mode_t perm = a.mode ? (a.mode & 07777) : (a.is_dir ? 0755 : 0644);
   st->st_mode = type | perm;
+  st->st_rdev = a.rdev;
   st->st_size = a.size < 0 ? 0 : a.size;
   st->st_mtime = a.mtime;
   st->st_atime = a.atime ? a.atime : a.mtime;
@@ -145,6 +159,10 @@ int xiofs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     a.gid = e.gid;
     a.is_dir = e.is_dir;
     a.is_lnk = e.is_lnk;
+    a.is_fifo = e.is_fifo;
+    a.is_chr = e.is_chr;
+    a.is_blk = e.is_blk;
+    a.rdev = e.rdev;
     fillStat(a, &st);
     if (filler(buf, e.name.c_str(), &st, 0) != 0)
       break;
@@ -336,18 +354,20 @@ int xiofs_readlink(const char *path, char *buf, size_t size)
   return 0;
 }
 
-int xiofs_mknod(const char *path, mode_t mode, dev_t)
+int xiofs_mknod(const char *path, mode_t mode, dev_t rdev)
 {
-  if (!S_ISREG(mode) && (mode & S_IFMT) != 0)
-    return -EPERM;
-  int rc = putEmpty(path);
-  if (rc)
-    return rc;
-  if (mode & 07777) {
-    std::string err;
-    return g_client.chmod(path, mode, err);
+  if (S_ISREG(mode) || (mode & S_IFMT) == 0) {
+    int rc = putEmpty(path);
+    if (rc)
+      return rc;
+    if (mode & 07777) {
+      std::string err;
+      return g_client.chmod(path, mode, err);
+    }
+    return 0;
   }
-  return 0;
+  std::string err;
+  return g_client.mknod(path, mode, rdev, err);
 }
 
 int xiofs_utimens(const char *path, const struct timespec tv[2])
@@ -370,6 +390,101 @@ int xiofs_fsync(const char *, int, struct fuse_file_info *)
 {
   return 0;
 }
+
+#if defined(__APPLE__)
+int xiofs_setxattr(const char *path, const char *name, const char *value,
+                   size_t size, int, uint32_t)
+#else
+int xiofs_setxattr(const char *path, const char *name, const char *value,
+                   size_t size, int)
+#endif
+{
+  std::string err;
+  return g_client.setxattr(path, name, std::string(value, size), err);
+}
+
+#if defined(__APPLE__)
+int xiofs_getxattr(const char *path, const char *name, char *buf, size_t size,
+                   uint32_t)
+#else
+int xiofs_getxattr(const char *path, const char *name, char *buf, size_t size)
+#endif
+{
+  std::string value;
+  std::string err;
+  int rc = g_client.getxattr(path, name, value, err);
+  if (rc)
+    return rc;
+  if (!buf)
+    return static_cast<int>(value.size());
+  if (size < value.size())
+    return -ERANGE;
+  memcpy(buf, value.data(), value.size());
+  return static_cast<int>(value.size());
+}
+
+int xiofs_listxattr(const char *path, char *buf, size_t size)
+{
+  std::string names;
+  std::string err;
+  int rc = g_client.listxattr(path, names, err);
+  if (rc)
+    return rc;
+  if (!buf)
+    return static_cast<int>(names.size());
+  if (size < names.size())
+    return -ERANGE;
+  memcpy(buf, names.data(), names.size());
+  return static_cast<int>(names.size());
+}
+
+int xiofs_removexattr(const char *path, const char *name)
+{
+  std::string err;
+  return g_client.removexattr(path, name, err);
+}
+
+int xiofs_lock(const char *path, struct fuse_file_info *, int cmd,
+               struct flock *fl)
+{
+  if (!fl)
+    return -EINVAL;
+  std::string err;
+  if (fl->l_type == F_UNLCK || cmd == F_UNLCK)
+    return g_client.unlock(path, err);
+  const char *lcmd = "SETLK";
+  if (cmd == F_SETLKW)
+    lcmd = "SETLKW";
+  else if (cmd == F_GETLK)
+    lcmd = "GETLK";
+  const char *typ = "WRLCK";
+  if (fl->l_type == F_RDLCK)
+    typ = "RDLCK";
+  const char *wh = "SET";
+  if (fl->l_whence == SEEK_CUR)
+    wh = "CUR";
+  else if (fl->l_whence == SEEK_END)
+    wh = "END";
+  return g_client.lock(path, lcmd, typ, wh, static_cast<long long>(fl->l_start),
+                       static_cast<long long>(fl->l_len), err);
+}
+
+#ifdef __linux__
+int xiofs_flock(const char *path, struct fuse_file_info *, int op)
+{
+  std::string err;
+  std::string name = "EX";
+  if (op & LOCK_UN)
+    name = "UN";
+  else if (op & LOCK_SH)
+    name = "SH";
+  if (op & LOCK_NB)
+    name += "NB";
+  if (op & LOCK_UN)
+    return g_client.unlock(path, err);
+  return g_client.flock(path, name, err);
+}
+#endif
 
 fuse_operations xiofs_ops()
 {
@@ -395,6 +510,14 @@ fuse_operations xiofs_ops()
   ops.utimens = xiofs_utimens;
   ops.access = xiofs_access;
   ops.fsync = xiofs_fsync;
+  ops.setxattr = xiofs_setxattr;
+  ops.getxattr = xiofs_getxattr;
+  ops.listxattr = xiofs_listxattr;
+  ops.removexattr = xiofs_removexattr;
+  ops.lock = xiofs_lock;
+#ifdef __linux__
+  ops.flock = xiofs_flock;
+#endif
   return ops;
 }
 

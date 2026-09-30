@@ -2619,6 +2619,11 @@ bool XrdHttpProtocol::fileCacheBeginClose()
 {
   if (!fileCache_.valid || !Bridge)
     return false;
+  if (lockHoldHas(fileCache_.key)) {
+    TRACE(REQ, "Leaving lock-held open " << fileCache_.key.c_str());
+    fileCacheForget();
+    return false;
+  }
 
   ClientRequest creq;
   memset(&creq, 0, sizeof(creq));
@@ -2671,6 +2676,30 @@ void XrdHttpProtocol::fileCacheForget()
   fileCacheHoldReqstate_ = false;
   fileCacheVerifyPending_ = false;
   fileCacheReopenPending_ = false;
+}
+
+void XrdHttpProtocol::lockHoldPut(const std::string &key, const char fh[4])
+{
+  lockHolds_[key].assign(fh, 4);
+}
+
+bool XrdHttpProtocol::lockHoldGet(const std::string &key, char fh[4]) const
+{
+  auto it = lockHolds_.find(key);
+  if (it == lockHolds_.end() || it->second.size() != 4)
+    return false;
+  memcpy(fh, it->second.data(), 4);
+  return true;
+}
+
+void XrdHttpProtocol::lockHoldErase(const std::string &key)
+{
+  lockHolds_.erase(key);
+}
+
+bool XrdHttpProtocol::lockHoldHas(const std::string &key) const
+{
+  return lockHolds_.count(key) != 0;
 }
 
 bool XrdHttpProtocol::fileCacheTakeVerifyPending()

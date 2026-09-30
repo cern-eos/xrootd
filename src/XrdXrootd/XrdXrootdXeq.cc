@@ -35,6 +35,8 @@
 #include <string>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <fcntl.h>
+#include <sys/file.h>
 #include <vector>
 
 #include "XrdSfs/XrdSfsInterface.hh"
@@ -1470,6 +1472,95 @@ int XrdXrootdProtocol::do_Utimes()
    if (SFS_OK == rc) return Response.Send();
 
    return fsError(rc, XROOTD_MON_CHMOD, myError, argp->buff, opaque);
+}
+
+/******************************************************************************/
+/*                              d o _ M k n o d                               */
+/******************************************************************************/
+
+int XrdXrootdProtocol::do_Mknod()
+{
+   char *opaque;
+   XrdOucErrInfo myError(Link->ID, Monitor.Did, clientPV);
+   mode_t mode = static_cast<mode_t>(ntohl(Request.mknod.mode));
+   kXR_int64 rdevn;
+   int rc;
+
+   memcpy(&rdevn, Request.mknod.rdev, 8);
+   rdevn = ntohll(rdevn);
+   STATIC_REDIRECT(RD_open1);
+
+   if (rpCheck(argp->buff, &opaque)) return rpEmsg("Creating node", argp->buff);
+   if (!Squash(argp->buff))          return vpEmsg("Creating node", argp->buff);
+
+   rc = osFS->mknod(argp->buff, mode, static_cast<dev_t>(rdevn),
+                    myError, CRED, opaque);
+   TRACEP(FS, "mknod rc=" <<rc <<" mode=" <<(unsigned)mode <<' ' <<argp->buff);
+   if (SFS_OK == rc) return Response.Send();
+
+   return fsError(rc, XROOTD_MON_OPEN, myError, argp->buff, opaque);
+}
+
+/******************************************************************************/
+/*                         d o _ F c n t l L o c k                            */
+/******************************************************************************/
+
+int XrdXrootdProtocol::do_FcntlLock()
+{
+   XrdXrootdFile *fp;
+   XrdXrootdFHandle fh(Request.fcntlLock.fhandle);
+   kXR_unt16 cmd = ntohs(Request.fcntlLock.cmd);
+   int rc;
+
+   if (!FTab || !(fp = FTab->Get(fh.handle)))
+      return Response.Send(kXR_FileNotOpen,
+                           "fcntlLock does not refer to an open file");
+
+   if (cmd & kXR_flockCmd) {
+      int op = static_cast<int>(cmd & ~kXR_flockCmd);
+      rc = fp->XrdSfsp->flock(op);
+      TRACEP(FS, "flock rc=" <<rc <<" op=" <<op);
+      if (SFS_OK != rc)
+         return fsError(rc, 0, fp->XrdSfsp->error, 0, 0);
+      return Response.Send();
+   }
+
+   struct flock fl;
+   memset(&fl, 0, sizeof(fl));
+   if (Request.header.dlen >= 20 && argp && argp->buff) {
+      kXR_int16 typ, whence;
+      kXR_int64 start, len;
+      memcpy(&typ, argp->buff, 2);
+      memcpy(&whence, argp->buff + 2, 2);
+      memcpy(&start, argp->buff + 4, 8);
+      memcpy(&len, argp->buff + 12, 8);
+      fl.l_type = ntohs(typ);
+      fl.l_whence = ntohs(whence);
+      fl.l_start = (off_t)ntohll(start);
+      fl.l_len = (off_t)ntohll(len);
+   } else {
+      fl.l_type = F_UNLCK;
+      fl.l_whence = SEEK_SET;
+   }
+
+   rc = fp->XrdSfsp->fcntlLock(static_cast<int>(cmd), &fl);
+   TRACEP(FS, "fcntlLock rc=" <<rc <<" cmd=" <<cmd);
+   if (SFS_OK != rc)
+      return fsError(rc, 0, fp->XrdSfsp->error, 0, 0);
+
+   if (cmd == F_GETLK) {
+      char out[20];
+      kXR_int16 typ = htons(static_cast<kXR_int16>(fl.l_type));
+      kXR_int16 whence = htons(static_cast<kXR_int16>(fl.l_whence));
+      kXR_int64 start = htonll((kXR_int64)fl.l_start);
+      kXR_int64 len = htonll((kXR_int64)fl.l_len);
+      memcpy(out, &typ, 2);
+      memcpy(out + 2, &whence, 2);
+      memcpy(out + 4, &start, 8);
+      memcpy(out + 12, &len, 8);
+      return Response.Send(out, 20);
+   }
+   return Response.Send();
 }
 
 /******************************************************************************/

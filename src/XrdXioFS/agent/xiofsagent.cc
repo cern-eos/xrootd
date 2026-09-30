@@ -3,7 +3,8 @@
 //
 // Completes the OpenSSL handshake, lets the kernel take over the TLS
 // record layer (kTLS), and imports the socket into a mounted XIOFS.
-// Steady-state HTTP/1.1 then stays in the module.
+// Steady-state HTTP/1.1 (or serial HTTP/2 with --http2) then stays in the
+// module.
 //
 //   xiofsagent [--cacert FILE] [--insecure] [--token TOK | --tokenfile F]
 //              [--import-only] URL [MOUNTPOINT]
@@ -62,6 +63,7 @@ struct Options {
   bool import_only{false};
   bool verbose{false};
   bool fake{false};
+  bool http2{false};
 };
 
 void usage(const char *argv0)
@@ -69,10 +71,12 @@ void usage(const char *argv0)
   std::cerr
       << "Usage: " << argv0 << " [--cacert FILE] [--insecure]\n"
       << "          [--token TOK | --tokenfile FILE] [--import-only]\n"
-      << "          [--actimeo SEC] [--timeo SEC] URL [MOUNTPOINT]\n"
+      << "          [--actimeo SEC] [--timeo SEC] [--http2] URL [MOUNTPOINT]\n"
       << "\n"
       << "  Handshake to URL, install kTLS, import the socket into xiofs.ko.\n"
       << "  With MOUNTPOINT (default), mount -t xiofs first then import.\n"
+      << "  --import-only assumes the filesystem is already mounted.\n"
+      << "  --http2: ALPN h2 and XIOFS_IMPORT_H2 (serial in-kernel HTTP/2).\n"
       << "  --import-only assumes the filesystem is already mounted.\n"
       << "  --actimeo metadata TTL (default 30, 0 = always revalidate).\n"
       << "  --timeo socket wait/recv timeout seconds (default 30).\n"
@@ -203,6 +207,10 @@ int tlsHandshake(int fd, const XioFS::Url &url, const Options &opt,
                                 "TLS_AES_256_GCM_SHA384:"
                                 "TLS_CHACHA20_POLY1305_SHA256");
 #endif
+  if (opt.http2) {
+    static const unsigned char alpn[] = {2, 'h', '2'};
+    SSL_CTX_set_alpn_protos(ctx, alpn, sizeof(alpn));
+  }
 
   if (opt.verify_peer) {
     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, nullptr);
@@ -231,6 +239,10 @@ int tlsHandshake(int fd, const XioFS::Url &url, const Options &opt,
 #ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
   SSL_set1_host(ssl, url.host.c_str());
 #endif
+  if (opt.http2) {
+    static const unsigned char alpn[] = {2, 'h', '2'};
+    SSL_set_alpn_protos(ssl, alpn, sizeof(alpn));
+  }
 
   int rc = SSL_connect(ssl);
   if (rc != 1) {
@@ -306,6 +318,8 @@ int importSock(int fd, const XioFS::Url &url, const Options &opt,
   im.flags = 0;
   if (url.tls)
     im.flags |= XIOFS_IMPORT_TLS;
+  if (opt.http2)
+    im.flags |= XIOFS_IMPORT_H2;
   if (!opt.bearer.empty()) {
     im.flags |= XIOFS_IMPORT_BEARER;
     std::snprintf(im.bearer, sizeof(im.bearer), "%s", opt.bearer.c_str());
@@ -335,6 +349,8 @@ std::string kernelMountData(const XioFS::Url &url, const Options &opt)
   os << "host=" << url.host << ",port=" << url.port << ",path="
      << (url.path.empty() ? "/" : url.path)
      << ",actimeo=" << opt.actimeo << ",timeo=" << opt.timeo;
+  if (opt.http2)
+    os << ",http2";
   return os.str();
 }
 
@@ -394,6 +410,8 @@ bool applyMountOpt(const std::string &kv, Options &opt, XioFS::Url &url,
     opt.actimeo = static_cast<unsigned>(std::atoi(val.c_str()));
   else if (key == "timeo")
     opt.timeo = static_cast<unsigned>(std::atoi(val.c_str()));
+  else if (key == "http2")
+    opt.http2 = true;
   else {
     err = "unknown mount option: " + key;
     return false;
@@ -507,6 +525,8 @@ int parseAgentArgs(int argc, char **argv, Options &opt, std::string &err)
       opt.actimeo = static_cast<unsigned>(std::atoi(argv[++i]));
     else if (a == "--timeo" && i + 1 < argc)
       opt.timeo = static_cast<unsigned>(std::atoi(argv[++i]));
+    else if (a == "--http2")
+      opt.http2 = true;
     else if (a == "--verbose" || a == "-v")
       opt.verbose = true;
     else if (a == "-h" || a == "--help") {
