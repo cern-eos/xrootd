@@ -55,10 +55,13 @@ function setup() {
 	# curl/GSSAPI does not keep the URL host as "localhost".
 	local http_hosts="localhost"
 	local hn
-	for hn in "$(hostname -s 2>/dev/null || true)" \
-		"$(hostname 2>/dev/null || true)" \
-		"$(hostname -f 2>/dev/null || true)"; do
-		[[ -n "${hn}" && "${hn}" != "localhost" ]] || continue
+	local host_re='^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$'
+	for hn in "$(hostname -s 2>/dev/null || true)" "$(hostname 2>/dev/null || true)"; do
+		# Host-based principals only accept a DNS-ish instance name.
+		# hostname -f is not used here: on CI it can be an Azure FQDN
+		# or garbage on stdout, and a failed add_principal aborts setup.
+		[[ "${hn}" =~ ${host_re} ]] || continue
+		[[ "${hn}" != "localhost" ]] || continue
 		case " ${http_hosts} " in
 			*" ${hn} "*) ;;
 			*) http_hosts="${http_hosts} ${hn}" ;;
@@ -68,14 +71,20 @@ function setup() {
 	{
 		echo "add_principal -randkey -kvno 1 host/localhost@XROOTD.ORG"
 		echo "ktadd -k krb5.keytab host/localhost"
-		for hn in ${http_hosts}; do
-			echo "add_principal -randkey -kvno 1 HTTP/${hn}@XROOTD.ORG"
-			echo "ktadd -k krb5.keytab HTTP/${hn}"
-		done
+		echo "add_principal -randkey -kvno 1 HTTP/localhost@XROOTD.ORG"
+		echo "ktadd -k krb5.keytab HTTP/localhost"
 		echo "add_principal xrootd@XROOTD.ORG"
 		echo "xrootd"
 		echo "xrootd"
 	} | kadmin.local -r XROOTD.ORG
+
+	for hn in ${http_hosts}; do
+		[[ "${hn}" != "localhost" ]] || continue
+		{
+			echo "add_principal -randkey -kvno 1 HTTP/${hn}@XROOTD.ORG"
+			echo "ktadd -k krb5.keytab HTTP/${hn}"
+		} | kadmin.local -r XROOTD.ORG || true
+	done
 
 	# Display KDC database entries
 	kdb5_util tabdump -o - keyinfo
@@ -93,7 +102,8 @@ function teardown() {
 			rm "${PIDFILE}"
 		fi
 	fi
-	tail -n "${MAXLINES:-200}" kdc/*.log
+	# setup may fail before the KDC creates logs; do not fail cleanup.
+	tail -n "${MAXLINES:-200}" kdc/*.log 2>/dev/null || true
 	rm -f "${KRB5CCNAME}" krb5.keytab kdc/{db*,*.{log,pem,srl}}
 }
 
