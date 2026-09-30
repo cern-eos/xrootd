@@ -1770,7 +1770,7 @@ int XrdHttpReq::processWritePayload()
 {
   const char *verb = (request == rtPATCH) ? "PATCH" : "PUT";
 
-  if (request == rtPATCH && sendcontinue && writtenbytes == 0) {
+  if (sendcontinue && writtenbytes == 0) {
     sendcontinue = false;
     prot->SendSimpleResp(100, NULL, NULL, 0, 0, keepalive);
     if (!prot->BuffUsed())
@@ -2432,10 +2432,11 @@ int XrdHttpReq::ProcessHTTPReq() {
         }
 
 
-        // We want to be invoked again after this request is finished
-        // Only if there is data to fetch from the socket or there will
-        // never be more data
-        if (prot->BuffUsed() > 0 || (length == 0 && !sendcontinue))
+        // Wait for OPEN to finish when we already have payload, the PUT is
+        // empty, or we still need to emit 100-continue before reading the body.
+        // Returning 1 here for Expect: 100-continue waits on the socket while
+        // the client waits for 100, then stalls after one TCP window.
+        if (prot->BuffUsed() > 0 || length == 0 || sendcontinue)
           return 0;
 
         return 1;
@@ -2555,7 +2556,7 @@ int XrdHttpReq::ProcessHTTPReq() {
             return -1;
           }
 
-          if (prot->BuffUsed() > 0 || (length == 0 && !sendcontinue))
+          if (prot->BuffUsed() > 0 || length == 0 || sendcontinue)
             return 0;
           return 1;
         }
@@ -3540,6 +3541,7 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
         prot->ResumeBytes = std::min(length - writtenbytes, (long long) prot->BuffAvailable());
 
         if (sendcontinue) {
+          sendcontinue = false;
           prot->SendSimpleResp(100, NULL, NULL, 0, 0, keepalive);
           return 0;
         }

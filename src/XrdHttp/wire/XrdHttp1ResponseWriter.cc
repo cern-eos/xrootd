@@ -36,10 +36,14 @@ int XrdHttp1ResponseWriter::startSimple(XrdHttpProtocol &prot, int code,
   }
   ss << crlf;
 
-  if (keepalive && (code != 100))
-    ss << "Connection: Keep-Alive" << crlf;
-  else
-    ss << "Connection: Close" << crlf;
+  // RFC 9112: 1xx is interim. Do not advertise Connection: close on 100
+  // Continue or curl/libcurl will stop the PUT after the first buffer.
+  if (code != 100) {
+    if (keepalive)
+      ss << "Connection: Keep-Alive" << crlf;
+    else
+      ss << "Connection: Close" << crlf;
+  }
 
   ss << "Server: XRootD" << crlf;
 

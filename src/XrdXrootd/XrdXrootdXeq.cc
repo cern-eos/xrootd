@@ -817,7 +817,7 @@ int XrdXrootdProtocol::do_DirStat(XrdSfsDirectory *dp, char *pbuff,
    struct stat Stat;
    char *buff, *dLoc, *algT = 0;
    const char *csData, *dname;
-   int bleft, rc = 0, dlen, cnt = 0, statSz = 160;
+   int bleft, rc = 0, dlen, cnt = 0, statSz = 256;
    bool manStat;
    struct {char ebuff[8192]; char epad[512];} XB;
 

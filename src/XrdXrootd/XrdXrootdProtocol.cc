@@ -849,9 +849,13 @@ int XrdXrootdProtocol::StatGen(struct stat &buf, char *xxBuff, int xxLen,
       } else {
        if (!(n = XrdOucUtils::GidName(buf.st_gid,xxBuff,xxLen,keepT))) return m;
       }
-   xxBuff += n+1;
+   xxBuff += n;
+   xxLen -= n;
 
 // Tack on file type and rdev so HTTP/FUSE can distinguish fifo/device/symlink.
+// Append over the group's trailing NUL so the whole line stays one C string.
+// Dirlist parsers (XrdCl std::string(data), XrdHttp strchr) stop at the first
+// embedded NUL, which previously truncated listings to a single entry.
 //
    {
       const char *ft = "reg";
@@ -863,10 +867,9 @@ int XrdXrootdProtocol::StatGen(struct stat &buf, char *xxBuff, int xxLen,
       else if (S_ISSOCK(buf.st_mode)) ft = "sock";
       n = snprintf(xxBuff, xxLen, " %s %llu", ft,
                    (unsigned long long)buf.st_rdev);
-      if (n < xxLen) {
+      if (n >= 0 && n < xxLen)
          xxBuff += n;
-         xxLen -= n;
-      }
+      xxBuff += 1;
    }
 
 // All done, return full response
