@@ -14,8 +14,8 @@ fi
 echo "Tearing down $TEST_NAME"
 
 if [ ! -f "$BINARY_DIR/tests/$TEST_NAME/setup.sh" ]; then
-  echo "Test environment file $BINARY_DIR/tests/$TEST_NAME/setup.sh does not exist - cannot run test"
-  exit 1
+  echo "Test environment file $BINARY_DIR/tests/$TEST_NAME/setup.sh does not exist; setup did not finish"
+  exit 0
 fi
 . "$BINARY_DIR/tests/$TEST_NAME/setup.sh"
 

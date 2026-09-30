@@ -69,8 +69,8 @@ commonName_default = XrdClHttp CA
 
 [ ca_extensions ]
 
-basicConstraints = critical,CA:true
-keyUsage = keyCertSign,cRLSign
+basicConstraints = critical,CA:true,pathlen:0
+keyUsage = critical,keyCertSign,cRLSign
 subjectKeyIdentifier = hash
 
 [ signing_policy ]
@@ -85,8 +85,10 @@ emailAddress           = optional
 [ cert_extensions ]
 
 basicConstraints = critical,CA:false
-keyUsage = digitalSignature, keyEncipherment
+keyUsage = digitalSignature
 extendedKeyUsage = critical, serverAuth, clientAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
 subjectAltName = @alt_names
 
 [alt_names]
@@ -99,15 +101,19 @@ EOF
 
 # Create the CA certificate
 echo "Creating TLS CA certificate in $CA_DIR/tlsca.pem"
-if ! "$OPENSSL_BIN" req -x509 -key tlscakey.pem -config tlsca.ini -out tlsca.pem -outform PEM -subj "/CN=XrdClHttp CA" 0<&-; then
+if ! "$OPENSSL_BIN" req -x509 -key tlscakey.pem -config tlsca.ini \
+    -extensions ca_extensions -out tlsca.pem -outform PEM \
+    -subj "/CN=XrdClHttp CA" 0<&-; then
   echo "Failed to generate CA request"
   exit 1
 fi
 
-# RSA host cert: curl --http1.1 on this platform speaks TLS 1.2.
-# The server caps RSA at TLS 1.2 so tls_choose_sigalg cannot fire.
-# httph2 keeps host-ec.pem for TLS 1.3 / HTTP/2.
-"$OPENSSL_BIN" genrsa -out tls.key 2048
+# ECDSA P-256 host cert. RSA + TLS 1.3 fails tls_choose_sigalg under
+# RHEL crypto-policies; capping the origin at TLS 1.2 via
+# XRD_TLSMAXPROTO then aborted OpenSSL 3.0/3.5 during HTTP init on
+# Ubuntu/Fedora. ECDSA uses ecdsa_secp256r1_sha256, so TLS 1.3 works
+# without that cap. httph2 uses the same key type (host-ec.pem).
+"$OPENSSL_BIN" ecparam -name prime256v1 -genkey -noout -out tls.key
 chmod 0400 tls.key
 if ! "$OPENSSL_BIN" req -new -key tls.key -config tlsca.ini -out tls.csr -outform PEM -subj /CN=localhost 0<&-; then
   echo "Failed to generate host certificate request"
@@ -383,7 +389,6 @@ export XRD_HTTPSLOWRATEBYTESSEC=1024
 export XRD_HTTPSTALLTIMEOUT=2
 export XRD_HTTPCERTFILE=$CA_DIR/tlsca.pem
 export XRD_LOGLEVEL=Debug
-export XRDCLHTTP_TLSMAX=1.2
 set -x
 exec "$XROOTD_BIN" "\$@"
 EOF
@@ -398,21 +403,29 @@ echo > "$BINARY_DIR/tests/$TEST_NAME/client.log"
 ###########################
 echo > "$BINARY_DIR/tests/$TEST_NAME/origin.log"
 echo > "$BINARY_DIR/tests/$TEST_NAME/cache.log"
-# Cap RSA at TLS 1.2 on the origin. curl --tls-max 1.2 still offers TLS 1.3
-# here; without the cap, SSL_accept fails tls_choose_sigalg. Do not set
-# this on the cache: SSL_CTX_set_max_proto_version there segfaulted OpenSSL
-# 3.5 during SSL_accept (libcurl is in-process).
-XRD_TLSMAXPROTO=1.2 "$BINDIR/xrootd" -n origin -c "$ORIGIN_CONFIG" 0<&- >"$BINARY_DIR/tests/$TEST_NAME/origin.log" 2>&1 &
+# ECDSA host cert: do not set XRD_TLSMAXPROTO. SSL_CTX_set_max_proto_version
+# aborted OpenSSL 3.0 (Ubuntu) and 3.5 (Fedora) during HTTP init / SSL_accept.
+"$BINDIR/xrootd" -n origin -c "$ORIGIN_CONFIG" 0<&- >"$BINARY_DIR/tests/$TEST_NAME/origin.log" 2>&1 &
 ORIGIN_PID=$!
 echo "Origin PID: $ORIGIN_PID"
 
 echo "Origin logs are available at $BINARY_DIR/tests/$TEST_NAME/origin.log"
 
-ORIGIN_PORT=$(grep -E -a '\-\-\-\-\-\- xrootd origin@.*:[0-9]+ initialization completed' "$BINARY_DIR/tests/$TEST_NAME/origin.log" | tr ':' ' ' | awk '{print $4}')
+origin_init_done() {
+  grep -E -a -q -e 'xrootd origin@[^[:space:]]+:[0-9]+ initialization completed' \
+    "$BINARY_DIR/tests/$TEST_NAME/origin.log" 2>/dev/null
+}
+
+ORIGIN_PORT=""
 IDX=0
 while [ -z "$ORIGIN_PORT" ]; do
+  if origin_init_done; then
+    ORIGIN_PORT=$(grep -E -a -e 'xrootd origin@[^[:space:]]+:[0-9]+ initialization completed' \
+      "$BINARY_DIR/tests/$TEST_NAME/origin.log" | tail -n 1 | sed -n 's/.*:\([0-9][0-9]*\) initialization completed.*/\1/p')
+    [ -n "$ORIGIN_PORT" ] || ORIGIN_PORT=9443
+    break
+  fi
   sleep 1
-  ORIGIN_PORT=$(grep -E -a '\-\-\-\-\-\- xrootd origin@.*:[0-9]+ initialization completed' "$BINARY_DIR/tests/$TEST_NAME/origin.log" | tr ':' ' ' | awk '{print $4}')
   IDX=$((IDX+1))
   if [ $IDX -gt 1 ]; then
     echo "Waiting for origin to start ($IDX seconds so far) ..."
@@ -420,6 +433,12 @@ while [ -z "$ORIGIN_PORT" ]; do
   if ! kill -0 "$ORIGIN_PID" 2>/dev/null; then
     cat "$BINARY_DIR/tests/$TEST_NAME/origin.log"
     echo "Origin process crashed - failing"
+    exit 1
+  fi
+  if grep -E -a -q -e 'xrootd origin@[^[:space:]]+:[0-9]+ initialization failed' \
+      "$BINARY_DIR/tests/$TEST_NAME/origin.log" 2>/dev/null; then
+    cat "$BINARY_DIR/tests/$TEST_NAME/origin.log"
+    echo "Origin failed to initialize - failing"
     exit 1
   fi
   if [ $IDX -eq 50 ]; then
@@ -430,20 +449,18 @@ while [ -z "$ORIGIN_PORT" ]; do
 done
 echo "Origin started at port $ORIGIN_PORT"
 
-# openssl s_client -tls1_2 actually negotiates TLS 1.2. curl --tls-max 1.2
-# on this host still sends a TLS 1.3 ClientHello.
-tls12_handshake() {
+https_handshake() {
   local port="$1"
-  "$OPENSSL_BIN" s_client -connect "localhost:${port}" -tls1_2 \
+  "$OPENSSL_BIN" s_client -connect "127.0.0.1:${port}" \
     -CAfile "$CA_DIR/tlsca.pem" -servername localhost </dev/null 2>&1 \
-    | grep -qE 'Protocol[[:space:]]*:[[:space:]]*TLSv1.2|Protocol version: TLSv1.2'
+    | grep -qE 'Verify return code: 0|Verification: OK'
 }
 
 # Confirm origin is accepting HTTPS before starting the cache. If this
 # fails the cache Stat of https://127.0.0.1:9443 becomes connection-refused
 # and checksum tests hang dumping a growing log.
-if ! curl --http1.1 --tlsv1.2 --tls-max 1.2 --max-time 5 --cacert "$CA_DIR/tlsca.pem" \
-    "https://localhost:${ORIGIN_PORT}/.well-known/openid-configuration" \
+if ! curl --http1.1 --max-time 5 --cacert "$CA_DIR/tlsca.pem" \
+    "https://127.0.0.1:${ORIGIN_PORT}/.well-known/openid-configuration" \
     -o /dev/null; then
   echo "Origin is not serving HTTPS on port ${ORIGIN_PORT}"
   cat "$BINARY_DIR/tests/$TEST_NAME/origin.log"
@@ -480,10 +497,9 @@ while [ -z "$CACHE_PORT" ]; do
 done
 echo "Cache started at port $CACHE_PORT"
 
-# Cache is not capped at TLS 1.2 (that segfaulted SSL_accept). Probe with
-# openssl s_client -tls1_2 so we do not send a TLS 1.3 ClientHello.
-if ! tls12_handshake "$CACHE_PORT"; then
-  echo "Cache is not serving TLS 1.2 HTTPS on port ${CACHE_PORT}"
+# Probe the cache with a default ClientHello (ECDSA allows TLS 1.3).
+if ! https_handshake "$CACHE_PORT"; then
+  echo "Cache is not serving HTTPS on port ${CACHE_PORT}"
   cat "$BINARY_DIR/tests/$TEST_NAME/cache.log"
   kill "$CACHE_PID" 2>/dev/null || true
   kill "$ORIGIN_PID" 2>/dev/null || true
