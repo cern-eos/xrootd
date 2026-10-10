@@ -70,13 +70,27 @@ struct xiofs_fc_ctx {
 	bool		defer_create;
 };
 
+void xiofs_fmt_hosthdr(char *dst, size_t dstsz, const char *host,
+		       unsigned int port)
+{
+	bool v6 = host && strchr(host, ':');
+
+	if (port == 80 || port == 443) {
+		if (v6)
+			snprintf(dst, dstsz, "[%s]", host);
+		else
+			snprintf(dst, dstsz, "%s", host);
+	} else if (v6) {
+		snprintf(dst, dstsz, "[%s]:%u", host, port);
+	} else {
+		snprintf(dst, dstsz, "%s:%u", host, port);
+	}
+}
+
 static void xiofs_set_hosthdr(struct xiofs_sb_info *sbi)
 {
-	if (sbi->port == 80 || sbi->port == 443)
-		snprintf(sbi->hosthdr, sizeof(sbi->hosthdr), "%s", sbi->host);
-	else
-		snprintf(sbi->hosthdr, sizeof(sbi->hosthdr), "%s:%u",
-			 sbi->host, sbi->port);
+	xiofs_fmt_hosthdr(sbi->hosthdr, sizeof(sbi->hosthdr), sbi->host,
+			  sbi->port);
 }
 
 int xiofs_join_path(char *dst, size_t dstsz, const char *parent,
@@ -400,6 +414,9 @@ int xiofs_fill_super(struct super_block *sb, struct fs_context *fc)
 	strscpy(sbi->export_path,
 		ctx->export_path[0] ? ctx->export_path : "/",
 		sizeof(sbi->export_path));
+	sbi->ntargets = 1;
+	strscpy(sbi->targets[0].host, sbi->host, sizeof(sbi->targets[0].host));
+	sbi->targets[0].port = sbi->port;
 	xiofs_set_hosthdr(sbi);
 
 	sb->s_magic = XIOFS_MAGIC;

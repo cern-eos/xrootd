@@ -62,9 +62,11 @@ struct xiofs_gpu_io {
 	_IOW(XIOFS_IOC_MAGIC, 3, struct xiofs_gpu_io)
 
 /*
- * Agent upcall: wait until some uid on a krb5/jwt (or reconnecting) mount
- * needs a socket. One WAIT_NEED dequeues one (sbi, uid) so several
- * xiofsagent processes can run in parallel.
+ * Agent upcall: wait until some uid on a krb5/jwt/shard (or reconnecting)
+ * mount needs a socket. One WAIT_NEED dequeues one (sbi, uid) so several
+ * xiofsagent processes can run in parallel. host/port are the target for
+ * this channel. err is 0 on first connect, or the kernel connection errno
+ * (timeout/reset) so the agent can take that host out of the live list.
  */
 struct xiofs_need_conn {
 	__u32	uid;
@@ -86,5 +88,33 @@ struct xiofs_need_conn {
  */
 #define XIOFS_IOC_DROP_CONN \
 	_IOW(XIOFS_IOC_MAGIC, 6, struct xiofs_need_conn)
+
+#ifndef XIOFS_MAX_TARGETS
+#define XIOFS_MAX_TARGETS		32
+#endif
+
+struct xiofs_target_ent {
+	char	host[256];
+	__u16	port;
+	__u16	reserved;
+};
+
+struct xiofs_targets {
+	__u32			n;
+	__u16			port;
+	__u16			reserved;
+	char			host[256];
+	char			export_path[256];
+	struct xiofs_target_ent	ent[XIOFS_MAX_TARGETS];
+};
+
+/*
+ * Replace the live HTTP target list for a mount. The agent expands
+ * aliases and removes hosts in cooldown; the kernel hashes fsuid onto
+ * this list. host/port/path identify the mount (original alias or
+ * first server).
+ */
+#define XIOFS_IOC_SET_TARGETS \
+	_IOW(XIOFS_IOC_MAGIC, 7, struct xiofs_targets)
 
 #endif

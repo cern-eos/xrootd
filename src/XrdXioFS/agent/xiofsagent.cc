@@ -6,6 +6,9 @@
 // Steady-state HTTP/1.1 (or serial HTTP/2 with --http2) then stays in the
 // module. --krb5 / --jwt run a persistent WAIT_NEED loop (rpc.gssd analogue):
 // SPNEGO or a WLCG bt_u<uid> bearer file as the requesting uid, then import.
+// Multi-target URLs (host:port,host:port or XRootD host,port aliases) also
+// stay in that loop: the agent expands aliases, hashes fsuid over live
+// servers, and cools down failing hosts.
 //
 //   xiofsagent [--cacert FILE] [--insecure] [--token TOK | --tokenfile F]
 //              [--import-only] [--krb5] [--jwt] [--workers N] URL [MOUNTPOINT]
@@ -18,6 +21,7 @@
 //------------------------------------------------------------------------------
 #include "XioUrl.hh"
 #include "XioBearer.hh"
+#include "XioShard.hh"
 #include "xiofs_uapi.h"
 
 #include <openssl/bio.h>
@@ -45,6 +49,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifndef SSL_OP_ENABLE_KTLS
@@ -111,8 +116,13 @@ void usage(const char *argv0)
       << "          the mount (any user, own uid); a URL uses /dev/xiofsctl\n"
       << "          (root). Default uid is the caller; --uid N requires root\n"
       << "          on the mount.\n"
+      << "  URL hosts: comma-separated host:port servers, or host,port for an\n"
+      << "          XRootD alias/manager (expanded at mount and every 5 min).\n"
+      << "          fsuid is hashed over live servers; a failing host is down\n"
+      << "          for 10 min then probed.\n"
       << "\n"
       << "  As mount.xiofs: mount -t xiofs -o host=H,port=P,path=/export none DIR\n"
+      << "  or: mount -t xiofs URL DIR (host:port list or host,port alias).\n"
       << "  Extra -o keys: cacert, token, tokenfile, insecure, url, actimeo,\n"
       << "  timeo, conns, defer, nodefer, http2, krb5, jwt.\n";
 }
@@ -408,16 +418,41 @@ int doMount(const XioFS::Url &url, const Options &opt, const std::string &dir,
   return 0;
 }
 
+bool isMountOptKey(const std::string &key)
+{
+  static const char *const keys[] = {
+      "host",     "port",     "path",    "cacert", "token", "tokenfile",
+      "insecure", "url",      "actimeo", "timeo",  "conns", "defer",
+      "nodefer",  "http2",    "krb5",    "jwt",    nullptr};
+  for (int i = 0; keys[i]; ++i) {
+    if (key == keys[i])
+      return true;
+  }
+  return false;
+}
+
+/* Commas inside url=https://h1:p,h2:p/path or host,port aliases are not
+ * option separators. Split only when the next token is a known -o key. */
 void splitCsv(const std::string &in, std::vector<std::string> &out)
 {
   std::string cur;
-  for (char c : in) {
-    if (c == ',') {
+  for (size_t i = 0; i < in.size(); ++i) {
+    if (in[i] != ',') {
+      cur.push_back(in[i]);
+      continue;
+    }
+    size_t j = i + 1;
+    while (j < in.size() && in[j] == ' ')
+      j++;
+    size_t k = j;
+    while (k < in.size() && in[k] != '=' && in[k] != ',')
+      k++;
+    if (isMountOptKey(in.substr(j, k - j))) {
       if (!cur.empty())
         out.push_back(cur);
       cur.clear();
     } else {
-      cur.push_back(c);
+      cur.push_back(',');
     }
   }
   if (!cur.empty())
@@ -538,21 +573,40 @@ int parseHelperArgs(int argc, char **argv, Options &opt, std::string &err)
       err = "mount.xiofs needs host= or url=";
       return -1;
     }
-    opt.url = std::string(parsed.tls ? "https://" : "http://") + parsed.host +
-              ":" + std::to_string(parsed.port) + parsed.path;
+    if (parsed.hops.empty()) {
+      std::string herr;
+      if (!XioFS::parseHops(parsed.host, parsed.port, parsed.hops, herr) ||
+          parsed.hops.empty()) {
+        parsed.hops.clear();
+        XioFS::Hop h;
+        h.host = parsed.host;
+        h.port = parsed.port;
+        parsed.hops.push_back(h);
+      } else {
+        parsed.host = parsed.hops[0].host;
+        parsed.port = parsed.hops[0].port;
+      }
+    }
+    opt.url = XioFS::formatUrl(parsed);
     return 0;
   }
-  if (!fromopts.host.empty())
-    parsed.host = fromopts.host;
-  if (fromopts.port)
-    parsed.port = fromopts.port;
+  bool multi = parsed.hops.size() > 1 ||
+               (!parsed.hops.empty() && parsed.hops[0].alias);
+  if (!multi) {
+    if (!fromopts.host.empty()) {
+      parsed.host = fromopts.host;
+      if (!parsed.hops.empty())
+        parsed.hops[0].host = fromopts.host;
+    }
+    if (fromopts.port) {
+      parsed.port = fromopts.port;
+      if (!parsed.hops.empty())
+        parsed.hops[0].port = fromopts.port;
+    }
+  }
   if (!fromopts.path.empty() && fromopts.path != "/")
     parsed.path = fromopts.path;
-  opt.url = std::string(parsed.tls ? "https://" : "http://") + parsed.host;
-  if (!((parsed.tls && parsed.port == 443) ||
-        (!parsed.tls && parsed.port == 80)))
-    opt.url += ":" + std::to_string(parsed.port);
-  opt.url += parsed.path.empty() ? "/" : parsed.path;
+  opt.url = XioFS::formatUrl(parsed);
   return 0;
 }
 
@@ -646,11 +700,56 @@ void installStopHandlers()
   sigaction(SIGTERM, &sa, nullptr);
 }
 
-void needFail(int ctl, const xiofs_need_conn &need, int errn)
+void needFail(int ctl, const Options &opt, const xiofs_need_conn &need, int errn)
 {
   xiofs_need_conn fail = need;
   fail.err = errn ? errn : EACCES;
+  std::string e;
+  XioFS::Url id;
+  if (XioFS::parseUrl(opt.url, id, e)) {
+    fail.port = static_cast<__u16>(id.port);
+    std::snprintf(fail.host, sizeof(fail.host), "%s", id.host.c_str());
+    std::snprintf(fail.export_path, sizeof(fail.export_path), "%s",
+                  id.path.empty() ? "/" : id.path.c_str());
+  }
   ioctl(ctl, XIOFS_IOC_NEED_FAIL, &fail);
+}
+
+bool needConnErr(int e)
+{
+  if (e < 0)
+    e = -e;
+  switch (e) {
+  case ECONNRESET:
+  case ECONNABORTED:
+  case ENOTCONN:
+  case EPIPE:
+  case ETIMEDOUT:
+#ifdef ESHUTDOWN
+  case ESHUTDOWN:
+#endif
+  case EAGAIN:
+  case ECONNREFUSED:
+  case EHOSTUNREACH:
+  case ENETUNREACH:
+    return true;
+  default:
+    return false;
+  }
+}
+
+int shardPushId(const Options &opt)
+{
+  std::string e;
+  XioFS::Url id;
+  if (!XioFS::parseUrl(opt.url, id, e))
+    return -1;
+  int ctl = open(kCtlDev, O_RDWR);
+  if (ctl < 0)
+    return -1;
+  shardPush(ctl, id, e);
+  close(ctl);
+  return 0;
 }
 
 int needUrl(const Options &opt, const xiofs_need_conn &need, XioFS::Url &url,
@@ -747,6 +846,36 @@ int serveKrb5Need(const Options &opt, const xiofs_need_conn &need,
 #endif
 }
 
+int servePlainNeed(const Options &opt, const xiofs_need_conn &need,
+                   std::string &err)
+{
+  XioFS::Url url;
+  int rc = needUrl(opt, need, url, err);
+  if (rc)
+    return rc;
+
+  Options work = opt;
+  int fd = -1;
+  SSL_CTX *ctx = nullptr;
+  SSL *ssl = nullptr;
+  rc = handshakeNeed(&fd, url, work, &ctx, &ssl, err);
+  if (rc)
+    return rc;
+
+  if (ssl)
+    SSL_set_quiet_shutdown(ssl, 1);
+  if (importSock(fd, url, work, err, need.uid, 0)) {
+    int e = errno ? errno : EACCES;
+    dropSsl(ssl, ctx, fd);
+    return e;
+  }
+  dropSsl(ssl, ctx, fd);
+  if (opt.verbose)
+    std::cerr << "xiofsagent: imported socket uid=" << need.uid << " for "
+              << url.host << ":" << url.port << url.path << "\n";
+  return 0;
+}
+
 int serveJwtNeed(const Options &opt, const xiofs_need_conn &need,
                  std::string &err)
 {
@@ -785,14 +914,54 @@ int serveJwtNeed(const Options &opt, const xiofs_need_conn &need,
   return 0;
 }
 
-int serveNeed(const Options &opt, const xiofs_need_conn &need, std::string &err)
+int serveNeedOnce(const Options &opt, const xiofs_need_conn &need,
+                  std::string &err)
 {
   if (need.flags & XIOFS_IMPORT_KRB5)
     return serveKrb5Need(opt, need, err);
   if (need.flags & XIOFS_IMPORT_JWT)
     return serveJwtNeed(opt, need, err);
-  err = "WAIT_NEED without krb5 or jwt flags";
-  return EINVAL;
+  return servePlainNeed(opt, need, err);
+}
+
+int serveNeed(const Options &opt, const xiofs_need_conn &need, std::string &err)
+{
+  xiofs_need_conn work = need;
+  if (shardActive() && needConnErr(need.err)) {
+    shardFail(need.host, need.port);
+    std::string host;
+    int port = 0;
+    std::string pickerr;
+    if (shardPick(need.uid, host, port, pickerr)) {
+      work.port = static_cast<__u16>(port);
+      std::snprintf(work.host, sizeof(work.host), "%s", host.c_str());
+    }
+    shardPushId(opt);
+  }
+
+  int e = serveNeedOnce(opt, work, err);
+  if (!e)
+    return 0;
+  if (!shardActive())
+    return e;
+  shardFail(work.host, work.port);
+  std::string host;
+  int port = 0;
+  std::string pickerr;
+  if (!shardPick(need.uid, host, port, pickerr) ||
+      (host == work.host && port == work.port)) {
+    shardPushId(opt);
+    return e;
+  }
+  xiofs_need_conn retry = work;
+  retry.port = static_cast<__u16>(port);
+  std::snprintf(retry.host, sizeof(retry.host), "%s", host.c_str());
+  std::string err2;
+  int e2 = serveNeedOnce(opt, retry, err2);
+  if (e2)
+    err += "; retry " + host + ": " + err2;
+  shardPushId(opt);
+  return e2 ? e : 0;
 }
 
 int waitNeedLoop(const Options &opt)
@@ -820,7 +989,7 @@ int waitNeedLoop(const Options &opt)
     std::string err;
     int e = serveNeed(opt, need, err);
     if (e) {
-      needFail(ctl, need, e);
+      needFail(ctl, opt, need, e);
       std::cerr << "xiofsagent: need uid=" << need.uid << " failed: " << err
                 << "\n";
     }
@@ -846,6 +1015,9 @@ int runPerUid(const Options &opt)
   if (!work.import_only && work.krb5 && work.jwt)
     return fail("krb5 and jwt cannot be combined on one mount", 2);
 
+  if (!shardInit(url, err))
+    return fail(err, 2);
+
   if (work.fake) {
     std::cout << "xiofsagent: would mount " << kernelMountData(url, work)
               << " on " << work.mountpoint << "\n";
@@ -859,6 +1031,22 @@ int runPerUid(const Options &opt)
     did_mount = true;
   }
 
+  if (shardActive()) {
+    int ctl = open(kCtlDev, O_RDWR);
+    if (ctl < 0) {
+      if (did_mount)
+        umount(work.mountpoint.c_str());
+      return fail(std::string("open ") + kCtlDev + ": " + strerror(errno), 1);
+    }
+    if (shardPush(ctl, url, err)) {
+      close(ctl);
+      if (did_mount)
+        umount(work.mountpoint.c_str());
+      return fail(err, 1);
+    }
+    close(ctl);
+  }
+
   if (work.helper)
     return 0;
 
@@ -868,6 +1056,29 @@ int runPerUid(const Options &opt)
     return fail("xiofsagent was built without Kerberos support", 2);
   }
 #endif
+
+  if (shardActive() && work.workers > 1) {
+    std::cerr << "xiofsagent: --workers is 1 on multi-target mounts\n";
+    work.workers = 1;
+  }
+
+  std::thread refresher;
+  if (shardActive()) {
+    XioFS::Url refresh_url = url;
+    refresher = std::thread([refresh_url]() {
+      while (!gStop) {
+        for (unsigned i = 0; i < kShardRefreshSec && !gStop; ++i)
+          sleep(1);
+        if (gStop)
+          break;
+        int ctl = open(kCtlDev, O_RDWR);
+        if (ctl >= 0) {
+          shardRefresh(refresh_url, ctl);
+          close(ctl);
+        }
+      }
+    });
+  }
 
   std::vector<pid_t> kids;
   for (unsigned i = 1; i < work.workers; ++i) {
@@ -886,6 +1097,9 @@ int runPerUid(const Options &opt)
   }
 
   int rc = waitNeedLoop(work);
+  gStop = 1;
+  if (refresher.joinable())
+    refresher.join();
   for (pid_t p : kids)
     kill(p, SIGTERM);
   for (pid_t p : kids) {
@@ -956,13 +1170,15 @@ int run(const Options &opt)
 {
   if (opt.drop)
     return runDrop(opt);
-  if (opt.krb5 || opt.jwt)
-    return runPerUid(opt);
 
   std::string err;
   XioFS::Url url;
   if (!XioFS::parseUrl(opt.url, url, err))
     return fail(err, 2);
+  if (!shardInit(url, err))
+    return fail(err, 2);
+  if (opt.krb5 || opt.jwt || shardActive())
+    return runPerUid(opt);
 
   if (opt.fake) {
     std::cout << "xiofsagent: would mount " << kernelMountData(url, opt) << " on "

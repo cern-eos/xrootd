@@ -148,10 +148,26 @@ only got TX).
 
 ```bash
 xiofsagent --cacert ca.pem https://storage.example:1094/export /mnt/xiofs
+# several data servers (uid hashed over the live list):
+xiofsagent --cacert ca.pem \
+    https://s1.example:1094,s2.example:1094/export /mnt/xiofs
+# XRootD manager/alias (host,port), expanded at mount and every 5 min:
+xiofsagent --cacert ca.pem https://eosatlas.cern.ch,1094/eos /mnt/xiofs
 # or, after ln -s $(which xiofsagent) /sbin/mount.xiofs:
 mount -t xiofs -o host=storage.example,port=1094,path=/export,cacert=ca.pem \
     none /mnt/xiofs
 ```
+
+A comma-separated `host:port` list is a static set of HTTP data servers.
+XRootD `host,port` (comma between name and port) is a manager/alias:
+`xiofsagent` expands it with `DeepLocate` (DNS A/AAAA if that yields fewer
+than two hosts) at mount and every 5 minutes. `fsuid` is hashed over the
+live list and pushed with `XIOFS_IOC_SET_TARGETS`. A host that fails
+connect, handshake, or an in-kernel timeout/reset is removed for 10
+minutes, then TCP-probed and put back only if it is still in the alias.
+That policy lives in the agent, not in `xiofs.ko`. Multi-target and alias
+mounts keep `xiofsagent` in the `WAIT_NEED` loop (`mount.xiofs` only
+mounts; run the agent afterwards, as with `--krb5` / `--jwt`).
 
 `--import-only` attaches a new kTLS socket to an existing mount (same
 host/port/path) after a drop. `--actimeo` / `--timeo` set metadata TTL and
@@ -181,6 +197,7 @@ http/                    URL, DAV parser, HTTP/2 session, Client
 fuse/xiofscli.cc           command-line client
 fuse/xiofsd.cc             FUSE daemon
 agent/xiofsagent.cc        Linux TLS handshake + kTLS import
+agent/XioShard.cc          uid hash, alias expand, 10 min cooldown
 agent/xiofsagent_krb5.cc   SPNEGO for --krb5 (HAVE_KRB5)
 http/XioBearer.cc          WLCG bt_u<uid> discovery (owner-only file)
 kernel/                  Linux module for AlmaLinux 9 (5.14) and 10 (6.12):

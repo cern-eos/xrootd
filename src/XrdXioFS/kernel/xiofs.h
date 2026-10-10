@@ -31,6 +31,7 @@ struct fs_context;
 #define XIOFS_DEF_TIMEO_SEC	30u
 #define XIOFS_DEF_CONNS		4u
 #define XIOFS_MAX_CONNS		16u
+#define XIOFS_MAX_TGTS		XIOFS_MAX_TARGETS
 #define XIOFS_H2_PREFACE	"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 #define XIOFS_H2_PREFACE_LEN	24
 
@@ -101,6 +102,11 @@ struct xiofs_sb_info;
  * in xiofsagent. A (mount, uid) may own up to sbi->nconns channels so
  * metadata is not queued behind a 4 MiB GET or PATCH.
  */
+struct xiofs_tgt {
+	char			host[256];
+	u16			port;
+};
+
 struct xiofs_conn {
 	struct list_head	list;
 	struct xiofs_sb_info	*sbi;
@@ -115,6 +121,9 @@ struct xiofs_conn {
 	int			last_err;
 	u32			h2_next_sid;
 	u32			h2_send_win;
+	u16			port;
+	char			host[256];
+	char			hosthdr[288];
 	char			bearer[XIOFS_BEARER_MAX];
 };
 
@@ -129,6 +138,7 @@ struct xiofs_sb_info {
 	bool			http2;
 	bool			defer_create;
 	bool			shutting_down;
+	bool			shard;
 	unsigned int		actimeo_sec;
 	unsigned int		timeo_sec;
 	unsigned int		nconns;
@@ -137,6 +147,8 @@ struct xiofs_sb_info {
 	char			export_path[256];
 	char			bearer[XIOFS_BEARER_MAX];
 	char			hosthdr[288];
+	unsigned int		ntargets;
+	struct xiofs_tgt	targets[XIOFS_MAX_TGTS];
 };
 
 /* xiofs_inode_info.flags */
@@ -249,6 +261,12 @@ void xiofs_conn_put(struct xiofs_conn *c);
 int xiofs_conn_wait(struct xiofs_conn *c);
 void xiofs_conn_drop(struct xiofs_conn *c);
 int xiofs_fs_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
+void xiofs_fmt_hosthdr(char *dst, size_t dstsz, const char *host,
+		       unsigned int port);
+static inline const char *xiofs_conn_hosthdr(const struct xiofs_conn *c)
+{
+	return c->hosthdr[0] ? c->hosthdr : c->sbi->hosthdr;
+}
 
 /* http1.c */
 int xiofs_http_status_to_errno(int status);

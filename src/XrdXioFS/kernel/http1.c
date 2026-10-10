@@ -367,6 +367,12 @@ static int xiofs_transact(struct xiofs_conn *c, const char *req,
 		if (!xiofs_connerr(err))
 			return err;
 		xiofs_conn_drop(c);
+		c->last_err = err;
+		/* Shard failover may import a different host; Host/:authority
+		 * in this request already name the old one. Next I/O rebuilds.
+		 */
+		if (c->sbi && c->sbi->shard)
+			break;
 	}
 	return err;
 }
@@ -377,11 +383,13 @@ struct xiofs_rq {
 	char	*hdr;
 	size_t	n;
 	char	*path;
+	const char *dest;
 };
 
 static int xiofs_rq_init(struct xiofs_rq *rq)
 {
 	rq->n = 0;
+	rq->dest = NULL;
 	rq->hdr = kmalloc(XIOFS_MAX_HDR, GFP_KERNEL);
 	rq->path = kmalloc(XIOFS_PATH_MAX, GFP_KERNEL);
 	if (!rq->hdr || !rq->path) {
@@ -421,8 +429,9 @@ static void xiofs_rq_start(struct xiofs_rq *rq, struct xiofs_sb_info *sbi,
 			   const char *method, const char *path)
 {
 	rq->n = 0;
-	xiofs_rq_add(rq, "%s %s HTTP/1.1\r\nHost: %s\r\n"
-		     "Connection: keep-alive\r\n", method, path, sbi->hosthdr);
+	xiofs_rq_add(rq, "%s %s HTTP/1.1\r\n"
+		     "Connection: keep-alive\r\n", method, path);
+	(void)sbi;
 }
 
 static void xiofs_rq_match(struct xiofs_rq *rq, const char *name,
@@ -460,6 +469,10 @@ static int xiofs_rq_run(struct xiofs_sb_info *sbi, struct xiofs_rq *rq,
 	err = xiofs_conn_get(sbi, &c);
 	if (err)
 		return err;
+	xiofs_rq_add(rq, "Host: %s\r\n", xiofs_conn_hosthdr(c));
+	if (rq->dest)
+		xiofs_rq_add(rq, "Destination: https://%s%s\r\n",
+			     xiofs_conn_hosthdr(c), rq->dest);
 	xiofs_rq_auth(rq, c);
 	xiofs_rq_add(rq, "\r\n");
 	err = xiofs_transact(c, rq->hdr, rq->n, body, bodylen, out, outcap,
@@ -1121,8 +1134,7 @@ int xiofs_http_rename(struct inode *old_inode, const char *new_path)
 	if (err)
 		goto out;
 	xiofs_rq_start(&rq, sbi, "MOVE", rq.path);
-	xiofs_rq_add(&rq, "Destination: https://%s%s\r\n", sbi->hosthdr,
-		     new_path);
+	rq.dest = new_path;
 	xiofs_rq_if_match_id(&rq, old_inode);
 	err = xiofs_rq_run_simple(sbi, &rq, NULL, 0, &meta);
 out:
@@ -1226,8 +1238,7 @@ int xiofs_http_link(struct inode *old_inode, const char *new_path)
 	if (err)
 		goto out;
 	xiofs_rq_start(&rq, sbi, "LINK", rq.path);
-	xiofs_rq_add(&rq, "Destination: https://%s%s\r\n", sbi->hosthdr,
-		     new_path);
+	rq.dest = new_path;
 	err = xiofs_rq_run_simple(sbi, &rq, NULL, 0, &meta);
 out:
 	xiofs_rq_free(&rq);

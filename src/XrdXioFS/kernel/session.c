@@ -34,6 +34,9 @@ struct xiofs_need {
 	struct list_head	list;
 	struct xiofs_sb_info	*sbi;
 	u32			uid;
+	int			err;
+	u16			port;
+	char			host[256];
 };
 
 static LIST_HEAD(xiofs_mounts);
@@ -114,17 +117,74 @@ static void xiofs_need_cancel(struct xiofs_sb_info *sbi, u32 uid)
 	mutex_unlock(&xiofs_needs_lock);
 }
 
+static void xiofs_conn_set_host(struct xiofs_conn *c, const char *host, u16 port)
+{
+	strscpy(c->host, host, sizeof(c->host));
+	c->port = port;
+	xiofs_fmt_hosthdr(c->hosthdr, sizeof(c->hosthdr), host, port);
+}
+
+static void xiofs_conn_pick_host(struct xiofs_conn *c)
+{
+	struct xiofs_sb_info *sbi = c->sbi;
+	unsigned int n = sbi->ntargets ? sbi->ntargets : 1;
+	unsigned int i = n ? (c->uid % n) : 0;
+
+	if (sbi->ntargets) {
+		if (i >= sbi->ntargets)
+			i = 0;
+		xiofs_conn_set_host(c, sbi->targets[i].host,
+				    sbi->targets[i].port);
+	} else {
+		xiofs_conn_set_host(c, sbi->host, sbi->port);
+	}
+}
+
+static bool xiofs_sbi_has_hp(const struct xiofs_sb_info *sbi, const char *host,
+			     u16 port)
+{
+	unsigned int i;
+
+	if (sbi->port == port && !strcmp(sbi->host, host))
+		return true;
+	for (i = 0; i < sbi->ntargets; i++) {
+		if (sbi->targets[i].port == port &&
+		    !strcmp(sbi->targets[i].host, host))
+			return true;
+	}
+	return false;
+}
+
+static bool xiofs_tgt_has(const struct xiofs_sb_info *sbi, const char *host,
+			  u16 port)
+{
+	unsigned int i;
+
+	for (i = 0; i < sbi->ntargets; i++) {
+		if (sbi->targets[i].port == port &&
+		    !strcmp(sbi->targets[i].host, host))
+			return true;
+	}
+	return false;
+}
+
 static void xiofs_conn_enqueue_need(struct xiofs_conn *c)
 {
 	struct xiofs_need *n;
 
 	if (c->pending)
 		return;
+	if (!c->host[0])
+		xiofs_conn_pick_host(c);
 	n = kzalloc(sizeof(*n), GFP_KERNEL);
 	if (!n)
 		return;
 	n->sbi = c->sbi;
 	n->uid = c->uid;
+	n->err = c->last_err;
+	n->port = c->port ? c->port : c->sbi->port;
+	strscpy(n->host, c->host[0] ? c->host : c->sbi->host, sizeof(n->host));
+	c->last_err = 0;
 	INIT_LIST_HEAD(&n->list);
 	mutex_lock(&xiofs_needs_lock);
 	list_add_tail(&n->list, &xiofs_needs);
@@ -289,6 +349,7 @@ static struct xiofs_conn *xiofs_conn_create(struct xiofs_sb_info *sbi, u32 uid)
 	c->http2 = sbi->krb5 ? false : sbi->http2;
 	if (sbi->bearer[0])
 		strscpy(c->bearer, sbi->bearer, sizeof(c->bearer));
+	xiofs_conn_pick_host(c);
 	list_add_tail(&c->list, &sbi->conns);
 	return c;
 }
@@ -304,7 +365,7 @@ static int xiofs_conn_select(struct xiofs_sb_info *sbi, u32 uid,
 {
 	struct xiofs_conn *c, *spare = NULL;
 	unsigned int n = 0, busy_connected = 0;
-	bool on_demand = sbi->krb5 || sbi->jwt;
+	bool on_demand = sbi->krb5 || sbi->jwt || sbi->shard;
 
 	mutex_lock(&sbi->conns_lock);
 	list_for_each_entry(c, &sbi->conns, list) {
@@ -340,10 +401,11 @@ static int xiofs_conn_select(struct xiofs_sb_info *sbi, u32 uid,
 	}
 	/*
 	 * Grow on demand only where something answers WAIT_NEED (krb5/jwt
-	 * agent loop). Shared mounts get their channels from the agent's
-	 * imports; an unconnected channel there would just time out, so
-	 * wait for a busy one instead. The very first channel is always
-	 * created so the initial import has something to wait on.
+	 * or a multi-target shard agent). Shared single-host mounts get
+	 * their channels from the agent's imports; an unconnected channel
+	 * there would just time out, so wait for a busy one instead. The
+	 * very first channel is always created so the initial import has
+	 * something to wait on.
 	 */
 	if (!spare && (n == 0 || (on_demand && n < sbi->nconns))) {
 		spare = xiofs_conn_create(sbi, uid);
@@ -363,7 +425,7 @@ static int xiofs_conn_select(struct xiofs_sb_info *sbi, u32 uid,
 static bool xiofs_conn_any_free(struct xiofs_sb_info *sbi, u32 uid)
 {
 	struct xiofs_conn *c;
-	bool on_demand = sbi->krb5 || sbi->jwt;
+	bool on_demand = sbi->krb5 || sbi->jwt || sbi->shard;
 	bool any_connected = false, idle_connected = false, idle = false;
 
 	if (sbi->shutting_down)
@@ -394,7 +456,7 @@ int xiofs_conn_get(struct xiofs_sb_info *sbi, struct xiofs_conn **out)
 	u32 uid = 0;
 	int err;
 
-	if (sbi->krb5 || sbi->jwt) {
+	if (sbi->krb5 || sbi->jwt || sbi->shard) {
 		uid = from_kuid(&init_user_ns, current_fsuid());
 		if (uid == (u32)-1)
 			return -EOVERFLOW;
@@ -474,9 +536,9 @@ static struct xiofs_sb_info *xiofs_find_sbi(const char *host, __u16 port,
 	const char *path = export_path && export_path[0] ? export_path : "/";
 
 	list_for_each_entry(sbi, &xiofs_mounts, list) {
-		if (sbi->port == port &&
-		    !strcmp(sbi->host, host) &&
-		    !strcmp(sbi->export_path, path))
+		if (strcmp(sbi->export_path, path))
+			continue;
+		if (xiofs_sbi_has_hp(sbi, host, port))
 			return sbi;
 	}
 	return NULL;
@@ -511,7 +573,7 @@ static int xiofs_import_sock(struct xiofs_import_sock *im)
 		goto out;
 	}
 
-	uid = (sbi->krb5 || sbi->jwt) ? im->uid : 0;
+	uid = (sbi->krb5 || sbi->jwt || sbi->shard) ? im->uid : 0;
 	mutex_lock(&sbi->conns_lock);
 	c = xiofs_conn_for_import(sbi, uid);
 	/* Nothing waiting: grow the pool rather than replace a live socket. */
@@ -533,6 +595,8 @@ static int xiofs_import_sock(struct xiofs_import_sock *im)
 	c->sock = sock;
 	sock = NULL;
 	c->tls = !!(im->flags & XIOFS_IMPORT_TLS);
+	if (im->host[0])
+		xiofs_conn_set_host(c, im->host, im->port);
 	if (sbi->krb5 || (im->flags & XIOFS_IMPORT_KRB5)) {
 		c->http2 = false;
 	} else if (im->flags & XIOFS_IMPORT_H2) {
@@ -589,12 +653,14 @@ static int xiofs_wait_need(struct xiofs_need_conn *uc)
 		list_del(&n->list);
 		memset(uc, 0, sizeof(*uc));
 		uc->uid = n->uid;
-		uc->port = n->sbi->port;
+		uc->err = n->err;
+		uc->port = n->port ? n->port : n->sbi->port;
 		if (n->sbi->krb5)
 			uc->flags |= XIOFS_IMPORT_KRB5;
 		if (n->sbi->jwt)
 			uc->flags |= XIOFS_IMPORT_JWT;
-		strscpy(uc->host, n->sbi->host, sizeof(uc->host));
+		strscpy(uc->host, n->host[0] ? n->host : n->sbi->host,
+			sizeof(uc->host));
 		strscpy(uc->export_path, n->sbi->export_path,
 			sizeof(uc->export_path));
 		kfree(n);
@@ -668,6 +734,54 @@ static long xiofs_ctl_ioctl(struct file *file, unsigned int cmd,
 		if (!uc.err)
 			uc.err = -EACCES;
 		return xiofs_need_fail(&uc);
+	}
+	if (cmd == XIOFS_IOC_SET_TARGETS) {
+		struct xiofs_targets tg;
+		struct xiofs_sb_info *sbi;
+		struct xiofs_conn *c;
+		unsigned int i;
+		int err = -ENOENT;
+
+		if (copy_from_user(&tg, (void __user *)arg, sizeof(tg)))
+			return -EFAULT;
+		tg.host[sizeof(tg.host) - 1] = 0;
+		tg.export_path[sizeof(tg.export_path) - 1] = 0;
+		if (!tg.n || tg.n > XIOFS_MAX_TARGETS)
+			return -EINVAL;
+		for (i = 0; i < tg.n; i++) {
+			tg.ent[i].host[sizeof(tg.ent[i].host) - 1] = 0;
+			if (!tg.ent[i].host[0] || !tg.ent[i].port)
+				return -EINVAL;
+		}
+		mutex_lock(&xiofs_mounts_lock);
+		sbi = xiofs_find_sbi(tg.host, tg.port, tg.export_path);
+		if (!sbi)
+			goto set_out;
+		mutex_lock(&sbi->conns_lock);
+		sbi->ntargets = tg.n;
+		sbi->shard = true;
+		for (i = 0; i < tg.n; i++) {
+			strscpy(sbi->targets[i].host, tg.ent[i].host,
+				sizeof(sbi->targets[i].host));
+			sbi->targets[i].port = tg.ent[i].port;
+		}
+		list_for_each_entry(c, &sbi->conns, list) {
+			if (xiofs_tgt_has(sbi, c->host, c->port))
+				continue;
+			if (mutex_trylock(&c->io_lock)) {
+				xiofs_conn_drop(c);
+				mutex_unlock(&c->io_lock);
+				wake_up_all(&c->wait);
+			} else if (c->sock) {
+				kernel_sock_shutdown(c->sock, SHUT_RDWR);
+			}
+		}
+		mutex_unlock(&sbi->conns_lock);
+		wake_up(&sbi->conn_free);
+		err = 0;
+set_out:
+		mutex_unlock(&xiofs_mounts_lock);
+		return err;
 	}
 	if (cmd == XIOFS_IOC_DROP_CONN) {
 		struct xiofs_need_conn uc;

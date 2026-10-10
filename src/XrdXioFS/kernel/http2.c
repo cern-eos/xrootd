@@ -503,7 +503,7 @@ static int http1_to_hpack(struct xiofs_conn *c, const char *req,
 	err = hpack_lit(out, cap, n, ":scheme", c->tls ? "https" : "http");
 	if (err)
 		return err;
-	err = hpack_lit(out, cap, n, ":authority", c->sbi->hosthdr);
+	err = hpack_lit(out, cap, n, ":authority", xiofs_conn_hosthdr(c));
 	if (err)
 		return err;
 

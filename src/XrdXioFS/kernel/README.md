@@ -108,12 +108,12 @@ Writes:
 - `close()` of a writable descriptor flushes (close-to-open) and reports
   writeback errors to the writer.
 
-Connections: a mount (or, with `krb5`/`jwt`, each uid) owns up to
-`conns=` channels (default 4, max 16); each is serial, idle ones are
-picked first, so `stat`/`readdir` are not queued behind a 4 MiB
-`GET`/`PATCH`. `xiofsagent --conns N` imports N sockets; on `krb5`/`jwt`
-mounts the kernel issues one `WAIT_NEED` per missing socket. The UAPI is
-unchanged.
+Connections: a mount (or, with `krb5`/`jwt`/several HTTP targets, each
+uid) owns up to `conns=` channels (default 4, max 16); each is serial,
+idle ones are picked first, so `stat`/`readdir` are not queued behind a
+4 MiB `GET`/`PATCH`. `xiofsagent --conns N` imports N sockets; on
+`krb5`/`jwt`/shard mounts the kernel issues one `WAIT_NEED` per missing
+socket. The UAPI is unchanged.
 
 ## HTTP/1.1 or serial HTTP/2 + kTLS
 
@@ -169,6 +169,15 @@ cache expires (see "Round trips and caches").
 
 Mount options: `host=`, `port=`, `path=`, `actimeo=`, `timeo=`,
 `conns=` (1..16, default 4), `defer`/`nodefer`, `http2`, `krb5`, `jwt`.
+
+Several HTTP data servers are a comma-separated `host:port` list in the
+agent URL. An XRootD manager/alias is `host,port` (comma between name and
+port). The agent expands aliases at mount and every 5 minutes, hashes
+`fsuid` over the live list (`XIOFS_IOC_SET_TARGETS`), and takes a host
+out for 10 minutes after connect/handshake/timeout errors, then probes
+TCP before putting it back (and only if it is still in the alias). The
+kernel does not watch DNS or cmsd. A multi-target mount keeps
+`xiofsagent` in the `WAIT_NEED` loop.
 
 ## Kerberos (SPNEGO) via xiofsagent
 
