@@ -68,8 +68,52 @@ write(2)
 | Writeback | `a_ops.writepages` coalesces dirty folios into PATCH |
 | `fsync` | `filemap_write_and_wait_range` |
 | `mmap` | `generic_file_mmap` |
-| Dcache | `lookup` + `d_splice_alias`; getattr refreshes size/mtime/ETag |
-| Identity | URL path + ETag (`If-Match` on PATCH/DELETE) |
+| Dcache | `lookup` + `d_splice_alias`; readdir primes dentries+inodes from the Depth 1 listing |
+| Icache | `iget5_locked` keyed by the server identity (`<dev:ino>` prefix of the ETag) |
+| Identity | ETag `"<dev:ino>-<ctime>-<size>"`; mutations send the bare `"<dev:ino>"` as `If-Match` |
+
+## Round trips and caches
+
+The ETag XrdHttp returns is **versioned**: `"<dev:ino>-<ctime>[.ns]-<size>"`.
+The part before the first `-` is the object identity; the whole tag is
+a validator. The server accepts both in `If-Match` / `If-None-Match`:
+the bare identity means "same object, any version", the full tag means
+"unchanged". `Last-Modified`, `If-Modified-Since` and
+`If-Unmodified-Since` are honoured too, and `PROPFIND` evaluates them
+against the collection itself (`304` with no body when nothing changed).
+
+| Cache | Policy |
+|-------|--------|
+| inode attributes | trusted for `actimeo=` (default 30s); then one `PROPFIND` Depth 0 with `If-None-Match: <tag>` — `304` costs no body. A lookup that hits an existing inode refreshes it in place. |
+| directory listing | kept on the directory inode with the listing's ETag; `getdents` continuations are served from it; after `actimeo` it is revalidated with `PROPFIND` Depth 1 + `If-None-Match` (`304` keeps it). Listings are not truncated (growable body, up to 256 MiB / 4 Mi entries). Local mutations (create, unlink, mkdir, rename, …) invalidate it. |
+| readdir-plus | every entry of a listing instantiates a dentry and an inode (mode, size, times, owner, ETag from `getetag` / `X:ctime`), so `ls -l`, `find`, `rsync` after `readdir` do no further round trips. |
+| negative dentries | kept for `actimeo`. `404` on `PROPFIND` is final (no `HEAD` fallback; `HEAD` is only tried on `403`). |
+| setattr | mode, uid, gid, atime, mtime go out in a **single** `PROPPATCH`. |
+
+Writes:
+
+- `create()` is **deferred** (`defer`, default): the inode exists locally
+  at once; the `PUT` goes out with the first writeback — as one request
+  carrying the whole file when it is small and fully dirty — or on
+  `close()`/`fsync()` for an empty file, or before the first operation
+  that needs the object on the server (rename, link, xattr, lock).
+  `O_EXCL` is enforced by the server through `If-None-Match: *` at that
+  point. `nodefer` sends the empty `PUT` synchronously in `create()`.
+  `Xrd-Mode` on `PUT`/`MKCOL` creates with the caller's mode, so no
+  `PROPPATCH` follows.
+- `write_begin` does not read a page from the server when the file is
+  deferred or the page lies at/after a trusted EOF: it zero-fills.
+- `writepages` coalesces runs of contiguous dirty pages into one `PATCH`
+  of up to 4 MiB with `If-Match: "<dev:ino>"`.
+- `close()` of a writable descriptor flushes (close-to-open) and reports
+  writeback errors to the writer.
+
+Connections: a mount (or, with `krb5`/`jwt`, each uid) owns up to
+`conns=` channels (default 4, max 16); each is serial, idle ones are
+picked first, so `stat`/`readdir` are not queued behind a 4 MiB
+`GET`/`PATCH`. `xiofsagent --conns N` imports N sockets; on `krb5`/`jwt`
+mounts the kernel issues one `WAIT_NEED` per missing socket. The UAPI is
+unchanged.
 
 ## HTTP/1.1 or serial HTTP/2 + kTLS
 
@@ -107,9 +151,9 @@ strcpy(im.export_path, "/export");
 ioctl(ctlfd, XIOFS_IOC_IMPORT_SOCK, &im);
 ```
 
-A non-krb5/jwt mount uses one socket with a mutex (uid 0). A `krb5` or
-`jwt` mount keeps a uid-to-conn table: each `current_fsuid()` gets its
-own already authenticated HTTP channel. HTTP/2 is one stream at a time
+A non-krb5/jwt mount uses a pool of `conns=` sockets (uid 0). A `krb5` or
+`jwt` mount keeps a uid-to-pool table: each `current_fsuid()` gets its
+own already authenticated HTTP channels. HTTP/2 is one stream at a time
 (HPACK from the HTTP/1 request builders) and is forced off after a
 Kerberos import. JWT imports may keep serial HTTP/2.
 No chunked encoding; XrdHttp sends `Content-Length` on HTTP/1.1.
@@ -120,7 +164,11 @@ or jwt mounts). Dirty pages are redirtied so writeback can retry after a new
 kTLS socket.
 
 Metadata uses a dentry/inode TTL (`actimeo=`, default 30s, `0` always
-revalidates). `d_revalidate` issues PROPFIND/HEAD when the cache expires.
+revalidates). `d_revalidate` issues a conditional PROPFIND when the
+cache expires (see "Round trips and caches").
+
+Mount options: `host=`, `port=`, `path=`, `actimeo=`, `timeo=`,
+`conns=` (1..16, default 4), `defer`/`nodefer`, `http2`, `krb5`, `jwt`.
 
 ## Kerberos (SPNEGO) via xiofsagent
 
@@ -201,17 +249,15 @@ serial HTTP/2; Kerberos imports stay on HTTP/1.1.
 
 | VFS | HTTP |
 |-----|------|
-| lookup / getattr | `PROPFIND` Depth 0, `HEAD` fallback |
-| readdir | `PROPFIND` Depth 1 |
+| lookup / getattr | `PROPFIND` Depth 0 (+ `If-None-Match` on revalidation; `HEAD` only on `403`) |
+| readdir | `PROPFIND` Depth 1 (+ `If-None-Match` on revalidation) |
 | read / readahead | `GET` `Range` |
-| writeback | `PATCH` `Content-Range` + `If-Match` |
-| create / trunc 0 | `PUT` |
-| mkdir | `MKCOL` |
-| unlink | `DELETE` + `If-Match` |
-| rename | `MOVE` |
-| chmod | `PROPPATCH` `X:mode` |
-| chown | `PROPPATCH` `X:uid` / `X:gid` |
-| utimens | `PROPPATCH` `X:atime` / `X:mtime` |
+| writeback | `PATCH` `Content-Range` + `If-Match: "<dev:ino>"` (coalesced, up to 4 MiB) |
+| create / trunc 0 | `PUT` + `Xrd-Mode` (deferred to first flush by default; `If-None-Match: *` for `O_EXCL`) |
+| mkdir | `MKCOL` + `Xrd-Mode` (201 carries the ETag) |
+| unlink | `DELETE` + `If-Match: "<dev:ino>"` |
+| rename | `MOVE` + `If-Match: "<dev:ino>"` |
+| chmod / chown / utimens | one `PROPPATCH` with `X:mode`, `X:uid`/`X:gid`, `X:atime`/`X:mtime` |
 | hard link | `LINK` + `Destination` |
 | symlink | `LINK` + `Xrd-Link-Type: symbolic` + `Xrd-Symlink-Target` |
 | readlink | `GET` + `Xrd-Readlink: 1` |
@@ -223,8 +269,10 @@ serial HTTP/2; Kerberos imports stay on HTTP/1.1.
 ## Explicitly not done
 
 - Chunked responses
-- Multiplexed HTTP/2 streams (the kernel client is serial)
-- Writeback congestion / batching PATCH across folios
+- Multiplexed HTTP/2 streams (each channel is serial; concurrency comes
+  from the `conns=` pool)
+- Server-side change notification: cached metadata is only as fresh as
+  `actimeo=` and the conditional revalidation that follows it
 - RDMA / GPU-direct (`XIOFS_IOC_GPU_READ` returns `-EOPNOTSUPP`)
 
 ## License

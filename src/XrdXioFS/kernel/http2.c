@@ -488,6 +488,7 @@ static int http1_to_hpack(struct xiofs_conn *c, const char *req,
 {
 	char method[32] = {}, path[XIOFS_PATH_MAX] = {};
 	const char *p, *eol, *col;
+	char *val;
 	int err;
 
 	*n = 0;
@@ -510,8 +511,12 @@ static int http1_to_hpack(struct xiofs_conn *c, const char *req,
 	if (!p)
 		return 0;
 	p += 2;
+	/* Authorization: Bearer <JWT> alone can exceed 4 KiB. */
+	val = kmalloc(XIOFS_MAX_HDR, GFP_KERNEL);
+	if (!val)
+		return -ENOMEM;
 	while (p < req + reqlen && *p) {
-		char name[64], val[512];
+		char name[64];
 		size_t nl, vl;
 
 		if (p[0] == '\r' && p[1] == '\n')
@@ -533,17 +538,20 @@ static int http1_to_hpack(struct xiofs_conn *c, const char *req,
 		while (col < eol && (*col == ' ' || *col == '\t'))
 			col++;
 		vl = (size_t)(eol - col);
-		if (vl >= sizeof(val))
-			vl = sizeof(val) - 1;
+		if (vl >= XIOFS_MAX_HDR)
+			vl = XIOFS_MAX_HDR - 1;
 		memcpy(val, col, vl);
 		val[vl] = 0;
 		if (!skip_hdr(name)) {
 			err = hpack_lit(out, cap, n, name, val);
-			if (err)
+			if (err) {
+				kfree(val);
 				return err;
+			}
 		}
 		p = eol + 2;
 	}
+	kfree(val);
 	return 0;
 }
 
@@ -624,8 +632,10 @@ int xiofs_h2_transact(struct xiofs_conn *c, const char *req, size_t reqlen,
 	size_t got = 0;
 	bool end = false, head_only;
 	u8 hflags;
+	size_t alloc_max = meta->alloc_max;
 
 	memset(meta, 0, sizeof(*meta));
+	meta->alloc_max = alloc_max;
 	meta->content_length = -1;
 	if (outlen)
 		*outlen = 0;
@@ -637,10 +647,11 @@ int xiofs_h2_transact(struct xiofs_conn *c, const char *req, size_t reqlen,
 	if (err)
 		return err;
 
-	hpack = kmalloc(2048, GFP_KERNEL);
+	/* Headers (incl. a bearer token) stay below one 16 KiB frame. */
+	hpack = kmalloc(XIOFS_MAX_HDR + 1024, GFP_KERNEL);
 	if (!hpack)
 		return -ENOMEM;
-	err = http1_to_hpack(c, req, reqlen, hpack, 2048, &hlen);
+	err = http1_to_hpack(c, req, reqlen, hpack, XIOFS_MAX_HDR + 1024, &hlen);
 	if (err) {
 		kfree(hpack);
 		return err;
@@ -772,6 +783,16 @@ int xiofs_h2_transact(struct xiofs_conn *c, const char *req, size_t reqlen,
 
 				memcpy((char *)out + got, dp, take);
 				got += take;
+			} else if (!out && meta->alloc_max && dl) {
+				/* Growable body (directory listings). */
+				err = xiofs_resp_body_grow(meta, got + dl);
+				if (err) {
+					kvfree(pay);
+					return err;
+				}
+				memcpy(meta->body + got, dp, dl);
+				got += dl;
+				meta->body_len = got;
 			}
 			if (dl) {
 				err = h2_window_update(c->sock, 0, (u32)dl);

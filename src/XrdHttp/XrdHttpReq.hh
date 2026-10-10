@@ -57,6 +57,8 @@ struct DirListInfo {
   long id;
   long flags;
   long modtime;
+  long ctime{0};
+  long ctime_ns{-1}; // -1: server did not report nanoseconds
   long atime{0};
   unsigned mode{0};
   uid_t uid{(uid_t)-1};
@@ -210,16 +212,30 @@ private:
   // Set the age header from the file modification time
   void addAgeHeader(std::string & headers);
 
-  // Set the ETag header containing union of stat.st_ino and stat.st_dev
-  // See XrdXrootdProtocol::StatGen() for the full definition of etag value.
+  // Set the ETag header. The tag is "<id>-<ctime>-<size>" where <id> is the
+  // union of stat.st_ino and stat.st_dev (XrdXrootdProtocol::StatGen()). The
+  // id keeps If-Match an identity check; ctime and size make the tag change
+  // on every content or metadata modification so If-None-Match is a usable
+  // freshness validator (RFC 9110 §8.8.3).
   void addETagHeader(std::string & headers);
 
-  // If-Match / If-None-Match (RFC 9110 §13.2). exists is whether a current
-  // representation is known. safeMethod selects 304 vs 412 for If-None-Match.
+  // Set "Last-Modified: <IMF-fixdate>" from filemodtime.
+  void addLastModifiedHeader(std::string & headers);
+
+  // Strong entity tag for the current stat (no quotes), see addETagHeader.
+  std::string currentETag() const;
+
+  // True if an unquoted client tag matches the current object: either the
+  // full versioned tag or the bare "<id>" (identity only).
+  bool etagMatches(const std::string &tag) const;
+
+  // If-Match / If-None-Match / If-Modified-Since / If-Unmodified-Since
+  // (RFC 9110 §13.2). exists is whether a current representation is known.
+  // safeMethod selects 304 vs 412 for If-None-Match / If-Modified-Since.
   // Returns 0, 304, 400, or 412.
   int evaluatePreconditions(bool exists, bool safeMethod);
 
-  // Parse "id size flags mtime" from kXR_stat / kXR_retstat.
+  // Parse "id size flags mtime [ctime ...]" from kXR_stat / kXR_retstat.
   void parseXrdStat(const char *s);
 
   /**
@@ -231,6 +247,12 @@ private:
   int prepareChecksumQuery(XrdHttpChecksumHandler::XrdHttpChecksumRawPtr & outCksum, XrdOucString & outResourceDigestOpaque);
 
 public:
+  // Strong entity tag from (id, ctime[.ns], size), see addETagHeader.
+  // Shared with the PROPFIND entry writer so listings carry the same tag.
+  // ctime_ns < 0 omits the fractional part.
+  static std::string makeETag(long long id, long ctime, long ctime_ns,
+                              long long size);
+
   XrdHttpReq(XrdHttpProtocol *protinstance, const XrdHttpReadRangeHandler::Configuration &rcfg) :
       readRangeHandler(rcfg), closeAfterError(false), keepalive(true) {
 
@@ -285,6 +307,9 @@ public:
 
   /// MKNOD (or PUT with Xrd-Mknod: 1).
   int runMknodReq();
+
+  /// PUT/PATCH after kXR_close: kXR_stat so the response ETag is current.
+  int runPostWriteStat();
 
   /// Path-based kXR_fattr (GET Xrd-Xattr / PROPPATCH xattr-*).
   int runFattrReq(int subcode, const std::string &name, const std::string &value);
@@ -401,6 +426,7 @@ public:
   long fileflags;
   long filemodtime;
   long filectime;
+  long filectime_ns;
   char fhandle[4];
   bool fopened;
 
@@ -422,8 +448,14 @@ public:
   /// If-Match / If-None-Match raw header values (trimmed, no CRLF).
   std::string if_match;
   std::string if_none_match;
+  /// If-Modified-Since / If-Unmodified-Since as unix seconds (-1 = absent).
+  long long if_modified_since{-1};
+  long long if_unmodified_since{-1};
   /// PUT: true once a pre-open STAT has evaluated If-Match / If-None-Match.
   bool m_precond_ok{false};
+  /// PUT/PATCH: the handle is closed; a kXR_stat is in flight so the 201/204
+  /// carries the post-write ETag (ctime/size) rather than the open-time one.
+  bool m_poststat_pending{false};
 
   /// PROPPATCH: parsed property items and the unix mode to apply (-1 = none).
   struct PropPatchItem {

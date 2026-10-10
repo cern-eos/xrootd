@@ -2585,6 +2585,8 @@ bool XrdHttpProtocol::fileCacheApply(XrdHttpReq &req, bool needWrite)
   req.etagval = fileCache_.etagval;
   req.fileflags = fileCache_.fileflags;
   req.filemodtime = fileCache_.filemodtime;
+  req.filectime = fileCache_.filectime;
+  req.filectime_ns = fileCache_.filectime_ns;
   TRACE(REQ, "Reusing cached " << (fileCache_.writable ? "write " : "")
         << "open " << fileCache_.key.c_str());
   return true;
@@ -2604,6 +2606,8 @@ void XrdHttpProtocol::fileCacheStore(const XrdHttpReq &req, bool writable)
   fileCache_.etagval = req.etagval;
   fileCache_.fileflags = req.fileflags;
   fileCache_.filemodtime = req.filemodtime;
+  fileCache_.filectime = req.filectime;
+  fileCache_.filectime_ns = req.filectime_ns;
   TRACE(REQ, "Cached " << (writable ? "write " : "")
         << "open " << fileCache_.key.c_str());
 }
@@ -3909,6 +3913,8 @@ int XrdHttpProtocol::doStat(char *fname) {
   CurrentReq.filesize = 0;
   CurrentReq.fileflags = 0;
   CurrentReq.filemodtime = 0;
+  CurrentReq.filectime = 0;
+  CurrentReq.filectime_ns = -1;
 
   memset(&CurrentReq.xrdreq, 0, sizeof (ClientRequest));
   CurrentReq.xrdreq.stat.requestid = htons(kXR_stat);

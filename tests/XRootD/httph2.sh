@@ -172,9 +172,17 @@ function test_httph2() {
 		-H 'If-Match: "0"' -H 'Content-Range: bytes 4-7/*' \
 		--data-binary 'ZZZZ' "${HTTPS_HOST}/h2-precond.bin")
 	assert_eq 412 "${code}" "PATCH with stale If-Match should return 412"
-	code=$(h2 -s -o /dev/null -w '%{http_code}' -H "If-None-Match: ${etag}" \
+	# Versioned ETag: the PATCH changed it; re-read before the 304 check.
+	newetag=$(h2 -sI "${HTTPS_HOST}/h2-precond.bin" | extract_etag)
+	[ "${newetag}" != "${etag}" ] || error "ETag should change after PATCH"
+	code=$(h2 -s -o /dev/null -w '%{http_code}' -H "If-None-Match: ${newetag}" \
 		"${HTTPS_HOST}/h2-precond.bin")
 	assert_eq 304 "${code}" "GET If-None-Match matching ETag should return 304"
+	identity=$(printf '%s' "${newetag}" | tr -d '"' | cut -d- -f1)
+	code=$(h2 -s -o /dev/null -w '%{http_code}' -X PATCH \
+		-H "If-Match: \"${identity}\"" -H 'Content-Range: bytes 8-9/*' \
+		--data-binary 'WW' "${HTTPS_HOST}/h2-precond.bin")
+	assert_eq 204 "${code}" "PATCH with identity-only If-Match should return 204"
 	code=$(h2 -s -o /dev/null -w '%{http_code}' -T "${tmpdir}/precond-src" \
 		-H 'If-None-Match: *' "${HTTPS_HOST}/h2-precond.bin")
 	assert_eq 412 "${code}" "PUT If-None-Match * on existing file should return 412"

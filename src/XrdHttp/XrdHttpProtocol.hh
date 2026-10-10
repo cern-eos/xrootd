@@ -422,6 +422,8 @@ private:
     long long   etagval{0};
     long        fileflags{0};
     long        filemodtime{0};
+    long        filectime{0};
+    long        filectime_ns{-1};
   } fileCache_;
   std::map<std::string, std::string> lockHolds_;
   bool fileCacheHoldReqstate_{false};

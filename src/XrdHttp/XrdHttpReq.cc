@@ -218,6 +218,8 @@ void fillDirListFromStat(const char *s, DirListInfo &e)
   e.id = 0;
   e.flags = 0;
   e.modtime = 0;
+  e.ctime = 0;
+  e.ctime_ns = -1;
   e.atime = 0;
   e.mode = 0;
   e.uid = static_cast<uid_t>(-1);
@@ -225,20 +227,24 @@ void fillDirListFromStat(const char *s, DirListInfo &e)
   if (!s)
     return;
   long long id = 0;
-  long ctime = 0;
   unsigned mode = 0;
   char owner[128] = {};
   char group[128] = {};
   char ftype[16] = {};
   unsigned long long rdev = 0;
-  int n = sscanf(s, "%lld %lld %ld %ld %ld %ld %o %127s %127s %15s %llu",
-                 &id, &e.size, &e.flags, &e.modtime, &ctime, &e.atime, &mode,
-                 owner, group, ftype, &rdev);
+  long ctns = -1;
+  int n = sscanf(s, "%lld %lld %ld %ld %ld %ld %o %127s %127s %15s %llu %ld",
+                 &id, &e.size, &e.flags, &e.modtime, &e.ctime, &e.atime, &mode,
+                 owner, group, ftype, &rdev, &ctns);
   if (n < 4)
     return;
   e.id = static_cast<long>(id);
+  if (n < 5)
+    e.ctime = e.modtime;
   if (n < 6)
     e.atime = e.modtime;
+  if (n >= 12)
+    e.ctime_ns = ctns;
   if (n >= 7) {
     e.mode = mode & 07777;
   } else {
@@ -311,6 +317,10 @@ void davAppendPosixProps(std::string &s, const DirListInfo &e)
     snprintf(tmp, sizeof(tmp), "<X:mtime>%ld</X:mtime>\n", e.modtime);
     s += tmp;
   }
+  if (e.ctime) {
+    snprintf(tmp, sizeof(tmp), "<X:ctime>%ld</X:ctime>\n", e.ctime);
+    s += tmp;
+  }
 }
 
 void davAppendEntry(std::string &s, const std::string &href, const DirListInfo &e)
@@ -330,6 +340,11 @@ void davAppendEntry(std::string &s, const std::string &href, const DirListInfo &
   s += "<lp1:getlastmodified>";
   s += ISOdatetime(e.modtime);
   s += "</lp1:getlastmodified>\n";
+  // Same tag as the ETag header on HEAD/GET/PUT/PATCH for this resource, so
+  // a client can seed If-Match / If-None-Match from a listing.
+  s += "<lp1:getetag>\"";
+  s += XrdHttpReq::makeETag(e.id, e.ctime, e.ctime_ns, e.size);
+  s += "\"</lp1:getetag>\n";
   davAppendPosixProps(s, e);
   s += "</D:prop>\n<D:status>HTTP/1.1 200 OK</D:status>\n</D:propstat>\n"
        "</D:response>\n";
@@ -725,6 +740,29 @@ int XrdHttpReq::runReadlinkReq()
   return 1;
 }
 
+int XrdHttpReq::runPostWriteStat()
+{
+  // Keep the open-time stat as a fallback: doStat() zeroes the fields and
+  // the response path re-reads them from the kXR_stat answer.
+  const long long id = etagval;
+  const long long sz = filesize;
+  const long fl = fileflags, mt = filemodtime, ct = filectime, ctns = filectime_ns;
+  if (prot->doStat((char *) resourceplusopaque.c_str()) < 0) {
+    etagval = id; filesize = sz; fileflags = fl; filemodtime = mt;
+    filectime = ct; filectime_ns = ctns;
+    std::string hdr;
+    addETagHeader(hdr);
+    if (request == rtPATCH)
+      prot->SendSimpleResp(204, NULL, hdr.c_str(), NULL, 0, keepalive);
+    else
+      prot->SendSimpleResp(201, NULL, hdr.c_str(), (char *)":-)", 0, keepalive);
+    const int rc = keepalive ? 1 : -1;
+    reset();
+    return rc;
+  }
+  return 1;
+}
+
 int XrdHttpReq::runMknodReq()
 {
   request = rtMKNOD;
@@ -1010,6 +1048,14 @@ int XrdHttpReq::parseLine(char *line, int len) {
       if_match = ss;
     } else if (!strcasecmp(key, "if-none-match")) {
       if_none_match = ss;
+    } else if (!strcasecmp(key, "if-modified-since")) {
+      long long sec;
+      if (parseUnixTime(ss, sec))
+        if_modified_since = sec;
+    } else if (!strcasecmp(key, "if-unmodified-since")) {
+      long long sec;
+      if (parseUnixTime(ss, sec))
+        if_unmodified_since = sec;
     } else if (!strcasecmp(key, "destination")) {
       destination.assign(val, line+len-val);
       trim(destination);
@@ -1936,8 +1982,9 @@ int XrdHttpReq::processWritePayload()
       return sendFooterError("Could not run close request on the bridge");
     }
 
-    // We have finished
-    return 1;
+    // Re-invoke after the close: the next reqstate stats the file so the
+    // 201/204 carries the post-write ETag.
+    return 0;
 
   }
 }
@@ -2387,6 +2434,8 @@ int XrdHttpReq::ProcessHTTPReq() {
 
     case XrdHttpReq::rtPUT:
     {
+      if (m_poststat_pending)
+        return runPostWriteStat();
       if (hdrTruthy(allheaders, "xrd-mknod"))
         return runMknodReq();
       //if (prot->ishttps) {
@@ -2421,6 +2470,17 @@ int XrdHttpReq::ProcessHTTPReq() {
         l = resourceplusopaque.length() + 1;
         xrdreq.open.dlen = htonl(l);
         xrdreq.open.mode = htons(kXR_ur | kXR_uw | kXR_gw | kXR_gr | kXR_or);
+        {
+          // Xrd-Mode: <octal> lets a POSIX client create with its own
+          // mode in the same round trip instead of PUT + PROPPATCH.
+          auto mit = allheaders.find("xrd-mode");
+          if (mit != allheaders.end() && !mit->second.empty()) {
+            char *end = 0;
+            unsigned long mv = strtoul(mit->second.c_str(), &end, 8);
+            if (end != mit->second.c_str())
+              xrdreq.open.mode = htons(unixToKxrMode((mode_t)(mv & 0777)));
+          }
+        }
         if (! XrdHttpProtocol::usingEC) 
           xrdreq.open.options = htons(kXR_mkpath | kXR_open_wrto | kXR_delete | kXR_retstat);
         else
@@ -2524,6 +2584,8 @@ int XrdHttpReq::ProcessHTTPReq() {
     }
     case XrdHttpReq::rtPATCH:
     {
+      if (m_poststat_pending)
+        return runPostWriteStat();
       if (patchOffset < 0) {
         prot->SendSimpleResp(400, NULL, NULL,
             (char *) "PATCH requires Content-Range: bytes first-last/complete",
@@ -2655,6 +2717,17 @@ int XrdHttpReq::ProcessHTTPReq() {
     }
     case XrdHttpReq::rtMKCOL:
     {
+      if (m_poststat_pending) {
+        // Stat the new collection so the 201 carries its ETag; the
+        // kernel client keys the directory inode on it.
+        if (prot->doStat((char *) resourceplusopaque.c_str()) < 0) {
+          prot->SendSimpleResp(201, NULL, NULL, (char *) ":-)", 0, keepalive);
+          const int rc = keepalive ? 1 : -1;
+          reset();
+          return rc;
+        }
+        return 1;
+      }
 
       if (prot->fileCacheCloseIfOpen())
         return 0;
@@ -2665,6 +2738,15 @@ int XrdHttpReq::ProcessHTTPReq() {
 
       std::string s = resourceplusopaque.c_str();
       xrdreq.mkdir.options[0] = (kXR_char) kXR_mkdirpath;
+      {
+        auto mit = allheaders.find("xrd-mode");
+        if (mit != allheaders.end() && !mit->second.empty()) {
+          char *end = 0;
+          unsigned long mv = strtoul(mit->second.c_str(), &end, 8);
+          if (end != mit->second.c_str())
+            xrdreq.mkdir.mode = htons(unixToKxrMode((mode_t)(mv & 0777)));
+        }
+      }
 
       l = s.length() + 1;
       xrdreq.mkdir.dlen = htonl(l);
@@ -2674,8 +2756,9 @@ int XrdHttpReq::ProcessHTTPReq() {
         return -1;
       }
 
-      // We don't want to be invoked again after this request is finished
-      return 1;
+      // Re-invoke after the mkdir so the next reqstate can stat the
+      // new collection for the ETag of the 201.
+      return 0;
     }
     case XrdHttpReq::rtMOVE:
     {
@@ -3098,6 +3181,8 @@ XrdHttpReq::ReturnGetHeaders() {
   if (pc == 304) {
     std::string hdr;
     addETagHeader(hdr);
+    hdr += "\r\n";
+    addLastModifiedHeader(hdr);
     const bool ka = keepalive;
     prot->SendSimpleResp(304, NULL, hdr.c_str(), NULL, 0, ka);
     reset();
@@ -3115,6 +3200,8 @@ XrdHttpReq::ReturnGetHeaders() {
   if (!responseHeader.empty())
     responseHeader += "\r\n";
   addETagHeader(responseHeader);
+  responseHeader += "\r\n";
+  addLastModifiedHeader(responseHeader);
   if (fileflags & kXR_cachersp) {
       if (!responseHeader.empty()) {
         responseHeader += "\r\n";
@@ -3186,6 +3273,8 @@ XrdHttpReq::ReturnGetHeaders() {
   }
   header += "\r\n";
   addETagHeader(header);
+  header += "\r\n";
+  addLastModifiedHeader(header);
   if (fileflags & kXR_cachersp) {
     if (!header.empty()) {
       header += "\r\n";
@@ -3256,16 +3345,14 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
           TRACEI(REQ, "Stat for HEAD " << resource.c_str()
                       << " stat=" << (char *) iovP[0].iov_base);
 
-          sscanf((const char *) iovP[0].iov_base, "%lld %lld %ld %ld",
-                  &etagval,
-                  &filesize,
-                  &fileflags,
-                  &filemodtime);
+          parseXrdStat((const char *) iovP[0].iov_base);
 
           int pc = evaluatePreconditions(true, true);
           if (pc == 304) {
             std::string hdr;
             addETagHeader(hdr);
+            hdr += "\r\n";
+            addLastModifiedHeader(hdr);
             prot->SendSimpleResp(304, NULL, hdr.c_str(), NULL, 0, keepalive);
             return keepalive ? 1 : -1;
           }
@@ -3284,6 +3371,8 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
             }
 
             addETagHeader(response_headers);
+            response_headers += "\r\n";
+            addLastModifiedHeader(response_headers);
             response_headers += "\r\n";
 
             response_headers += "Accept-Ranges: bytes";
@@ -3305,6 +3394,8 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
           }
           if (!response_headers.empty()) {response_headers += "\r\n";}
           addETagHeader(response_headers);
+          response_headers += "\r\n";
+          addLastModifiedHeader(response_headers);
           response_headers += "\r\n";
           if (fileflags & kXR_cachersp) {
             addAgeHeader(response_headers);
@@ -3336,10 +3427,17 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
               long long stsize = 0;
               long stflags = 0;
               long stmtime = 0;
+              long stctime = 0, stctns = -1;
               TRACEI(REQ, "Stat for cached GET " << resource.c_str()
                         << " stat=" << (char *) iovP[0].iov_base);
-              sscanf((const char *) iovP[0].iov_base, "%lld %lld %ld %ld",
-                     &etagval, &stsize, &stflags, &stmtime);
+              int nst = sscanf((const char *) iovP[0].iov_base,
+                               "%lld %lld %ld %ld %ld %*ld %*o %*s %*s %*s %*llu %ld",
+                               &etagval, &stsize, &stflags, &stmtime, &stctime,
+                               &stctns);
+              if (nst < 5)
+                stctime = stmtime;
+              if (nst < 6)
+                stctns = -1;
               stale = (stflags & kXR_isDir);
               // A writable handle is still the same file after our own PATCH;
               // size/mtime will have changed. Refresh stats and keep it.
@@ -3349,6 +3447,8 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
                 filesize = stsize;
                 fileflags = stflags;
                 filemodtime = stmtime;
+                filectime = stctime;
+                filectime_ns = stctns;
                 readRangeHandler.SetFilesize(filesize);
                 if (!length)
                   length = filesize;
@@ -3549,6 +3649,27 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
         break;
       } else {
 
+        if (m_poststat_pending &&
+            ntohs(xrdreq.header.requestid) == kXR_stat) {
+          // Post-close stat: success or not, the write already completed.
+          std::string hdr;
+          if (xrdresp == kXR_ok && iovN > 0 && iovP && iovP[0].iov_base) {
+            parseXrdStat((const char *) iovP[0].iov_base);
+            addETagHeader(hdr);
+            hdr += "\r\n";
+            addLastModifiedHeader(hdr);
+          }
+          if (request == rtPATCH)
+            prot->SendSimpleResp(204, NULL, hdr.empty() ? NULL : hdr.c_str(),
+                                 NULL, 0, keepalive);
+          else
+            prot->SendSimpleResp(201, NULL, hdr.empty() ? NULL : hdr.c_str(),
+                                 (char *)":-)", 0, keepalive);
+          const int rc = keepalive ? 1 : -1;
+          reset();
+          return rc;
+        }
+
         // If we are here it's too late to send a proper error message...
         // However, we decide to send a response anyway before we close the connection
         // We are not sure if sending a final response before reading the entire request
@@ -3579,15 +3700,10 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
 
         if (ntohs(xrdreq.header.requestid) == kXR_close) {
           if (xrdresp == kXR_ok) {
-            std::string hdr;
-            addETagHeader(hdr);
-            if (request == rtPATCH)
-              prot->SendSimpleResp(204, NULL, hdr.c_str(), NULL, 0, keepalive);
-            else
-              prot->SendSimpleResp(201, NULL, hdr.c_str(), (char *)":-)", 0, keepalive);
-            const int rc = keepalive ? 1 : -1;
-            reset();
-            return rc;
+            // One local stat so the ETag in the 201/204 is the post-write
+            // tag; without it the client's next If-Match would be stale.
+            m_poststat_pending = true;
+            return 0;
           } else {
             prot->SendSimpleResp(httpStatusCode, NULL, NULL, httpErrorBody.c_str(), httpErrorBody.length(), keepalive);
             return -1;
@@ -3680,6 +3796,32 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
 
             fillDirListFromStat((const char *) iovP[0].iov_base, e);
 
+            // The collection's own stat is the version of the listing: any
+            // create/unlink/rename below it bumps the directory ctime/mtime.
+            // Evaluate If-None-Match / If-Modified-Since against it before
+            // paying for kXR_dirlist, and tag the 207 so the client can
+            // revalidate next time.
+            etagval = e.id;
+            filesize = e.size;
+            fileflags = e.flags;
+            filemodtime = e.modtime;
+            filectime = e.ctime;
+            filectime_ns = e.ctime_ns;
+            int pc = evaluatePreconditions(true, true);
+            if (pc == 304) {
+              std::string hdr;
+              addETagHeader(hdr);
+              hdr += "\r\n";
+              addLastModifiedHeader(hdr);
+              prot->SendSimpleResp(304, NULL, hdr.c_str(), NULL, 0, keepalive);
+              return keepalive ? 1 : -1;
+            }
+            if (pc) {
+              prot->SendSimpleResp(pc, NULL, NULL,
+                                   (char *) "Precondition Failed", 0, false);
+              return -1;
+            }
+
             if (e.path.length() && (e.path != ".") && (e.path != ".."))
               davAppendEntry(stringresp, e.path, e);
           }
@@ -3689,7 +3831,11 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
             std::string s = kDavMultistatusOpen;
             stringresp.insert(0, s);
             stringresp += "</D:multistatus>\n";
-            prot->SendSimpleResp(207, (char *) "Multi-Status", (char *) "Content-Type: text/xml; charset=\"utf-8\"",
+            std::string hdr = "Content-Type: text/xml; charset=\"utf-8\"\r\n";
+            addETagHeader(hdr);
+            hdr += "\r\n";
+            addLastModifiedHeader(hdr);
+            prot->SendSimpleResp(207, (char *) "Multi-Status", (char *) hdr.c_str(),
                     (char *) stringresp.c_str(), stringresp.length(), keepalive);
             stringresp.clear();
             return keepalive ? 1 : -1;
@@ -3749,7 +3895,14 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
             std::string s = kDavMultistatusOpen;
             stringresp.insert(0, s);
             stringresp += "</D:multistatus>\n";
-            prot->SendSimpleResp(207, (char *) "Multi-Status", (char *) "Content-Type: text/xml; charset=\"utf-8\"",
+            // etagval/filectime/filesize still describe the collection
+            // (set in reqstate 0); the kernel client stores this tag with
+            // its directory cache and sends it back as If-None-Match.
+            std::string hdr = "Content-Type: text/xml; charset=\"utf-8\"\r\n";
+            addETagHeader(hdr);
+            hdr += "\r\n";
+            addLastModifiedHeader(hdr);
+            prot->SendSimpleResp(207, (char *) "Multi-Status", (char *) hdr.c_str(),
                     (char *) stringresp.c_str(), stringresp.length(), keepalive);
             stringresp.clear();
             return keepalive ? 1 : -1;
@@ -3766,6 +3919,20 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
 
     case XrdHttpReq::rtMKCOL:
     {
+      if (m_poststat_pending && ntohs(xrdreq.header.requestid) == kXR_stat) {
+        std::string hdr;
+        if (xrdresp == kXR_ok && iovN > 0 && iovP && iovP[0].iov_base) {
+          parseXrdStat((const char *) iovP[0].iov_base);
+          addETagHeader(hdr);
+          hdr += "\r\n";
+          addLastModifiedHeader(hdr);
+        }
+        prot->SendSimpleResp(201, NULL, hdr.empty() ? NULL : hdr.c_str(),
+                             (char *) ":-)", 0, keepalive);
+        const int rc = keepalive ? 1 : -1;
+        reset();
+        return rc;
+      }
 
       if (xrdresp != kXR_ok) {
         if (xrderrcode == kXR_ItExists) {
@@ -3777,9 +3944,8 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
         return -1;
       }
 
-      prot->SendSimpleResp(201, NULL, NULL, (char *) ":-)", 0, keepalive);
-      return keepalive ? 1 : -1;
-
+      m_poststat_pending = true;
+      return 0;
     }
     case XrdHttpReq::rtMOVE:
     {
@@ -3964,19 +4130,68 @@ void XrdHttpReq::addAgeHeader(std::string &headers) {
   headers += std::string("Age: ") + std::to_string(object_age < 0 ? 0 : object_age);
 }
 
+std::string XrdHttpReq::makeETag(long long id, long ctime, long ctime_ns,
+                                 long long size)
+{
+  char buf[112];
+  if (ctime_ns >= 0)
+    snprintf(buf, sizeof(buf), "%lld-%ld.%09ld-%lld", id, ctime, ctime_ns, size);
+  else
+    snprintf(buf, sizeof(buf), "%lld-%ld-%lld", id, ctime, size);
+  return buf;
+}
+
+std::string XrdHttpReq::currentETag() const
+{
+  return makeETag(etagval, filectime, filectime_ns, filesize);
+}
+
 void XrdHttpReq::addETagHeader(std::string &headers) {
-  headers += std::string("Etag: \"") + std::to_string(etagval) + "\"";
+  headers += std::string("Etag: \"") + currentETag() + "\"";
+}
+
+void XrdHttpReq::addLastModifiedHeader(std::string &headers) {
+  char buf[64];
+  struct tm tm;
+  time_t t = (time_t)filemodtime;
+  gmtime_r(&t, &tm);
+  strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S GMT", &tm);
+  headers += std::string("Last-Modified: ") + buf;
 }
 
 void XrdHttpReq::parseXrdStat(const char *s)
 {
   if (!s)
     return;
-  sscanf(s, "%lld %lld %ld %ld", &etagval, &filesize, &fileflags, &filemodtime);
+  long ct = 0, ctns = -1;
+  int n = sscanf(s, "%lld %lld %ld %ld %ld %*ld %*o %*s %*s %*s %*llu %ld",
+                 &etagval, &filesize, &fileflags, &filemodtime, &ct, &ctns);
+  // Old servers (or a cached-open stat) may stop after mtime; the ctime
+  // nanoseconds are the 12th token and optional.
+  filectime = (n >= 5) ? ct : filemodtime;
+  filectime_ns = (n >= 6) ? ctns : -1;
+}
+
+// A tag matches when it equals the full "<id>-<ctime>-<size>" (version
+// match) or is the bare "<id>" (identity match: same object, any version).
+// Writers that only need "still the file I opened" send the bare id so a
+// chmod or an append by someone else does not fail their writeback with 412.
+bool XrdHttpReq::etagMatches(const std::string &tag) const
+{
+  if (tag == currentETag())
+    return true;
+  if (tag.empty() || tag.find('-', 1) != std::string::npos)
+    return false;
+  char *end = 0;
+  long long v = strtoll(tag.c_str(), &end, 10);
+  return end && *end == 0 && end != tag.c_str() && v == etagval;
 }
 
 int XrdHttpReq::evaluatePreconditions(bool exists, bool safeMethod)
 {
+  // RFC 9110 §13.2.2 evaluation order: If-Match, If-Unmodified-Since (only
+  // when If-Match is absent), If-None-Match, If-Modified-Since (only when
+  // If-None-Match is absent).
   if (!if_match.empty()) {
     std::vector<std::string> tags;
     bool star = false;
@@ -3986,15 +4201,17 @@ int XrdHttpReq::evaluatePreconditions(bool exists, bool safeMethod)
     if (star) {
       match = exists;
     } else if (exists) {
-      const std::string cur = std::to_string(etagval);
       for (const auto &t : tags) {
-        if (t == cur) {
+        if (etagMatches(t)) {
           match = true;
           break;
         }
       }
     }
     if (!match)
+      return 412;
+  } else if (if_unmodified_since >= 0 && exists) {
+    if ((long long)filemodtime > if_unmodified_since)
       return 412;
   }
 
@@ -4007,9 +4224,8 @@ int XrdHttpReq::evaluatePreconditions(bool exists, bool safeMethod)
     if (star) {
       match = exists;
     } else if (exists) {
-      const std::string cur = std::to_string(etagval);
       for (const auto &t : tags) {
-        if (t == cur) {
+        if (etagMatches(t)) {
           match = true;
           break;
         }
@@ -4017,6 +4233,9 @@ int XrdHttpReq::evaluatePreconditions(bool exists, bool safeMethod)
     }
     if (match)
       return safeMethod ? 304 : 412;
+  } else if (if_modified_since >= 0 && exists && safeMethod) {
+    if ((long long)filemodtime <= if_modified_since)
+      return 304;
   }
   return 0;
 }
@@ -4070,6 +4289,10 @@ void XrdHttpReq::reset() {
   length_seen = false;
   filesize = 0;
   etagval = 0;
+  filectime = 0;
+  filectime_ns = -1;
+  filemodtime = 0;
+  fileflags = 0;
   depth = 0;
   sendcontinue = false;
 
@@ -4102,7 +4325,10 @@ void XrdHttpReq::reset() {
   patchComplete = -1;
   if_match.clear();
   if_none_match.clear();
+  if_modified_since = -1;
+  if_unmodified_since = -1;
   m_precond_ok = false;
+  m_poststat_pending = false;
   proppatchItems.clear();
   proppatchUnixMode = -1;
   proppatchHaveUid = proppatchHaveGid = false;

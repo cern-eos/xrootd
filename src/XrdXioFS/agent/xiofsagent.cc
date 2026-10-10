@@ -78,6 +78,8 @@ struct Options {
   bool jwt{false};
   bool helper{false};
   unsigned workers{1};
+  unsigned conns{4};
+  bool defer{true};
 };
 
 void usage(const char *argv0)
@@ -85,12 +87,14 @@ void usage(const char *argv0)
   std::cerr
       << "Usage: " << argv0 << " [--cacert FILE] [--insecure]\n"
       << "          [--token TOK | --tokenfile FILE] [--import-only]\n"
-      << "          [--actimeo SEC] [--timeo SEC] [--http2]\n"
-      << "          [--krb5] [--jwt] [--workers N] URL [MOUNTPOINT]\n"
+      << "          [--actimeo SEC] [--timeo SEC] [--http2] [--conns N]\n"
+      << "          [--nodefer] [--krb5] [--jwt] [--workers N] URL [MOUNTPOINT]\n"
       << "\n"
       << "  Handshake to URL, install kTLS, import the socket into xiofs.ko.\n"
       << "  With MOUNTPOINT (default), mount -t xiofs first then import.\n"
       << "  --http2: ALPN h2 and XIOFS_IMPORT_H2 (serial in-kernel HTTP/2).\n"
+      << "  --conns N: sockets per mount (per uid with krb5/jwt), default 4.\n"
+      << "  --nodefer: send PUT at create() instead of with the first flush.\n"
       << "  --krb5: mount with krb5, then WAIT_NEED loop (SPNEGO per uid).\n"
       << "  --jwt: mount with jwt, then WAIT_NEED loop (WLCG bt_u<uid> per uid).\n"
       << "  --workers N: N processes in the WAIT_NEED loop (default 1).\n"
@@ -100,7 +104,7 @@ void usage(const char *argv0)
       << "\n"
       << "  As mount.xiofs: mount -t xiofs -o host=H,port=P,path=/export none DIR\n"
       << "  Extra -o keys: cacert, token, tokenfile, insecure, url, actimeo,\n"
-      << "  timeo, http2, krb5, jwt.\n";
+      << "  timeo, conns, defer, nodefer, http2, krb5, jwt.\n";
 }
 
 int fail(const std::string &msg, int rc)
@@ -369,7 +373,10 @@ std::string kernelMountData(const XioFS::Url &url, const Options &opt)
   std::ostringstream os;
   os << "host=" << url.host << ",port=" << url.port << ",path="
      << (url.path.empty() ? "/" : url.path)
-     << ",actimeo=" << opt.actimeo << ",timeo=" << opt.timeo;
+     << ",actimeo=" << opt.actimeo << ",timeo=" << opt.timeo
+     << ",conns=" << (opt.conns ? opt.conns : 1);
+  if (!opt.defer)
+    os << ",nodefer";
   if (opt.krb5)
     os << ",krb5";
   if (opt.jwt)
@@ -435,6 +442,12 @@ bool applyMountOpt(const std::string &kv, Options &opt, XioFS::Url &url,
     opt.actimeo = static_cast<unsigned>(std::atoi(val.c_str()));
   else if (key == "timeo")
     opt.timeo = static_cast<unsigned>(std::atoi(val.c_str()));
+  else if (key == "conns")
+    opt.conns = static_cast<unsigned>(std::atoi(val.c_str()));
+  else if (key == "defer")
+    opt.defer = true;
+  else if (key == "nodefer")
+    opt.defer = false;
   else if (key == "http2")
     opt.http2 = true;
   else if (key == "krb5")
@@ -554,6 +567,10 @@ int parseAgentArgs(int argc, char **argv, Options &opt, std::string &err)
       opt.actimeo = static_cast<unsigned>(std::atoi(argv[++i]));
     else if (a == "--timeo" && i + 1 < argc)
       opt.timeo = static_cast<unsigned>(std::atoi(argv[++i]));
+    else if (a == "--conns" && i + 1 < argc)
+      opt.conns = static_cast<unsigned>(std::atoi(argv[++i]));
+    else if (a == "--nodefer")
+      opt.defer = false;
     else if (a == "--http2")
       opt.http2 = true;
     else if (a == "--krb5")
@@ -879,47 +896,43 @@ int run(const Options &opt)
     did_mount = true;
   }
 
-  int fd = tcpConnect(url, err);
-  if (fd < 0) {
-    if (did_mount)
-      umount(opt.mountpoint.c_str());
-    return fail(err, 1);
-  }
-
-  SSL_CTX *ctx = nullptr;
-  SSL *ssl = nullptr;
-  if (url.tls) {
-    if (handshakeAndKtls(&fd, url, opt, &ctx, &ssl, err)) {
-      if (fd >= 0)
-        close(fd);
-      if (did_mount)
-        umount(opt.mountpoint.c_str());
-      return fail(err, 1);
+  // One socket per kernel channel: the module keeps up to conns= channels
+  // per mount so metadata is not queued behind a large GET or PATCH.
+  unsigned n = opt.conns ? opt.conns : 1;
+  for (unsigned i = 0; i < n; ++i) {
+    int fd = -1;
+    SSL_CTX *ctx = nullptr;
+    SSL *ssl = nullptr;
+    int rc = handshakeNeed(&fd, url, opt, &ctx, &ssl, err);
+    if (rc) {
+      if (i == 0) {
+        if (did_mount)
+          umount(opt.mountpoint.c_str());
+        return fail(err, 1);
+      }
+      std::cerr << "xiofsagent: channel " << i + 1 << "/" << n
+                << " not connected: " << err << "\n";
+      break;
     }
-    SSL_set_quiet_shutdown(ssl, 1);
-  }
-
-  if (importSock(fd, url, opt, err, 0, 0)) {
-    if (ssl) {
-      SSL_free(ssl);
-      SSL_CTX_free(ctx);
+    if (ssl)
+      SSL_set_quiet_shutdown(ssl, 1);
+    if (importSock(fd, url, opt, err, 0, 0)) {
+      dropSsl(ssl, ctx, fd);
+      if (i == 0) {
+        if (did_mount)
+          umount(opt.mountpoint.c_str());
+        return fail(err, 1);
+      }
+      std::cerr << "xiofsagent: channel " << i + 1 << "/" << n
+                << " not imported: " << err << "\n";
+      break;
     }
-    close(fd);
-    if (did_mount)
-      umount(opt.mountpoint.c_str());
-    return fail(err, 1);
+    dropSsl(ssl, ctx, fd);
+    if (opt.verbose)
+      std::cerr << "xiofsagent: imported "
+                << (url.tls ? "kTLS" : "plaintext") << " socket " << i + 1
+                << "/" << n << " for " << opt.url << "\n";
   }
-
-  if (ssl) {
-    SSL_free(ssl);
-    SSL_CTX_free(ctx);
-  }
-  close(fd);
-
-  if (opt.verbose)
-    std::cerr << "xiofsagent: imported "
-              << (url.tls ? "kTLS" : "plaintext") << " socket for " << opt.url
-              << "\n";
   return 0;
 }
 

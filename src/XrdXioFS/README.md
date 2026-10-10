@@ -54,7 +54,12 @@ kTLS, and imports the socket via `/dev/xiofsctl`. See
 | listxattr | `GET` + `Xrd-Xattr-List: 1` |
 | POSIX lock / flock | `LOCK` / `UNLOCK` |
 
-Identity is **URL path + ETag** (XrdHttp `ETag` from `StatGen`).
+XrdHttp's `ETag` is `"<dev:ino>-<ctime>[.ns]-<size>"`: the prefix before
+the first `-` is the object identity (what `st_ino` and `If-Match` on
+mutations use), the full tag is a validator for `If-None-Match`
+revalidation (`304`). `Last-Modified` / `If-Modified-Since` /
+`If-Unmodified-Since` are supported as well, including on `PROPFIND`
+against the collection. `PROPFIND` entries carry `getetag` and `X:ctime`.
 
 ## Build
 

@@ -5,6 +5,7 @@
 
 #include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <functional>
 #include <sstream>
@@ -51,9 +52,26 @@ int httpToErrno(int status)
 
 namespace {
 
+// XrdHttp tags are "<dev:ino>-<ctime>[.ns]-<size>"; the part before the
+// first '-' identifies the object across versions.
+std::string etagIdentity(const std::string &etag)
+{
+  std::string id = etag;
+  if (!id.empty() && id.front() == '"')
+    id.erase(0, 1);
+  if (!id.empty() && id.back() == '"')
+    id.pop_back();
+  auto dash = id.find('-');
+  if (dash != std::string::npos)
+    id.resize(dash);
+  return id;
+}
+
 uint64_t makeIno(const std::string &path, const std::string &etag)
 {
-  return std::hash<std::string>{}(path + "\n" + etag);
+  // Only the identity prefix may feed the inode number, or every write
+  // would change st_ino.
+  return std::hash<std::string>{}(path + "\n" + etagIdentity(etag));
 }
 
 void addIfHeader(std::vector<std::pair<std::string, std::string>> &hdrs,
@@ -62,6 +80,13 @@ void addIfHeader(std::vector<std::pair<std::string, std::string>> &hdrs,
   if (val.empty())
     return;
   std::string t = val;
+  // Mutations assert identity, not version: a bare "<id>" matches any
+  // version of the same object on XrdHttp, so a concurrent chmod or a
+  // write from another client of ours does not turn into 412.
+  if (t != "*" && !strcmp(name, "if-match"))
+    t = etagIdentity(t);
+  if (t.empty())
+    return;
   if (t != "*" && t.front() != '"')
     t = "\"" + t + "\"";
   hdrs.emplace_back(name, std::move(t));

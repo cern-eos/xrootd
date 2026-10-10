@@ -259,9 +259,28 @@ if body2 != b"ABCDEFGHIJKLMNOPQRSTUVWXYZ":
     -H 'If-Match: "0"' -H 'Content-Range: bytes 4-7/*' --data-binary 'ZZZZ' \
     "${HTTP_HOST}/${precondFilePath}")
   assert_eq 412 "${code}" "PATCH with stale If-Match should return 412"
+  # The ETag is versioned ("<id>-<ctime>-<size>"): the PATCH above changed
+  # it, so the pre-PATCH tag is no longer current and the bare identity
+  # still matches.
+  newetag=$(curl -sI "${HTTP_HOST}/${precondFilePath}" | extract_etag)
+  [ "${newetag}" != "${etag}" ] || error "ETag should change after PATCH"
   code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: ${etag}" \
     "${HTTP_HOST}/${precondFilePath}")
+  assert_eq 200 "${code}" "GET If-None-Match with pre-PATCH ETag should return 200"
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: ${newetag}" \
+    "${HTTP_HOST}/${precondFilePath}")
   assert_eq 304 "${code}" "GET If-None-Match matching ETag should return 304"
+  identity=$(printf '%s' "${newetag}" | tr -d '"' | cut -d- -f1)
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH \
+    -H "If-Match: \"${identity}\"" -H 'Content-Range: bytes 8-9/*' --data-binary 'WW' \
+    "${HTTP_HOST}/${precondFilePath}")
+  assert_eq 204 "${code}" "PATCH with identity-only If-Match should return 204"
+  lastmod=$(curl -sI "${HTTP_HOST}/${precondFilePath}" | grep -i '^Last-Modified:' | cut -d' ' -f2- | tr -d '\r')
+  [ -n "${lastmod}" ] || error "HEAD should return Last-Modified"
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-Modified-Since: ${lastmod}" \
+    "${HTTP_HOST}/${precondFilePath}")
+  assert_eq 304 "${code}" "GET If-Modified-Since at Last-Modified should return 304"
+  etag=$(curl -sI "${HTTP_HOST}/${precondFilePath}" | extract_etag)
   code=$(curl -s -o /dev/null -w '%{http_code}' -T "${TMPDIR}/precond-src" \
     -H 'If-None-Match: *' "${HTTP_HOST}/${precondFilePath}")
   assert_eq 412 "${code}" "PUT If-None-Match * on existing file should return 412"
@@ -269,6 +288,20 @@ if body2 != b"ABCDEFGHIJKLMNOPQRSTUVWXYZ":
     -H 'If-Match: "0"' "${HTTP_HOST}/${precondFilePath}")
   assert_eq 412 "${code}" "DELETE with stale If-Match should return 412"
   assert curl -s -o /dev/null -f "${HTTP_HOST}/${precondFilePath}"
+
+  echo "Testing conditional PROPFIND and MKCOL ETag"
+  colPath="${TMPDIR}/precond-col"
+  coletag=$(curl -s -D - -o /dev/null -X MKCOL "${HTTP_HOST}/${colPath}" | extract_etag)
+  [ -n "${coletag}" ] || error "MKCOL should return the collection ETag"
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X PROPFIND -H 'Depth: 1' \
+    -H "If-None-Match: ${coletag}" "${HTTP_HOST}/${colPath}")
+  assert_eq 304 "${code}" "PROPFIND If-None-Match on unchanged collection should return 304"
+  assert curl -s -o /dev/null -T "${TMPDIR}/precond-src" "${HTTP_HOST}/${colPath}/child.bin"
+  code=$(curl -s -o "${TMPDIR}/precond-propfind.xml" -w '%{http_code}' -X PROPFIND -H 'Depth: 1' \
+    -H "If-None-Match: ${coletag}" "${HTTP_HOST}/${colPath}")
+  assert_eq 207 "${code}" "PROPFIND If-None-Match on changed collection should return 207"
+  grep -q 'getetag' "${TMPDIR}/precond-propfind.xml" || error "PROPFIND entries should carry getetag"
+  grep -q 'child.bin' "${TMPDIR}/precond-propfind.xml" || error "PROPFIND should list the new child"
 
   ## GET with trailers
   curl -v -L --raw -H "X-Transfer-Status: true" -H "TE: trailers" "${HTTP_HOST}/$alphabetFilePath" --output - | tr -d '\r' > "$outputFilePath"

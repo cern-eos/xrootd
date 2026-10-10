@@ -7,6 +7,8 @@
  * jwt:  one imported socket per uid (WLCG bt_u<uid> bearer file).
  * GSS and token files stay in xiofsagent; the kernel multiplexes
  * already-authenticated HTTP channels keyed by current_fsuid().
+ * Each (mount, uid) may hold up to nconns channels; every missing
+ * socket is one WAIT_NEED answered by one IMPORT_SOCK.
  */
 #include <linux/cred.h>
 #include <linux/jiffies.h>
@@ -183,15 +185,43 @@ int xiofs_conn_wait(struct xiofs_conn *c)
 	return -ENOTCONN;
 }
 
-static struct xiofs_conn *xiofs_conn_lookup(struct xiofs_sb_info *sbi, u32 uid)
+/*
+ * A (mount, uid) owns a small pool of channels (sbi->nconns, mount
+ * option conns=). Each channel is strictly serial (one request in flight),
+ * so a pool lets stat/readdir proceed while a 4 MiB GET or PATCH is on
+ * the wire. Channels are created on demand and connected by xiofsagent,
+ * which answers one WAIT_NEED per missing socket.
+ */
+static unsigned int xiofs_conn_count(struct xiofs_sb_info *sbi, u32 uid)
 {
 	struct xiofs_conn *c;
+	unsigned int n = 0;
+
+	list_for_each_entry(c, &sbi->conns, list)
+		if (c->uid == uid)
+			n++;
+	return n;
+}
+
+/* Channel for uid that is waiting for (or best suited to take) a socket. */
+static struct xiofs_conn *xiofs_conn_for_import(struct xiofs_sb_info *sbi,
+						u32 uid)
+{
+	struct xiofs_conn *c, *idle = NULL, *any = NULL;
 
 	list_for_each_entry(c, &sbi->conns, list) {
-		if (c->uid == uid)
-			return c;
+		if (c->uid != uid)
+			continue;
+		if (!c->sock) {
+			if (c->pending)
+				return c;
+			if (!idle)
+				idle = c;
+		} else if (!any) {
+			any = c;
+		}
 	}
-	return NULL;
+	return idle ? idle : any;
 }
 
 static struct xiofs_conn *xiofs_conn_create(struct xiofs_sb_info *sbi, u32 uid)
@@ -213,9 +243,104 @@ static struct xiofs_conn *xiofs_conn_create(struct xiofs_sb_info *sbi, u32 uid)
 	return c;
 }
 
-int xiofs_conn_get(struct xiofs_sb_info *sbi, struct xiofs_conn **out)
+/*
+ * Pick a channel and return it locked. Preference: an idle connected
+ * channel; else an idle unconnected one (we then wait for its socket);
+ * else a new one while the pool is below nconns; else sleep until a
+ * channel is released.
+ */
+static int xiofs_conn_select(struct xiofs_sb_info *sbi, u32 uid,
+			     struct xiofs_conn **out)
+{
+	struct xiofs_conn *c, *spare = NULL;
+	unsigned int n = 0, busy_connected = 0;
+	bool on_demand = sbi->krb5 || sbi->jwt;
+
+	mutex_lock(&sbi->conns_lock);
+	list_for_each_entry(c, &sbi->conns, list) {
+		if (c->uid != uid)
+			continue;
+		n++;
+		if (!mutex_trylock(&c->io_lock)) {
+			if (c->sock)
+				busy_connected++;
+			continue;
+		}
+		if (c->sock) {
+			if (spare)
+				mutex_unlock(&spare->io_lock);
+			mutex_unlock(&sbi->conns_lock);
+			*out = c;
+			return 0;
+		}
+		if (spare)
+			mutex_unlock(&c->io_lock);
+		else
+			spare = c;
+	}
+	/*
+	 * On a shared mount nobody answers WAIT_NEED for a dropped channel
+	 * while others still work: waiting for a busy connected channel
+	 * beats waiting for an import that may never come.
+	 */
+	if (spare && !on_demand && busy_connected) {
+		mutex_unlock(&spare->io_lock);
+		spare = NULL;
+		n = sbi->nconns;	/* do not create either */
+	}
+	/*
+	 * Grow on demand only where something answers WAIT_NEED (krb5/jwt
+	 * agent loop). Shared mounts get their channels from the agent's
+	 * imports; an unconnected channel there would just time out, so
+	 * wait for a busy one instead. The very first channel is always
+	 * created so the initial import has something to wait on.
+	 */
+	if (!spare && (n == 0 || (on_demand && n < sbi->nconns))) {
+		spare = xiofs_conn_create(sbi, uid);
+		if (!spare) {
+			mutex_unlock(&sbi->conns_lock);
+			return -ENOMEM;
+		}
+		mutex_lock(&spare->io_lock);
+	}
+	mutex_unlock(&sbi->conns_lock);
+	if (!spare)
+		return -EBUSY;
+	*out = spare;
+	return 0;
+}
+
+static bool xiofs_conn_any_free(struct xiofs_sb_info *sbi, u32 uid)
 {
 	struct xiofs_conn *c;
+	bool on_demand = sbi->krb5 || sbi->jwt;
+	bool any_connected = false, idle_connected = false, idle = false;
+
+	if (sbi->shutting_down)
+		return true;
+	mutex_lock(&sbi->conns_lock);
+	list_for_each_entry(c, &sbi->conns, list) {
+		if (c->uid != uid)
+			continue;
+		if (c->sock)
+			any_connected = true;
+		if (mutex_is_locked(&c->io_lock))
+			continue;
+		idle = true;
+		if (c->sock)
+			idle_connected = true;
+	}
+	mutex_unlock(&sbi->conns_lock);
+	/* Mirror xiofs_conn_select(): what it would accept right now. */
+	if (idle_connected)
+		return true;
+	return idle && (on_demand || !any_connected);
+}
+
+int xiofs_conn_get(struct xiofs_sb_info *sbi, struct xiofs_conn **out)
+{
+	unsigned int sec = sbi->timeo_sec ? sbi->timeo_sec : XIOFS_DEF_TIMEO_SEC;
+	struct xiofs_conn *c = NULL;
 	u32 uid = 0;
 	int err;
 
@@ -225,21 +350,29 @@ int xiofs_conn_get(struct xiofs_sb_info *sbi, struct xiofs_conn **out)
 			return -EOVERFLOW;
 	}
 
-	mutex_lock(&sbi->conns_lock);
-	c = xiofs_conn_lookup(sbi, uid);
-	if (!c) {
-		c = xiofs_conn_create(sbi, uid);
-		if (!c) {
-			mutex_unlock(&sbi->conns_lock);
-			return -ENOMEM;
-		}
-	}
-	mutex_unlock(&sbi->conns_lock);
+	for (;;) {
+		long ret;
 
-	mutex_lock(&c->io_lock);
+		if (sbi->shutting_down)
+			return -ENOTCONN;
+		err = xiofs_conn_select(sbi, uid, &c);
+		if (err != -EBUSY)
+			break;
+		/* Pool full and every channel busy: wait for a release. */
+		ret = wait_event_interruptible_timeout(sbi->conn_free,
+				xiofs_conn_any_free(sbi, uid),
+				msecs_to_jiffies(sec * 1000u));
+		if (ret < 0)
+			return ret;
+		if (ret == 0)
+			return -ETIMEDOUT;
+	}
+	if (err)
+		return err;
+
 	err = xiofs_conn_wait(c);
 	if (err) {
-		mutex_unlock(&c->io_lock);
+		xiofs_conn_put(c);
 		return err;
 	}
 	*out = c;
@@ -248,8 +381,13 @@ int xiofs_conn_get(struct xiofs_sb_info *sbi, struct xiofs_conn **out)
 
 void xiofs_conn_put(struct xiofs_conn *c)
 {
-	if (c)
-		mutex_unlock(&c->io_lock);
+	struct xiofs_sb_info *sbi;
+
+	if (!c)
+		return;
+	sbi = c->sbi;
+	mutex_unlock(&c->io_lock);
+	wake_up(&sbi->conn_free);
 }
 
 static void xiofs_conn_free_all(struct xiofs_sb_info *sbi)
@@ -325,7 +463,10 @@ static int xiofs_import_sock(struct xiofs_import_sock *im)
 
 	uid = (sbi->krb5 || sbi->jwt) ? im->uid : 0;
 	mutex_lock(&sbi->conns_lock);
-	c = xiofs_conn_lookup(sbi, uid);
+	c = xiofs_conn_for_import(sbi, uid);
+	/* Nothing waiting: grow the pool rather than replace a live socket. */
+	if ((!c || c->sock) && xiofs_conn_count(sbi, uid) < sbi->nconns)
+		c = NULL;
 	if (!c) {
 		c = xiofs_conn_create(sbi, uid);
 		if (!c) {
@@ -356,8 +497,21 @@ static int xiofs_import_sock(struct xiofs_import_sock *im)
 	c->pending = false;
 	c->last_err = 0;
 	mutex_unlock(&c->io_lock);
-	xiofs_need_cancel(sbi, uid);
+	/* Other channels of this uid may still be waiting for their socket. */
+	mutex_lock(&sbi->conns_lock);
+	{
+		struct xiofs_conn *o;
+		bool more = false;
+
+		list_for_each_entry(o, &sbi->conns, list)
+			if (o != c && o->uid == uid && o->pending && !o->sock)
+				more = true;
+		if (!more)
+			xiofs_need_cancel(sbi, uid);
+	}
+	mutex_unlock(&sbi->conns_lock);
 	wake_up_all(&c->wait);
+	wake_up(&sbi->conn_free);
 out:
 	mutex_unlock(&xiofs_mounts_lock);
 	if (sock)
@@ -409,17 +563,20 @@ static int xiofs_need_fail(const struct xiofs_need_conn *uc)
 	sbi = xiofs_find_sbi(uc->host, uc->port, uc->export_path);
 	if (!sbi)
 		goto out;
+	/* One failed handshake answers every channel of that uid. */
 	mutex_lock(&sbi->conns_lock);
-	c = xiofs_conn_lookup(sbi, uc->uid);
+	list_for_each_entry(c, &sbi->conns, list) {
+		if (c->uid != uc->uid || c->sock)
+			continue;
+		mutex_lock(&c->io_lock);
+		c->last_err = uc->err ? uc->err : -EACCES;
+		c->pending = false;
+		mutex_unlock(&c->io_lock);
+		wake_up_all(&c->wait);
+		err = 0;
+	}
 	mutex_unlock(&sbi->conns_lock);
-	if (!c)
-		goto out;
-	mutex_lock(&c->io_lock);
-	c->last_err = uc->err ? uc->err : -EACCES;
-	c->pending = false;
-	mutex_unlock(&c->io_lock);
-	wake_up_all(&c->wait);
-	err = 0;
+	xiofs_need_cancel(sbi, uc->uid);
 out:
 	mutex_unlock(&xiofs_mounts_lock);
 	return err;

@@ -852,7 +852,9 @@ int XrdXrootdProtocol::StatGen(struct stat &buf, char *xxBuff, int xxLen,
    xxBuff += n;
    xxLen -= n;
 
-// Tack on file type and rdev so HTTP/FUSE can distinguish fifo/device/symlink.
+// Tack on file type and rdev so HTTP/FUSE can distinguish fifo/device/symlink,
+// then the ctime nanoseconds so the HTTP ETag can tell apart two changes in
+// the same second (directory listings revalidate on it).
 // Append over the group's trailing NUL so the whole line stays one C string.
 // Dirlist parsers (XrdCl std::string(data), XrdHttp strchr) stop at the first
 // embedded NUL, which previously truncated listings to a single entry.
@@ -865,8 +867,13 @@ int XrdXrootdProtocol::StatGen(struct stat &buf, char *xxBuff, int xxLen,
       else if (S_ISCHR(buf.st_mode))  ft = "chr";
       else if (S_ISBLK(buf.st_mode))  ft = "blk";
       else if (S_ISSOCK(buf.st_mode)) ft = "sock";
-      n = snprintf(xxBuff, xxLen, " %s %llu", ft,
-                   (unsigned long long)buf.st_rdev);
+#if defined(__APPLE__) || defined(__NetBSD__)
+      long ctns = (long)buf.st_ctimespec.tv_nsec;
+#else
+      long ctns = (long)buf.st_ctim.tv_nsec;
+#endif
+      n = snprintf(xxBuff, xxLen, " %s %llu %ld", ft,
+                   (unsigned long long)buf.st_rdev, ctns);
       if (n >= 0 && n < xxLen)
          xxBuff += n;
       xxBuff += 1;
