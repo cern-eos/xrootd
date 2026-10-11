@@ -395,6 +395,20 @@ Description: XRootD HTTP POSIX mount clients
  not xrootdfs (see xrootd-fuse for the root:// FUSE client).
  .
  Install xrootd-xiofs-dkms as well to build xiofs.ko via DKMS.
+ The POSIX HTTP export daemon is the xrootd-xiofs-server package.
+
+Package: xrootd-xiofs-server
+Architecture: linux-any
+Multi-Arch: foreign
+Depends:
+ xrootd-server (= ${binary:Version}),
+ xrootd-server-plugins (= ${binary:Version}),
+ ${shlibs:Depends},
+ ${misc:Depends}
+Description: XIOFS POSIX HTTP export (XrdHttp2 + setfsuid)
+ Convenience XRootD that exports one local directory over XrdHttp
+ (HTTP/2, ofs.posix, FsOss setfsuid) for xiofs clients. Configure
+ /etc/xrootd/xiofs-server.conf and start xiofs-server.service.
 
 Package: xrootd-xiofs-dkms
 Architecture: all

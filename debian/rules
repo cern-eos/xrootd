@@ -86,6 +86,7 @@ override_dh_auto_install:
 	install -m 644 systemd/cmsd@.service debian/tmp/lib/systemd/system
 	install -m 644 systemd/frm_xfrd@.service debian/tmp/lib/systemd/system
 	install -m 644 systemd/frm_purged@.service debian/tmp/lib/systemd/system
+	install -m 644 systemd/xiofs-server.service debian/tmp/lib/systemd/system
 
 	# Server config
 	mkdir -p debian/tmp/etc/xrootd
@@ -138,3 +139,8 @@ override_dh_auto_install:
 	    > debian/tmp/usr/src/xiofs-$$ver/dkms.conf
 	mkdir -p debian/tmp/usr/sbin
 	ln -sfn ../bin/xiofsagent debian/tmp/usr/sbin/mount.xiofs
+
+# Do not enable xiofs-server on install; export= must be edited first.
+override_dh_installsystemd:
+	dh_installsystemd -N xrootd-xiofs-server
+	dh_installsystemd -p xrootd-xiofs-server --no-enable --no-start

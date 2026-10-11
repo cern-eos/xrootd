@@ -23,7 +23,12 @@
 /usr/share/man/man8/xrdsssadmin.8
 /usr/share/man/man8/xrootd.8
 /usr/share/xrootd/utils
-/lib/systemd/system/*
+/lib/systemd/system/xrootd@.service
+/lib/systemd/system/xrootd@.socket
+/lib/systemd/system/xrdhttp@.socket
+/lib/systemd/system/cmsd@.service
+/lib/systemd/system/frm_xfrd@.service
+/lib/systemd/system/frm_purged@.service
 /etc/logrotate.d/xrootd
 /etc/xrootd/config.d
 /etc/xrootd/*.cfg

@@ -2,7 +2,9 @@
 
 A Linux-network-filesystem client whose **server** is XrdHttp (HTTP/1.1 or
 HTTP/2). Filesystem semantics live in the client; HTTP is only the
-universal transport.
+universal transport. To export a local directory, run `xiofs-server`
+(XrdHttp2 + FsOss `setfsuid`); see
+[xiofs-server](#xiofs-server-posix-http-export).
 
 ```
 POSIX app
@@ -198,6 +200,34 @@ xiofsagent --jwt --workers 4 --cacert ca.pem \
 xiofsagent --drop /mnt/xiofs
 ```
 
+## xiofs-server (POSIX HTTP export)
+
+A stand-alone XRootD that exports one local directory over XrdHttp
+(HTTP/2 + `ofs.posix` / FsOss `setfsuid`). The only required knob is the
+export path; TLS and `auth=` are the security settings.
+
+```bash
+# /etc/xrootd/xiofs-server.conf
+export = /data
+port = 1094
+tls.cert = /etc/grid-security/hostcert.pem
+tls.key  = /etc/grid-security/hostkey.pem
+tls.ca   = /etc/grid-security/certificates
+auth = none          # or krb5 / jwt
+```
+
+```bash
+xiofs-server --print              # show generated xrootd config
+sudo systemctl enable --now xiofs-server
+# clients:
+xiofsagent --cacert ca.pem https://server:1094/ /mnt/xiofs
+```
+
+`auth=krb5` needs `krb5.keytab` and `krb5.principal` (`HTTP/<host>@REALM`).
+`auth=jwt` loads SciTokens (`jwt.config`, default `/etc/xrootd/scitokens.cfg`).
+Linux starts via `xrootd-fsuid` so CAP_SETUID is kept after dropping to
+`user=` (default `xrootd`). Extra xrootd snippets: `continue = /etc/xrootd/xiofs-server.d/`.
+
 ## Layout
 
 ```
@@ -208,6 +238,7 @@ fuse/xiofsd.cc             FUSE daemon
 agent/xiofsagent.cc        Linux TLS handshake + kTLS import
 agent/XioShard.cc          uid hash, alias expand, 10 min cooldown
 agent/xiofsagent_krb5.cc   SPNEGO for --krb5 (HAVE_KRB5)
+server/xiofs-server.cc     POSIX HTTP export wrapper (XrdHttp2 + FsOss)
 http/XioBearer.cc          WLCG bt_u<uid> discovery (owner-only file)
 kernel/                  Linux module for AlmaLinux 9 (5.14) and 10 (6.12):
                          page cache, readahead, writeback, HTTP/1.1 + kTLS

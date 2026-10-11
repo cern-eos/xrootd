@@ -247,6 +247,7 @@ and xiofsagent (the kTLS handshake helper for the in-kernel mount).
 This is not xrootdfs (that is the xrootd-fuse package, root://).
 
 Install xrootd-xiofs-dkms as well to build xiofs.ko via DKMS.
+The POSIX HTTP export daemon is the xrootd-xiofs-server package.
 
 %package xiofs-dkms
 Summary:	XIOFS Linux kernel module (DKMS)
@@ -263,6 +264,18 @@ Out-of-tree xiofs.ko for AlmaLinux/RHEL 9 (kernel 5.14) and 10
 (kernel 6.12). DKMS builds it against the running kernel. Needs
 kernel-devel matching uname -r. The userspace helper is xiofsagent
 from xrootd-xiofs.
+
+%package xiofs-server
+Summary:	XIOFS POSIX HTTP export (XrdHttp2 + setfsuid)
+Group:		Applications/Internet
+Requires:	%{name}-server%{?_isa} = %{epoch}:%{version}-%{release}
+Requires:	%{name}-server-libs%{?_isa} = %{epoch}:%{version}-%{release}
+
+%description xiofs-server
+Convenience XRootD that exports one local directory over XrdHttp
+(HTTP/2, ofs.posix, FsOss setfsuid) for xiofs clients. Configure
+/etc/xrootd/xiofs-server.conf (export path and TLS/auth) and start
+xiofs-server.service.
 
 %package voms
 Summary:	VOMS attribute extractor plugin for XRootD
@@ -408,6 +421,7 @@ install -m 644 systemd/xrdhttp@.socket %{buildroot}%{_unitdir}
 install -m 644 systemd/cmsd@.service %{buildroot}%{_unitdir}
 install -m 644 systemd/frm_xfrd@.service %{buildroot}%{_unitdir}
 install -m 644 systemd/frm_purged@.service %{buildroot}%{_unitdir}
+install -m 644 systemd/xiofs-server.service %{buildroot}%{_unitdir}
 
 mkdir -p %{buildroot}%{_sysusersdir}
 install -m 644 systemd/%{name}-sysusers.conf %{buildroot}%{_sysusersdir}/%{name}.conf
@@ -530,6 +544,18 @@ if [ $1 -eq 0 ] && [ -x /usr/sbin/dkms ]; then
 	/usr/sbin/dkms remove -m xiofs -v %{version} --all --rpm_safe_upgrade >/dev/null 2>&1 || :
 fi
 
+%post xiofs-server
+systemctl daemon-reload >/dev/null 2>&1 || :
+
+%preun xiofs-server
+if [ $1 -eq 0 ]; then
+	systemctl --no-reload disable xiofs-server.service >/dev/null 2>&1 || :
+	systemctl stop xiofs-server.service >/dev/null 2>&1 || :
+fi
+
+%postun xiofs-server
+systemctl daemon-reload >/dev/null 2>&1 || :
+
 %files
 # Empty
 
@@ -560,7 +586,12 @@ fi
 %{_mandir}/man8/xrootd.8*
 %dir %{_datadir}/%{name}
 %{_datadir}/%{name}/utils
-%{_unitdir}/*
+%{_unitdir}/xrootd@.service
+%{_unitdir}/xrootd@.socket
+%{_unitdir}/xrdhttp@.socket
+%{_unitdir}/cmsd@.service
+%{_unitdir}/frm_xfrd@.service
+%{_unitdir}/frm_purged@.service
 %{_sysusersdir}/%{name}.conf
 %config(noreplace) %{_sysconfdir}/logrotate.d/%{name}
 %dir %{_sysconfdir}/%{name}/config.d
@@ -723,6 +754,12 @@ fi
 %{_sbindir}/mount.xiofs
 %doc src/XrdXioFS/README.md
 %doc src/XrdXioFS/kernel/README.md
+
+%files xiofs-server
+%{_bindir}/xiofs-server
+%{_unitdir}/xiofs-server.service
+%config(noreplace) %{_sysconfdir}/%{name}/xiofs-server.conf
+%doc src/XrdXioFS/README.md
 
 %files xiofs-dkms
 %doc src/XrdXioFS/kernel/README.md

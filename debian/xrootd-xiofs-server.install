@@ -1,0 +1,3 @@
+/usr/bin/xiofs-server
+/lib/systemd/system/xiofs-server.service
+/etc/xrootd/xiofs-server.conf

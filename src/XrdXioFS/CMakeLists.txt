@@ -46,6 +46,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(xiofsagent PRIVATE ${KERBEROS5_LIBRARIES})
   endif()
   install(TARGETS xiofsagent RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  add_executable(xiofs-server server/xiofs-server.cc)
+  install(TARGETS xiofs-server RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  install(FILES ${CMAKE_SOURCE_DIR}/config/xiofs-server.conf
+          DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/xrootd)
   # util-linux looks up mount.<type> in sbindir.
   install(CODE "
     file(MAKE_DIRECTORY \"\$ENV{DESTDIR}${CMAKE_INSTALL_FULL_SBINDIR}\")
