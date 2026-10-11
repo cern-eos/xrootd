@@ -331,6 +331,7 @@ TEST_F(NativePosixTest, MissingAndDuplicateErrors)
    ASSERT_TRUE(fp);
    fclose(fp);
    ASSERT_EQ(0, chmod(f.c_str(), 0444));
-   EXPECT_EQ(SFS_ERROR, ns->access(f.c_str(), W_OK, e));
+   if (geteuid() != 0)
+      EXPECT_EQ(SFS_ERROR, ns->access(f.c_str(), W_OK, e));
    ASSERT_EQ(0, chmod(f.c_str(), 0644));
 }

@@ -560,7 +560,13 @@ int XrdFsOss::Access(const char *path, int amode, XrdOucEnv *envP)
    uid_t u = geteuid();
    gid_t g = getegid();
 #endif
-   if (u == 0) return 0;
+   // Root bypasses r/w DAC. Execute still needs at least one +x bit, as
+   // access(2) does; otherwise AccessCombinedBits would succeed on 0644.
+   if (u == 0) {
+      if ((amode & X_OK) && (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) == 0)
+         return -EACCES;
+      return 0;
+   }
 
    mode_t want = 0;
    if (amode & R_OK) want |= 4;
