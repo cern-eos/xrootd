@@ -1,7 +1,7 @@
 set name = metaman
 
 all.role meta manager
-all.manager meta localhost:%CMSD_PORT_METAMAN%
+all.manager meta 127.0.0.1:%CMSD_PORT_METAMAN%
 
 xrd.port %XRD_PORT_METAMAN% if exec xrootd
 xrd.port %CMSD_PORT_METAMAN% if exec cmsd

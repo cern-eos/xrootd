@@ -1,8 +1,8 @@
 set name = man1
 
 all.role manager
-all.manager meta localhost:%CMSD_PORT_METAMAN%
-all.manager localhost:%CMSD_PORT_MAN1%
+all.manager meta 127.0.0.1:%CMSD_PORT_METAMAN%
+all.manager 127.0.0.1:%CMSD_PORT_MAN1%
 
 xrd.port %XRD_PORT_MAN1% if exec xrootd
 xrd.port %CMSD_PORT_MAN1% if exec cmsd

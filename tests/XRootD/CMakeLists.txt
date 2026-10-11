@@ -34,11 +34,9 @@ list(APPEND cache_FIXTURES XRootD::host)
 list(APPEND gsi_FIXTURES TLS)
 
 foreach(CONFIG ${XROOTD_CONFIGS})
-  if(CONFIG MATCHES "^(http|scitokens)")
-    set(_xrd_env "BINARY_DIR=${CMAKE_BINARY_DIR};HOSTNAME=localhost")
-  else()
-    set(_xrd_env "BINARY_DIR=${CMAKE_BINARY_DIR}")
-  endif()
+  # Alpine/GHA container HOSTNAME is a docker id. TLS SANs and GSI/cache
+  # clients must talk to localhost or the handshake/copy expires.
+  set(_xrd_env "BINARY_DIR=${CMAKE_BINARY_DIR};HOSTNAME=localhost")
 
   add_test(NAME XRootD::${CONFIG}::setup
     COMMAND sh -c "${CMAKE_CURRENT_SOURCE_DIR}/test.sh ${CONFIG} setup")
@@ -76,10 +74,14 @@ foreach(CONFIG ${XROOTD_CONFIGS})
 endforeach()
 
 # httpkrb5 exits 77 when this curl has no SPNEGO. Alma 8 curl does.
+# SKIP_RETURN_CODE on setup is not enough: some CTest versions still run
+# the test after a skipped fixture setup (Alpine). The test also exits 77.
 if(BUILD_KRB5 AND NOT APPLE)
   set_tests_properties(XRootD::httpkrb5::setup XRootD::httpkrb5::test
                        XRootD::httpkrb5::teardown
-    PROPERTIES SKIP_RETURN_CODE 77)
+    PROPERTIES
+      SKIP_RETURN_CODE 77
+      SKIP_REGULAR_EXPRESSION "Skipping httpkrb5")
 endif()
 
 if(BUILD_SCITOKENS AND HAVE_SCITOKEN_CONFIG_SET_STR)

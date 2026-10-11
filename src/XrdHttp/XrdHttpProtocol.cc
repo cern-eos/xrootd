@@ -3876,6 +3876,7 @@ int XrdHttpProtocol::xtrace(XrdOucStream & Config) {
     {"all", TRACE_ALL},
     {"auth", TRACE_AUTH},
     {"debug", TRACE_DEBUG},
+    {"error", 0},
     {"mem", TRACE_MEM},
     {"redirect", TRACE_REDIR},
     {"request", TRACE_REQ},

@@ -18,14 +18,16 @@ die() {
 
 pid_alive() {
     local pidfile=$1
-    local pid
+    local pid state
 
     [[ -s "${pidfile}" ]] || return 1
     pid=$(tr -d '[:space:]' < "${pidfile}")
     [[ "${pid}" =~ ^[0-9]+$ ]] || return 1
-    # kill -0 sees daemonized children; ps -p does not on Ubuntu 24.04
-    # (new session after xrootd -b double-fork).
-    if [[ -d "/proc/${pid}" ]]; then
+    # kill -0 and /proc/pid exist for zombies; Ubuntu -b can leave a
+    # reaped-looking pidfile if the grandchild dies after the pipe write.
+    if [[ -r "/proc/${pid}/status" ]]; then
+        state=$(awk '/^State:/{print $2; exit}' "/proc/${pid}/status")
+        [[ "${state}" == "Z" ]] && return 1
         return 0
     fi
     kill -0 "${pid}" 2>/dev/null
@@ -141,19 +143,21 @@ wait_for_listen() {
     local port=$2
     local tries
 
-    for ((tries = 0; tries < 120; tries++)); do
-        if ! pid_alive "${name}/xrootd.pid"; then
-            echo "error: ${name} xrootd died before listening on ${port}" >&2
-            return 1
-        fi
+    for ((tries = 0; tries < 180; tries++)); do
         if port_is_listening "${port}"; then
             return 0
         fi
-        if grep -a -qE -e 'xrootd [^[:space:]]+:[0-9]+ initialization completed' "${name}/xrootd.log" 2>/dev/null; then
-            return 0
+        if grep -a -qE -e 'xrootd [^[:space:]]+ initialization completed' "${name}/xrootd.log" 2>/dev/null; then
+            if port_is_listening "${port}"; then
+                return 0
+            fi
         fi
-        if grep -a -qE -e 'xrootd [^[:space:]]+:[0-9]+ initialization failed' "${name}/xrootd.log" 2>/dev/null; then
+        if grep -a -qE -e 'xrootd [^[:space:]]+ initialization failed' "${name}/xrootd.log" 2>/dev/null; then
             echo "error: ${name} initialization failed" >&2
+            return 1
+        fi
+        if ! pid_alive "${name}/xrootd.pid"; then
+            echo "error: ${name} xrootd died before listening on ${port}" >&2
             return 1
         fi
         sleep 0.5
@@ -217,17 +221,23 @@ start() {
     stop
     create_directories
 
+    # cmsd first so xrootd's manager connect during init is not "connection
+    # refused" (Ubuntu gcc Debug died there; Fedora clang Debug waited 60s).
+    for i in "${servernames[@]}"; do
+        start_daemon "${CMSD}" "${i}" cmsd.log cmsd.pid "${i}.cfg" "${i}.cmsd.start.err"
+    done
+
     for idx in "${!servernames[@]}"; do
         i="${servernames[idx]}"
         start_daemon "${XROOTD}" "${i}" xrootd.log xrootd.pid "${i}.cfg" "${i}.start.err"
+    done
+
+    for idx in "${!servernames[@]}"; do
+        i="${servernames[idx]}"
         if ! wait_for_listen "${i}" "${xrd_ports[idx]}"; then
             dump_start_failure
             exit 1
         fi
-    done
-
-    for i in "${servernames[@]}"; do
-        start_daemon "${CMSD}" "${i}" cmsd.log cmsd.pid "${i}.cfg" "${i}.cmsd.start.err"
     done
 }
 

@@ -85,7 +85,7 @@ emailAddress           = optional
 [ cert_extensions ]
 
 basicConstraints = critical,CA:false
-keyUsage = digitalSignature
+keyUsage = digitalSignature,keyEncipherment
 extendedKeyUsage = critical, serverAuth, clientAuth
 subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid,issuer
@@ -114,7 +114,7 @@ fi
 # Ubuntu/Fedora. ECDSA uses ecdsa_secp256r1_sha256, so TLS 1.3 works
 # without that cap. httph2 uses the same key type (host-ec.pem).
 "$OPENSSL_BIN" ecparam -name prime256v1 -genkey -noout -out tls.key
-chmod 0400 tls.key
+chmod 0600 tls.key
 if ! "$OPENSSL_BIN" req -new -key tls.key -config tlsca.ini -out tls.csr -outform PEM -subj /CN=localhost 0<&-; then
   echo "Failed to generate host certificate request"
   exit 1
@@ -214,7 +214,7 @@ export ORIGIN_CONFIG="$XROOTD_CONFIGDIR/xrootd-origin.conf"
 cat > "$ORIGIN_CONFIG" <<EOF
 
 xrd.port 9443
-xrd.protocol http:9443 libXrdHttp.so
+xrd.protocol https:9443 libXrdHttp.so
 
 xrd.tls $CA_DIR/tls.crt $CA_DIR/tls.key
 xrd.tlsca certfile $CA_DIR/tlsca.pem
@@ -269,7 +269,7 @@ export CACHE_CONFIG="$XROOTD_CONFIGDIR/xrootd-cache.conf"
 cat > "$CACHE_CONFIG" <<EOF
 
 xrd.port any
-xrd.protocol http:any libXrdHttp.so
+xrd.protocol https:any libXrdHttp.so
   
 xrd.tls $CA_DIR/tls.crt $CA_DIR/tls.key
 xrd.tlsca certfile $CA_DIR/tlsca.pem
@@ -411,37 +411,60 @@ echo "Origin PID: $ORIGIN_PID"
 
 echo "Origin logs are available at $BINARY_DIR/tests/$TEST_NAME/origin.log"
 
+origin_port_listening() {
+  local port="$1"
+  python3 -c '
+import socket, sys
+port = int(sys.argv[1])
+for host in ("127.0.0.1", "localhost"):
+    try:
+        s = socket.create_connection((host, port), 0.5)
+        s.close()
+        sys.exit(0)
+    except OSError:
+        pass
+sys.exit(1)
+' "${port}"
+}
+
 origin_init_done() {
-  grep -E -a -q -e 'xrootd origin@[^[:space:]]+:[0-9]+ initialization completed' \
+  grep -E -a -q -e 'xrootd origin@[^[:space:]]+ initialization completed' \
     "$BINARY_DIR/tests/$TEST_NAME/origin.log" 2>/dev/null
 }
 
 ORIGIN_PORT=""
 IDX=0
 while [ -z "$ORIGIN_PORT" ]; do
-  if origin_init_done; then
-    ORIGIN_PORT=$(grep -E -a -e 'xrootd origin@[^[:space:]]+:[0-9]+ initialization completed' \
+  if origin_init_done || origin_port_listening 9443; then
+    ORIGIN_PORT=$(grep -E -a -e 'xrootd origin@[^[:space:]]+ initialization completed' \
       "$BINARY_DIR/tests/$TEST_NAME/origin.log" | tail -n 1 | sed -n 's/.*:\([0-9][0-9]*\) initialization completed.*/\1/p')
     [ -n "$ORIGIN_PORT" ] || ORIGIN_PORT=9443
     break
   fi
-  sleep 1
-  IDX=$((IDX+1))
-  if [ $IDX -gt 1 ]; then
-    echo "Waiting for origin to start ($IDX seconds so far) ..."
-  fi
-  if ! kill -0 "$ORIGIN_PID" 2>/dev/null; then
-    cat "$BINARY_DIR/tests/$TEST_NAME/origin.log"
-    echo "Origin process crashed - failing"
-    exit 1
-  fi
-  if grep -E -a -q -e 'xrootd origin@[^[:space:]]+:[0-9]+ initialization failed' \
+  if grep -E -a -q -e 'xrootd origin@[^[:space:]]+ initialization failed' \
       "$BINARY_DIR/tests/$TEST_NAME/origin.log" 2>/dev/null; then
     cat "$BINARY_DIR/tests/$TEST_NAME/origin.log"
     echo "Origin failed to initialize - failing"
     exit 1
   fi
-  if [ $IDX -eq 50 ]; then
+  sleep 0.2
+  IDX=$((IDX+1))
+  if [ $IDX -gt 5 ]; then
+    echo "Waiting for origin to start ($IDX checks so far) ..."
+  fi
+  if ! kill -0 "$ORIGIN_PID" 2>/dev/null; then
+    # The log's last line is often still in stdio buffers; wait one more
+    # tick so "initialization failed" can show instead of a false crash.
+    sleep 0.2
+    if origin_init_done || origin_port_listening 9443; then
+      ORIGIN_PORT=9443
+      break
+    fi
+    cat "$BINARY_DIR/tests/$TEST_NAME/origin.log"
+    echo "Origin process crashed - failing"
+    exit 1
+  fi
+  if [ $IDX -eq 150 ]; then
     cat "$BINARY_DIR/tests/$TEST_NAME/origin.log"
     echo "Origin failed to start - failing"
     exit 1

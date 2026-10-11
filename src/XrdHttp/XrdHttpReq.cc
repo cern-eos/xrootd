@@ -812,13 +812,23 @@ int XrdHttpReq::runFattrReq(int subcode, const std::string &name,
   size_t plen = strlen(path) + 1;
   buf.insert(buf.end(), path, path + plen);
   if (subcode != kXR_fattrList) {
-    size_t extra = name.size() + 3 + (subcode == kXR_fattrSet ? value.size() + 4 : 0);
-    buf.resize(buf.size() + extra);
-    char *p = buf.data() + plen;
-    p = ClientFattrRequest::NVecInsert(name.c_str(), p);
-    if (subcode == kXR_fattrSet)
-      p = ClientFattrRequest::VVecInsert(value.c_str(), p);
-    buf.resize(static_cast<size_t>(p - buf.data()));
+    // Do not vector::resize(size+extra): gcc 16 -Wstringop-overflow treats
+    // name.size()+value.size() as wrapping to SIZE_MAX (test.cmake SEND_ERROR).
+    if (name.size() > xfaLimits::kXR_faMaxNlen ||
+        value.size() > xfaLimits::kXR_faMaxVlen) {
+      prot->SendSimpleResp(400, NULL, NULL, (char *)"fattr name or value too long.", 0, false);
+      return -1;
+    }
+    char nbuf[xfaLimits::kXR_faMaxNlen + 4];
+    char *np = ClientFattrRequest::NVecInsert(name.c_str(), nbuf);
+    buf.insert(buf.end(), nbuf, np);
+    if (subcode == kXR_fattrSet) {
+      char vhdr[4];
+      kXR_int32 nlen = htonl(static_cast<kXR_int32>(value.size()));
+      memcpy(vhdr, &nlen, 4);
+      buf.insert(buf.end(), vhdr, vhdr + 4);
+      buf.insert(buf.end(), value.begin(), value.end());
+    }
   }
   memset(&xrdreq, 0, sizeof(ClientRequest));
   xrdreq.fattr.requestid = htons(kXR_fattr);

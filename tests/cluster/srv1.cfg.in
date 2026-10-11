@@ -1,7 +1,7 @@
 set name = srv1
 
 all.role server
-all.manager localhost:%CMSD_PORT_MAN1%
+all.manager 127.0.0.1:%CMSD_PORT_MAN1%
 
 xrd.port %XRD_PORT_SRV1%
 

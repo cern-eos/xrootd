@@ -25,6 +25,11 @@ function setup_httpkrb5() {
 }
 
 function test_httpkrb5() {
+	if ! curl_has_spnego; then
+		echo "Skipping httpkrb5: curl was not built with GSS-Negotiate/SPNEGO"
+		command curl -V || true
+		exit 77
+	fi
 	export HTTPS_HOST="https://localhost:${XRD_PORT}"
 	# TLS fixture writes certs into the build tree, not the source tree.
 	export CURL_CA="${BINARY_DIR}/tests/tls/ca.pem"

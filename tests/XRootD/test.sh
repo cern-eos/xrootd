@@ -134,11 +134,13 @@ function printlogs() {
 
 function daemon_pid_alive() {
 	local pidfile=$1
-	local pid
+	local pid state
 	[[ -s "${pidfile}" ]] || return 1
 	pid=$(tr -d '[:space:]' < "${pidfile}")
 	[[ "${pid}" =~ ^[0-9]+$ ]] || return 1
-	if [[ -d "/proc/${pid}" ]]; then
+	if [[ -r "/proc/${pid}/status" ]]; then
+		state=$(awk '/^State:/{print $2; exit}' "/proc/${pid}/status")
+		[[ "${state}" == "Z" ]] && return 1
 		return 0
 	fi
 	kill -0 "${pid}" 2>/dev/null
@@ -160,13 +162,14 @@ function wait_for_init_log() {
 	local logfile=$1
 	local pidfile=$2
 	local n
-	for ((n = 0; n < 100; n++)); do
+	for ((n = 0; n < 150; n++)); do
 		# -e: a pattern that starts with '-' is otherwise parsed as
 		# grep options (GNU grep), so this wait never matched.
-		if grep -a -qE -e 'xrootd [^[:space:]]+:[0-9]+ initialization completed' "${logfile}" 2>/dev/null; then
+		# Do not require :port in the same token: IPv6 hostnames embed ':'.
+		if grep -a -qE -e 'xrootd [^[:space:]]+ initialization completed' "${logfile}" 2>/dev/null; then
 			return 0
 		fi
-		if grep -a -qE -e 'xrootd [^[:space:]]+:[0-9]+ initialization failed' "${logfile}" 2>/dev/null; then
+		if grep -a -qE -e 'xrootd [^[:space:]]+ initialization failed' "${logfile}" 2>/dev/null; then
 			return 1
 		fi
 		if ! daemon_pid_alive "${pidfile}"; then
@@ -174,8 +177,7 @@ function wait_for_init_log() {
 		fi
 		sleep 0.2
 	done
-	# -b already waited on the status pipe; a live pid is enough.
-	daemon_pid_alive "${pidfile}"
+	return 1
 }
 
 function setup() {
@@ -229,13 +231,9 @@ EOF
 }
 
 function http_test_host() {
-	# HTTP/HTTPS tests talk to a loopback server whose TLS SAN includes
-	# localhost. Using $HOSTNAME (CI runner names, dyndns boxes) makes
-	# curl miss the listener or fail certificate checks.
-	case "${NAME}" in
-		http*|scitokens) echo "root://localhost:${1}/" ;;
-		*) echo "root://${HOSTNAME:-localhost}:${1}/" ;;
-	esac
+	# Talk to loopback. Container HOSTNAME is a docker id that often has
+	# no listener and a TLS/GSI cert SAN of localhost only.
+	echo "root://localhost:${1}/"
 }
 
 function run() {
