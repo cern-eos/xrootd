@@ -161,8 +161,9 @@ TEST_F(FsOssPosixTest, CreateStatAccessUnlink)
    EXPECT_EQ(0, oss->Access(f.c_str(), W_OK));
    EXPECT_EQ(-ENOENT, oss->Access(P("missing").c_str(), F_OK));
    ASSERT_EQ(0, chmod(f.c_str(), 0444));
-   if (geteuid() != 0)
+   if (geteuid() != 0) {
       EXPECT_EQ(-EACCES, oss->Access(f.c_str(), W_OK));
+   }
    ASSERT_EQ(0, chmod(f.c_str(), 0644));
    EXPECT_EQ(0, oss->Unlink(f.c_str()));
    EXPECT_EQ(0, oss->Unlink(P("already-gone").c_str()));

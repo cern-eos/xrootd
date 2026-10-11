@@ -3431,7 +3431,7 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
               TRACEI(REQ, "Stat for cached GET " << resource.c_str()
                         << " stat=" << (char *) iovP[0].iov_base);
               int nst = sscanf((const char *) iovP[0].iov_base,
-                               "%lld %lld %ld %ld %ld %*ld %*o %*s %*s %*s %*llu %ld",
+                               "%lld %lld %ld %ld %ld %*d %*o %*s %*s %*s %*u %ld",
                                &etagval, &stsize, &stflags, &stmtime, &stctime,
                                &stctns);
               if (nst < 5)
@@ -4164,7 +4164,7 @@ void XrdHttpReq::parseXrdStat(const char *s)
   if (!s)
     return;
   long ct = 0, ctns = -1;
-  int n = sscanf(s, "%lld %lld %ld %ld %ld %*ld %*o %*s %*s %*s %*llu %ld",
+  int n = sscanf(s, "%lld %lld %ld %ld %ld %*d %*o %*s %*s %*s %*u %ld",
                  &etagval, &filesize, &fileflags, &filemodtime, &ct, &ctns);
   // Old servers (or a cached-open stat) may stop after mtime; the ctime
   // nanoseconds are the 12th token and optional.
