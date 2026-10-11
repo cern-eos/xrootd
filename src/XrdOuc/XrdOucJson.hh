@@ -1,3 +1,11 @@
+// GCC -O2 -Wstringop-overflow fires on nlohmann's memset(..., size_t(-n))
+// (bound SIZE_MAX). test.cmake treats any warning as a hard error.
+// __clang__ also defines __GNUC__; do not ignore unknown -Wstringop-* there.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
+#pragma GCC diagnostic ignored "-Wstringop-overread"
+#endif
 #ifdef USE_SYSTEM_NLOHMANN_JSON
 #include <nlohmann/json.hpp>
 #else
@@ -18750,7 +18758,8 @@ inline char* format_buffer(char* buf, int len, int decimal_exponent,
         std::memmove(buf + (2 + static_cast<size_t>(-n)), buf, static_cast<size_t>(k));
         buf[0] = '0';
         buf[1] = '.';
-        std::memset(buf + 2, '0', static_cast<size_t>(-n));
+        if (n < 0)
+            std::memset(buf + 2, '0', static_cast<size_t>(-n));
         return buf + (2U + static_cast<size_t>(-n) + static_cast<size_t>(k));
     }
 
@@ -25713,4 +25722,7 @@ inline void swap(nlohmann::NLOHMANN_BASIC_JSON_TPL& j1, nlohmann::NLOHMANN_BASIC
 
 
 #endif  // INCLUDE_NLOHMANN_JSON_HPP_
+#endif
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
 #endif

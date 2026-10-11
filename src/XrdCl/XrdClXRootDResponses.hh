@@ -1169,7 +1169,6 @@ namespace XrdCl
       flags(0), protocol(0), loadBalancer(false) {}
     HostInfo( const URL &u, bool lb = false ):
       flags(0), protocol(0), loadBalancer(lb), url(u) {}
-    virtual ~HostInfo(){};
 
     uint32_t flags;        //!< Host type
     uint32_t protocol;     //!< Version of the protocol the host is speaking
