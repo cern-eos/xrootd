@@ -119,11 +119,35 @@ ${XRDFS} ${HOST_METAMAN} spaceinfo /
 
 mkdir -p ${LCLDATADIR}
 
+# cmsd does not return managers/servers in a stable order.
+json_canon_topo() {
+       python3 -c '
+import json, sys
+def norm(o):
+    if isinstance(o, dict):
+        o = {k: norm(v) for k, v in o.items()}
+        for key in ("managers", "servers"):
+            if isinstance(o.get(key), list):
+                o[key] = sorted(
+                    o[key],
+                    key=lambda x: x.get("name", "") if isinstance(x, dict) else str(x),
+                )
+        return o
+    if isinstance(o, list):
+        return [norm(x) for x in o]
+    return o
+print(json.dumps(norm(json.loads(sys.stdin.read())), sort_keys=True,
+                 separators=(",", ":")))
+'
+}
+
 assert_xrdmapc_json() {
        expected_json="{\"name\":\"localhost:${XRD_PORT_METAMAN}\",\"type\":\"manager\",\"managers\":[{\"name\":\"localhost:${XRD_PORT_MAN1}\",\"type\":\"manager\",\"servers\":[{\"name\":\"localhost:${XRD_PORT_SRV1}\"},{\"name\":\"localhost:${XRD_PORT_SRV2}\"}]},{\"name\":\"localhost:${XRD_PORT_MAN2}\",\"type\":\"manager\",\"servers\":[{\"name\":\"localhost:${XRD_PORT_SRV3}\"},{\"name\":\"localhost:${XRD_PORT_SRV4}\"}]}]}"
        actual_json="$(${XRDMAPC} --format json "localhost:${XRD_PORT_METAMAN}")"
+       expected_canon="$(printf '%s' "${expected_json}" | json_canon_topo)"
+       actual_canon="$(printf '%s' "${actual_json}" | json_canon_topo)"
 
-       if [[ "${actual_json}" != "${expected_json}" ]]; then
+       if [[ "${actual_canon}" != "${expected_canon}" ]]; then
                echo 1>&2 "$(basename $0): error: xrdmapc JSON output does not match expected topology"
                echo "Expected: ${expected_json}"
                echo "Actual:   ${actual_json}"
