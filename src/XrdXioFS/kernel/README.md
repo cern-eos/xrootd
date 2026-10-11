@@ -159,25 +159,31 @@ Kerberos import. JWT imports may keep serial HTTP/2.
 No chunked encoding; XrdHttp sends `Content-Length` on HTTP/1.1.
 Send/recv use `sk_rcvtimeo` / `sk_sndtimeo` (`timeo=`, default 30s). On
 connection errors the socket is dropped and the request waits for a new
-import (`xiofsagent --import-only`, or `XIOFS_IOC_WAIT_NEED` on krb5
-or jwt mounts). Dirty pages are redirtied so writeback can retry after a new
-kTLS socket.
+import (`xiofsagent --import-only`, or `XIOFS_IOC_WAIT_NEED` on krb5,
+jwt, shard, or `hard` mounts). Dirty pages are redirtied so writeback can retry after a new
+kTLS socket. Default is `soft`: the syscall returns `-ETIMEDOUT` (or the
+connection errno) after one `timeo`. `hard` retries connect/timeout
+until the server is back, unmount, or a signal (`-ERESTARTSYS`). HTTP
+4xx/5xx are not retried. `timeo=` is the retry interval on a hard mount.
+The agent must stay in `WAIT_NEED`; a hard multi-target mount keeps
+probing down hosts instead of the 10-minute cooldown.
 
 Metadata uses a dentry/inode TTL (`actimeo=`, default 30s, `0` always
 revalidates). `d_revalidate` issues a conditional PROPFIND when the
 cache expires (see "Round trips and caches").
 
 Mount options: `host=`, `port=`, `path=`, `actimeo=`, `timeo=`,
-`conns=` (1..16, default 4), `defer`/`nodefer`, `http2`, `krb5`, `jwt`.
+`conns=` (1..16, default 4), `defer`/`nodefer`, `http2`, `krb5`, `jwt`,
+`hard`/`soft`.
 
 Several HTTP data servers are a comma-separated `host:port` list in the
 agent URL. An XRootD manager/alias is `host,port` (comma between name and
 port). The agent expands aliases at mount and every 5 minutes, hashes
 `fsuid` over the live list (`XIOFS_IOC_SET_TARGETS`), and takes a host
 out for 10 minutes after connect/handshake/timeout errors, then probes
-TCP before putting it back (and only if it is still in the alias). The
-kernel does not watch DNS or cmsd. A multi-target mount keeps
-`xiofsagent` in the `WAIT_NEED` loop.
+TCP before putting it back (and only if it is still in the alias). A
+`hard` mount keeps probing instead. The kernel does not watch DNS or
+cmsd. A multi-target mount keeps `xiofsagent` in the `WAIT_NEED` loop.
 
 ## Kerberos (SPNEGO) via xiofsagent
 

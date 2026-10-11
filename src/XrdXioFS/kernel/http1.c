@@ -16,6 +16,8 @@
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/net.h>
+#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/slab.h>
 #include <linux/socket.h>
 #include <linux/string.h>
@@ -368,10 +370,10 @@ static int xiofs_transact(struct xiofs_conn *c, const char *req,
 			return err;
 		xiofs_conn_drop(c);
 		c->last_err = err;
-		/* Shard failover may import a different host; Host/:authority
-		 * in this request already name the old one. Next I/O rebuilds.
+		/* Shard/hard may import a different host; Host/:authority in
+		 * this buffer already name the old one. rq_run rebuilds.
 		 */
-		if (c->sbi && c->sbi->shard)
+		if (c->sbi && (c->sbi->shard || c->sbi->hard))
 			break;
 	}
 	return err;
@@ -466,18 +468,28 @@ static int xiofs_rq_run(struct xiofs_sb_info *sbi, struct xiofs_rq *rq,
 	size_t n0 = rq->n;
 	int err;
 
-	err = xiofs_conn_get(sbi, &c);
-	if (err)
-		return err;
-	xiofs_rq_add(rq, "Host: %s\r\n", xiofs_conn_hosthdr(c));
-	if (rq->dest)
-		xiofs_rq_add(rq, "Destination: https://%s%s\r\n",
-			     xiofs_conn_hosthdr(c), rq->dest);
-	xiofs_rq_auth(rq, c);
-	xiofs_rq_add(rq, "\r\n");
-	err = xiofs_transact(c, rq->hdr, rq->n, body, bodylen, out, outcap,
-			     outlen, meta);
-	xiofs_conn_put(c);
+	for (;;) {
+		err = xiofs_conn_get(sbi, &c);
+		if (err)
+			break;
+		rq->n = n0;
+		xiofs_rq_add(rq, "Host: %s\r\n", xiofs_conn_hosthdr(c));
+		if (rq->dest)
+			xiofs_rq_add(rq, "Destination: https://%s%s\r\n",
+				     xiofs_conn_hosthdr(c), rq->dest);
+		xiofs_rq_auth(rq, c);
+		xiofs_rq_add(rq, "\r\n");
+		err = xiofs_transact(c, rq->hdr, rq->n, body, bodylen, out,
+				     outcap, outlen, meta);
+		xiofs_conn_put(c);
+		if (!sbi->hard || !xiofs_connerr(err) || sbi->shutting_down)
+			break;
+		if (signal_pending(current)) {
+			err = -ERESTARTSYS;
+			break;
+		}
+		cond_resched();
+	}
 	rq->n = n0;
 	return err;
 }

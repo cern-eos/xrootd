@@ -139,6 +139,7 @@ struct xiofs_sb_info {
 	bool			defer_create;
 	bool			shutting_down;
 	bool			shard;
+	bool			hard;
 	unsigned int		actimeo_sec;
 	unsigned int		timeo_sec;
 	unsigned int		nconns;
@@ -203,6 +204,12 @@ static inline bool xiofs_connerr(int err)
 	default:
 		return false;
 	}
+}
+
+/* krb5/jwt/shard/hard: xiofsagent answers WAIT_NEED for new sockets. */
+static inline bool xiofs_on_demand(const struct xiofs_sb_info *sbi)
+{
+	return sbi->krb5 || sbi->jwt || sbi->shard || sbi->hard;
 }
 
 static inline struct xiofs_sb_info *XIOFS_SB(struct super_block *sb)

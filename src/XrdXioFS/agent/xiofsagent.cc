@@ -8,7 +8,8 @@
 // SPNEGO or a WLCG bt_u<uid> bearer file as the requesting uid, then import.
 // Multi-target URLs (host:port,host:port or XRootD host,port aliases) also
 // stay in that loop: the agent expands aliases, hashes fsuid over live
-// servers, and cools down failing hosts.
+// servers, and cools down failing hosts. --hard keeps retrying connect
+// and timeout errors until the server is back (timeo= is the interval).
 //
 //   xiofsagent [--cacert FILE] [--insecure] [--token TOK | --tokenfile F]
 //              [--import-only] [--krb5] [--jwt] [--workers N] URL [MOUNTPOINT]
@@ -82,6 +83,7 @@ struct Options {
   bool http2{false};
   bool krb5{false};
   bool jwt{false};
+  bool hard{false};
   bool helper{false};
   bool drop{false};
   bool uid_set{false};
@@ -97,7 +99,7 @@ void usage(const char *argv0)
       << "Usage: " << argv0 << " [--cacert FILE] [--insecure]\n"
       << "          [--token TOK | --tokenfile FILE] [--import-only]\n"
       << "          [--actimeo SEC] [--timeo SEC] [--http2] [--conns N]\n"
-      << "          [--nodefer] [--krb5] [--jwt] [--workers N] URL [MOUNTPOINT]\n"
+      << "          [--nodefer] [--krb5] [--jwt] [--hard] [--workers N] URL [MOUNTPOINT]\n"
       << "       " << argv0 << " --drop [--uid N] URL|MOUNTPOINT\n"
       << "\n"
       << "  Handshake to URL, install kTLS, import the socket into xiofs.ko.\n"
@@ -107,6 +109,9 @@ void usage(const char *argv0)
       << "  --nodefer: send PUT at create() instead of with the first flush.\n"
       << "  --krb5: mount with krb5, then WAIT_NEED loop (SPNEGO per uid).\n"
       << "  --jwt: mount with jwt, then WAIT_NEED loop (WLCG bt_u<uid> per uid).\n"
+      << "  --hard: retry connect/timeout until the server is back (NFS hard).\n"
+      << "          timeo= is the retry interval; soft (default) fails after timeo.\n"
+      << "          Needs a persistent WAIT_NEED agent. Signals abort the wait.\n"
       << "  --workers N: N processes in the WAIT_NEED loop (default 1).\n"
       << "  --import-only assumes the filesystem is already mounted.\n"
       << "  --actimeo metadata TTL (default 30, 0 = always revalidate).\n"
@@ -124,7 +129,7 @@ void usage(const char *argv0)
       << "  As mount.xiofs: mount -t xiofs -o host=H,port=P,path=/export none DIR\n"
       << "  or: mount -t xiofs URL DIR (host:port list or host,port alias).\n"
       << "  Extra -o keys: cacert, token, tokenfile, insecure, url, actimeo,\n"
-      << "  timeo, conns, defer, nodefer, http2, krb5, jwt.\n";
+      << "  timeo, conns, defer, nodefer, http2, krb5, jwt, hard, soft.\n";
 }
 
 int fail(const std::string &msg, int rc)
@@ -403,6 +408,8 @@ std::string kernelMountData(const XioFS::Url &url, const Options &opt)
     os << ",jwt";
   if (opt.http2 && !opt.krb5)
     os << ",http2";
+  if (opt.hard)
+    os << ",hard";
   return os.str();
 }
 
@@ -423,7 +430,8 @@ bool isMountOptKey(const std::string &key)
   static const char *const keys[] = {
       "host",     "port",     "path",    "cacert", "token", "tokenfile",
       "insecure", "url",      "actimeo", "timeo",  "conns", "defer",
-      "nodefer",  "http2",    "krb5",    "jwt",    nullptr};
+      "nodefer",  "http2",    "krb5",    "jwt",    "hard",  "soft",
+      nullptr};
   for (int i = 0; keys[i]; ++i) {
     if (key == keys[i])
       return true;
@@ -499,6 +507,10 @@ bool applyMountOpt(const std::string &kv, Options &opt, XioFS::Url &url,
     opt.krb5 = true;
   else if (key == "jwt")
     opt.jwt = true;
+  else if (key == "hard")
+    opt.hard = true;
+  else if (key == "soft")
+    opt.hard = false;
   else {
     err = "unknown mount option: " + key;
     return false;
@@ -641,6 +653,8 @@ int parseAgentArgs(int argc, char **argv, Options &opt, std::string &err)
       opt.krb5 = true;
     else if (a == "--jwt")
       opt.jwt = true;
+    else if (a == "--hard")
+      opt.hard = true;
     else if (a == "--drop")
       opt.drop = true;
     else if (a == "--uid" && i + 1 < argc) {
@@ -1015,6 +1029,7 @@ int runPerUid(const Options &opt)
   if (!work.import_only && work.krb5 && work.jwt)
     return fail("krb5 and jwt cannot be combined on one mount", 2);
 
+  shardSetHard(work.hard);
   if (!shardInit(url, err))
     return fail(err, 2);
 
@@ -1175,9 +1190,10 @@ int run(const Options &opt)
   XioFS::Url url;
   if (!XioFS::parseUrl(opt.url, url, err))
     return fail(err, 2);
+  shardSetHard(opt.hard);
   if (!shardInit(url, err))
     return fail(err, 2);
-  if (opt.krb5 || opt.jwt || shardActive())
+  if (opt.krb5 || opt.jwt || opt.hard || shardActive())
     return runPerUid(opt);
 
   if (opt.fake) {

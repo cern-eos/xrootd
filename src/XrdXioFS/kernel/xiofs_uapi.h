@@ -62,8 +62,8 @@ struct xiofs_gpu_io {
 	_IOW(XIOFS_IOC_MAGIC, 3, struct xiofs_gpu_io)
 
 /*
- * Agent upcall: wait until some uid on a krb5/jwt/shard (or reconnecting)
- * mount needs a socket. One WAIT_NEED dequeues one (sbi, uid) so several
+ * Agent upcall: wait until some uid on a krb5/jwt/shard/hard (or
+ * reconnecting) mount needs a socket. One WAIT_NEED dequeues one (sbi, uid) so several
  * xiofsagent processes can run in parallel. host/port are the target for
  * this channel. err is 0 on first connect, or the kernel connection errno
  * (timeout/reset) so the agent can take that host out of the live list.

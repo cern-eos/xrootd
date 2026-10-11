@@ -153,6 +153,8 @@ xiofsagent --cacert ca.pem \
     https://s1.example:1094,s2.example:1094/export /mnt/xiofs
 # XRootD manager/alias (host,port), expanded at mount and every 5 min:
 xiofsagent --cacert ca.pem https://eosatlas.cern.ch,1094/eos /mnt/xiofs
+# wait for the server to come back (timeo= is the retry interval):
+xiofsagent --hard --cacert ca.pem https://storage.example:1094/export /mnt/xiofs
 # or, after ln -s $(which xiofsagent) /sbin/mount.xiofs:
 mount -t xiofs -o host=storage.example,port=1094,path=/export,cacert=ca.pem \
     none /mnt/xiofs
@@ -168,6 +170,13 @@ minutes, then TCP-probed and put back only if it is still in the alias.
 That policy lives in the agent, not in `xiofs.ko`. Multi-target and alias
 mounts keep `xiofsagent` in the `WAIT_NEED` loop (`mount.xiofs` only
 mounts; run the agent afterwards, as with `--krb5` / `--jwt`).
+
+`--hard` is NFS-style: connect, reset, and timeout errors are retried
+until the server answers, the mount is unmounted, or a signal arrives.
+`timeo=` (default 30s) is the retry interval. Default is `soft`: the
+syscall fails after one `timeo`. HTTP errors (`404`, `403`, `412`, …)
+are never retried. A hard mount keeps `xiofsagent` in the `WAIT_NEED`
+loop (`mount.xiofs -o hard` only mounts; run the agent afterwards).
 
 `--import-only` attaches a new kTLS socket to an existing mount (same
 host/port/path) after a drop. `--actimeo` / `--timeo` set metadata TTL and

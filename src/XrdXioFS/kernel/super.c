@@ -38,6 +38,8 @@ enum {
 	Opt_http2,
 	Opt_krb5,
 	Opt_jwt,
+	Opt_hard,
+	Opt_soft,
 	Opt_defer,
 	Opt_nodefer,
 };
@@ -52,6 +54,8 @@ static const struct fs_parameter_spec xiofs_fs_parameters[] = {
 	fsparam_flag("http2", Opt_http2),
 	fsparam_flag("krb5", Opt_krb5),
 	fsparam_flag("jwt", Opt_jwt),
+	fsparam_flag("hard", Opt_hard),
+	fsparam_flag("soft", Opt_soft),
 	fsparam_flag("defer", Opt_defer),
 	fsparam_flag("nodefer", Opt_nodefer),
 	{}
@@ -67,6 +71,7 @@ struct xiofs_fc_ctx {
 	bool		http2;
 	bool		krb5;
 	bool		jwt;
+	bool		hard;
 	bool		defer_create;
 };
 
@@ -409,6 +414,7 @@ int xiofs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sbi->http2 = ctx->http2;
 	sbi->krb5 = ctx->krb5;
 	sbi->jwt = ctx->jwt;
+	sbi->hard = ctx->hard;
 	sbi->defer_create = ctx->defer_create;
 	strscpy(sbi->host, ctx->host, sizeof(sbi->host));
 	strscpy(sbi->export_path,
@@ -496,6 +502,12 @@ static int xiofs_fc_parse_param(struct fs_context *fc,
 		return 0;
 	case Opt_jwt:
 		ctx->jwt = true;
+		return 0;
+	case Opt_hard:
+		ctx->hard = true;
+		return 0;
+	case Opt_soft:
+		ctx->hard = false;
 		return 0;
 	case Opt_defer:
 		ctx->defer_create = true;

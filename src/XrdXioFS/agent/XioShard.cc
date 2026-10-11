@@ -40,6 +40,7 @@ XioFS::Url gUrl;
 std::vector<XioFS::Hop> gHops;
 std::vector<Node> gNodes;
 bool gInited{false};
+bool gHard{false};
 
 bool sameNode(const Node &a, const std::string &host, int port)
 {
@@ -222,7 +223,7 @@ void probeDown()
   for (auto &n : gNodes) {
     if (n.live)
       continue;
-    if (now < n.down_until)
+    if (!gHard && now < n.down_until)
       continue;
     if (tcpProbe(n.host, n.port)) {
       n.live = true;
@@ -241,7 +242,7 @@ void fillIoctl(xiofs_targets &tg, const XioFS::Url &id)
   std::snprintf(tg.export_path, sizeof(tg.export_path), "%s",
                 id.path.empty() ? "/" : id.path.c_str());
   for (const auto &n : gNodes) {
-    if (!n.live)
+    if (!n.live && !gHard)
       continue;
     if (tg.n >= XIOFS_MAX_TARGETS)
       break;
@@ -294,6 +295,12 @@ bool shardActive()
   return false;
 }
 
+void shardSetHard(bool hard)
+{
+  std::lock_guard<std::mutex> g(gMu);
+  gHard = hard;
+}
+
 void shardFail(const std::string &host, int port)
 {
   std::lock_guard<std::mutex> g(gMu);
@@ -301,8 +308,11 @@ void shardFail(const std::string &host, int port)
   if (i < 0)
     return;
   gNodes[static_cast<size_t>(i)].live = false;
-  gNodes[static_cast<size_t>(i)].down_until =
-      Clock::now() + std::chrono::seconds(kShardCooldownSec);
+  if (gHard)
+    gNodes[static_cast<size_t>(i)].down_until = Clock::now();
+  else
+    gNodes[static_cast<size_t>(i)].down_until =
+        Clock::now() + std::chrono::seconds(kShardCooldownSec);
 }
 
 bool shardPick(__u32 uid, std::string &host, int &port, std::string &err)
@@ -314,8 +324,14 @@ bool shardPick(__u32 uid, std::string &host, int &port, std::string &err)
       live.push_back(i);
   }
   if (live.empty()) {
-    err = "no live HTTP targets";
-    return false;
+    if (!gHard || gNodes.empty()) {
+      err = "no live HTTP targets";
+      return false;
+    }
+    size_t i = uid % gNodes.size();
+    host = gNodes[i].host;
+    port = gNodes[i].port;
+    return true;
   }
   size_t i = live[uid % live.size()];
   host = gNodes[i].host;

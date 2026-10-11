@@ -269,30 +269,40 @@ int xiofs_conn_wait(struct xiofs_conn *c)
 
 	if (c->sock)
 		return 0;
-	if (sbi->shutting_down)
-		return -ENOTCONN;
 
-	xiofs_conn_enqueue_need(c);
-	mutex_unlock(&c->io_lock);
-	ret = wait_event_interruptible_timeout(c->wait,
-			sbi->shutting_down || c->sock || c->last_err, timeout);
-	mutex_lock(&c->io_lock);
+	for (;;) {
+		if (sbi->shutting_down)
+			return -ENOTCONN;
 
-	if (sbi->shutting_down)
+		xiofs_conn_enqueue_need(c);
+		mutex_unlock(&c->io_lock);
+		ret = wait_event_interruptible_timeout(c->wait,
+				sbi->shutting_down || c->sock || c->last_err,
+				timeout);
+		mutex_lock(&c->io_lock);
+
+		if (sbi->shutting_down)
+			return -ENOTCONN;
+		if (c->sock)
+			return 0;
+		if (c->last_err) {
+			ret = c->last_err;
+			c->last_err = 0;
+			c->pending = false;
+			if (sbi->hard && xiofs_connerr(ret))
+				continue;
+			return ret;
+		}
+		if (ret == 0) {
+			if (sbi->hard)
+				continue;
+			c->pending = false;
+			return -ETIMEDOUT;
+		}
+		if (ret < 0)
+			return ret;
 		return -ENOTCONN;
-	if (c->sock)
-		return 0;
-	if (c->last_err) {
-		ret = c->last_err;
-		c->last_err = 0;
-		c->pending = false;
-		return ret;
 	}
-	if (ret == 0)
-		return -ETIMEDOUT;
-	if (ret < 0)
-		return ret;
-	return -ENOTCONN;
 }
 
 /*
@@ -365,7 +375,7 @@ static int xiofs_conn_select(struct xiofs_sb_info *sbi, u32 uid,
 {
 	struct xiofs_conn *c, *spare = NULL;
 	unsigned int n = 0, busy_connected = 0;
-	bool on_demand = sbi->krb5 || sbi->jwt || sbi->shard;
+	bool on_demand = xiofs_on_demand(sbi);
 
 	mutex_lock(&sbi->conns_lock);
 	list_for_each_entry(c, &sbi->conns, list) {
@@ -400,12 +410,12 @@ static int xiofs_conn_select(struct xiofs_sb_info *sbi, u32 uid,
 		n = sbi->nconns;	/* do not create either */
 	}
 	/*
-	 * Grow on demand only where something answers WAIT_NEED (krb5/jwt
-	 * or a multi-target shard agent). Shared single-host mounts get
-	 * their channels from the agent's imports; an unconnected channel
-	 * there would just time out, so wait for a busy one instead. The
-	 * very first channel is always created so the initial import has
-	 * something to wait on.
+	 * Grow on demand only where something answers WAIT_NEED (krb5/jwt,
+	 * a multi-target shard agent, or a hard mount). Shared single-host
+	 * soft mounts get their channels from the agent's imports; an
+	 * unconnected channel there would just time out, so wait for a
+	 * busy one instead. The very first channel is always created so
+	 * the initial import has something to wait on.
 	 */
 	if (!spare && (n == 0 || (on_demand && n < sbi->nconns))) {
 		spare = xiofs_conn_create(sbi, uid);
@@ -425,7 +435,7 @@ static int xiofs_conn_select(struct xiofs_sb_info *sbi, u32 uid,
 static bool xiofs_conn_any_free(struct xiofs_sb_info *sbi, u32 uid)
 {
 	struct xiofs_conn *c;
-	bool on_demand = sbi->krb5 || sbi->jwt || sbi->shard;
+	bool on_demand = xiofs_on_demand(sbi);
 	bool any_connected = false, idle_connected = false, idle = false;
 
 	if (sbi->shutting_down)
@@ -476,8 +486,11 @@ int xiofs_conn_get(struct xiofs_sb_info *sbi, struct xiofs_conn **out)
 				msecs_to_jiffies(sec * 1000u));
 		if (ret < 0)
 			return ret;
-		if (ret == 0)
+		if (ret == 0) {
+			if (sbi->hard)
+				continue;
 			return -ETIMEDOUT;
+		}
 	}
 	if (err)
 		return err;
