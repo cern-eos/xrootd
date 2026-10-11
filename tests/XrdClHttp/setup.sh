@@ -383,17 +383,20 @@ XROOTD_BIN="$BINARY_DIR/bin/xrootd"
 
 BINDIR="$RUNDIR/bin"
 mkdir -p -- "$BINDIR"
+# HOSTNAME=localhost: Ubuntu GHA FQDNs are 70+ chars and are not in the
+# TLS SAN. httph2 already forces this via CMake; the origin wrapper did not.
 cat > "$BINDIR/xrootd" << EOF
 #!/bin/sh
+export HOSTNAME=localhost
 export XRD_HTTPSLOWRATEBYTESSEC=1024
 export XRD_HTTPSTALLTIMEOUT=2
 export XRD_HTTPCERTFILE=$CA_DIR/tlsca.pem
 export XRD_LOGLEVEL=Debug
-set -x
 exec "$XROOTD_BIN" "\$@"
 EOF
 chmod +x "$BINDIR/xrootd"
 export PATH="$BINDIR:$PATH"
+export HOSTNAME=localhost
 
 # Clear out old client logging
 echo > "$BINARY_DIR/tests/$TEST_NAME/client.log"
@@ -405,7 +408,11 @@ echo > "$BINARY_DIR/tests/$TEST_NAME/origin.log"
 echo > "$BINARY_DIR/tests/$TEST_NAME/cache.log"
 # ECDSA host cert: do not set XRD_TLSMAXPROTO. SSL_CTX_set_max_proto_version
 # aborted OpenSSL 3.0 (Ubuntu) and 3.5 (Fedora) during HTTP init / SSL_accept.
-"$BINDIR/xrootd" -n origin -c "$ORIGIN_CONFIG" 0<&- >"$BINARY_DIR/tests/$TEST_NAME/origin.log" 2>&1 &
+# </dev/null not 0<&-: a closed stdin lets the next open() reuse fd 0, and
+# Ubuntu OpenSSL 3 then dies after HTTPS init (connection reset / "crashed").
+ORIGIN_LOG="$BINARY_DIR/tests/$TEST_NAME/origin.log"
+"$BINDIR/xrootd" -n origin -c "$ORIGIN_CONFIG" -l "$ORIGIN_LOG" \
+  </dev/null >/dev/null 2>&1 &
 ORIGIN_PID=$!
 echo "Origin PID: $ORIGIN_PID"
 
@@ -486,7 +493,9 @@ if [ "$HTTPS_OK" -ne 1 ]; then
 fi
 
 echo > "$BINARY_DIR/tests/$TEST_NAME/cache.log"
-"$BINDIR/xrootd" -n cache -c "$CACHE_CONFIG" 0<&- >"$BINARY_DIR/tests/$TEST_NAME/cache.log" 2>&1 &
+CACHE_LOG="$BINARY_DIR/tests/$TEST_NAME/cache.log"
+"$BINDIR/xrootd" -n cache -c "$CACHE_CONFIG" -l "$CACHE_LOG" \
+  </dev/null >/dev/null 2>&1 &
 CACHE_PID=$!
 echo "Cache PID: $CACHE_PID"
 
