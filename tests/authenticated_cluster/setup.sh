@@ -18,16 +18,15 @@ die() {
 
 pid_alive() {
     local pidfile=$1
-    local pid state
+    local pid
 
     [[ -s "${pidfile}" ]] || return 1
     pid=$(tr -d '[:space:]' < "${pidfile}")
     [[ "${pid}" =~ ^[0-9]+$ ]] || return 1
-    # kill -0 and /proc/pid exist for zombies; Ubuntu -b can leave a
-    # reaped-looking pidfile if the grandchild dies after the pipe write.
-    if [[ -r "/proc/${pid}/status" ]]; then
-        state=$(awk '/^State:/{print $2; exit}' "/proc/${pid}/status")
-        [[ "${state}" == "Z" ]] && return 1
+    # Do not treat State Z as dead: xrootd -b double-forks and the
+    # intermediate is Z until the parent reaps it. Listen/init is the
+    # ready signal (Fedora Debug CI treated a live metaman as dead).
+    if [[ -d "/proc/${pid}" ]]; then
         return 0
     fi
     kill -0 "${pid}" 2>/dev/null
@@ -35,11 +34,14 @@ pid_alive() {
 
 wait_for_pidfile() {
     local pidfile=$1
-    local tries
+    local pid tries
 
     for ((tries = 0; tries < 50; tries++)); do
-        if pid_alive "${pidfile}"; then
-            return 0
+        if [[ -s "${pidfile}" ]]; then
+            pid=$(tr -d '[:space:]' < "${pidfile}")
+            if [[ "${pid}" =~ ^[0-9]+$ ]]; then
+                return 0
+            fi
         fi
         sleep 0.1
     done
@@ -154,10 +156,6 @@ wait_for_listen() {
         fi
         if grep -a -qE -e 'xrootd [^[:space:]]+ initialization failed' "${name}/xrootd.log" 2>/dev/null; then
             echo "error: ${name} initialization failed" >&2
-            return 1
-        fi
-        if ! pid_alive "${name}/xrootd.pid"; then
-            echo "error: ${name} xrootd died before listening on ${port}" >&2
             return 1
         fi
         sleep 0.5

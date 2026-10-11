@@ -71,21 +71,21 @@ XRD_PORT_SRV1=${XRD_PORT_SRV1}
 XRD_PORT_SRV2=${XRD_PORT_SRV2}
 XRD_PORT_SRV3=${XRD_PORT_SRV3}
 XRD_PORT_SRV4=${XRD_PORT_SRV4}
-HOST_METAMAN=root://localhost:${XRD_PORT_METAMAN}
-HOST_MAN1=root://localhost:${XRD_PORT_MAN1}
-HOST_MAN2=root://localhost:${XRD_PORT_MAN2}
-HOST_SRV1=root://localhost:${XRD_PORT_SRV1}
-HOST_SRV2=root://localhost:${XRD_PORT_SRV2}
-HOST_SRV3=root://localhost:${XRD_PORT_SRV3}
-HOST_SRV4=root://localhost:${XRD_PORT_SRV4}
-XRDTEST_MAINSERVERURL=localhost:${XRD_PORT_METAMAN}
-XRDTEST_MANAGER1URL=localhost:${XRD_PORT_MAN1}
-XRDTEST_MANAGER2URL=localhost:${XRD_PORT_MAN2}
-XRDTEST_SERVER1URL=localhost:${XRD_PORT_SRV1}
-XRDTEST_SERVER2URL=localhost:${XRD_PORT_SRV2}
-XRDTEST_SERVER3URL=localhost:${XRD_PORT_SRV3}
-XRDTEST_SERVER4URL=localhost:${XRD_PORT_SRV4}
-XRDTEST_DISKSERVERURL=localhost:${XRD_PORT_METAMAN}
+HOST_METAMAN=root://127.0.0.1:${XRD_PORT_METAMAN}
+HOST_MAN1=root://127.0.0.1:${XRD_PORT_MAN1}
+HOST_MAN2=root://127.0.0.1:${XRD_PORT_MAN2}
+HOST_SRV1=root://127.0.0.1:${XRD_PORT_SRV1}
+HOST_SRV2=root://127.0.0.1:${XRD_PORT_SRV2}
+HOST_SRV3=root://127.0.0.1:${XRD_PORT_SRV3}
+HOST_SRV4=root://127.0.0.1:${XRD_PORT_SRV4}
+XRDTEST_MAINSERVERURL=127.0.0.1:${XRD_PORT_METAMAN}
+XRDTEST_MANAGER1URL=127.0.0.1:${XRD_PORT_MAN1}
+XRDTEST_MANAGER2URL=127.0.0.1:${XRD_PORT_MAN2}
+XRDTEST_SERVER1URL=127.0.0.1:${XRD_PORT_SRV1}
+XRDTEST_SERVER2URL=127.0.0.1:${XRD_PORT_SRV2}
+XRDTEST_SERVER3URL=127.0.0.1:${XRD_PORT_SRV3}
+XRDTEST_SERVER4URL=127.0.0.1:${XRD_PORT_SRV4}
+XRDTEST_DISKSERVERURL=127.0.0.1:${XRD_PORT_METAMAN}
 XRDTEST_LOCALDATAPATH=$(cd "${DATAFOLDER}" && pwd)
 EOF
 }
@@ -352,7 +352,9 @@ wait_for_pidfile() {
 
 wait_for_cluster() {
        local xrdfs="${XRDFS:-$(command -v xrdfs)}"
-       local host="root://localhost:${XRD_PORT_METAMAN}"
+       # 127.0.0.1: assumev4 servers do not accept ::1, and xrdfs
+       # root://localhost prefers IPv6 (Alpine wait_for_cluster 300s).
+       local host="root://127.0.0.1:${XRD_PORT_METAMAN}"
        local tries
 
        # cms.delay startup is 2s and srv4 (data.zip) is last to subscribe.

@@ -411,31 +411,17 @@ echo "Origin PID: $ORIGIN_PID"
 
 echo "Origin logs are available at $BINARY_DIR/tests/$TEST_NAME/origin.log"
 
-origin_port_listening() {
-  local port="$1"
-  python3 -c '
-import socket, sys
-port = int(sys.argv[1])
-for host in ("127.0.0.1", "localhost"):
-    try:
-        s = socket.create_connection((host, port), 0.5)
-        s.close()
-        sys.exit(0)
-    except OSError:
-        pass
-sys.exit(1)
-' "${port}"
-}
-
 origin_init_done() {
   grep -E -a -q -e 'xrootd origin@[^[:space:]]+ initialization completed' \
     "$BINARY_DIR/tests/$TEST_NAME/origin.log" 2>/dev/null
 }
 
+# TCP accept is not ready: xrd.port binds before HTTPS is up, and Ubuntu
+# curl then gets "connection reset by peer". Wait for init completed.
 ORIGIN_PORT=""
 IDX=0
 while [ -z "$ORIGIN_PORT" ]; do
-  if origin_init_done || origin_port_listening 9443; then
+  if origin_init_done; then
     ORIGIN_PORT=$(grep -E -a -e 'xrootd origin@[^[:space:]]+ initialization completed' \
       "$BINARY_DIR/tests/$TEST_NAME/origin.log" | tail -n 1 | sed -n 's/.*:\([0-9][0-9]*\) initialization completed.*/\1/p')
     [ -n "$ORIGIN_PORT" ] || ORIGIN_PORT=9443
@@ -453,10 +439,8 @@ while [ -z "$ORIGIN_PORT" ]; do
     echo "Waiting for origin to start ($IDX checks so far) ..."
   fi
   if ! kill -0 "$ORIGIN_PID" 2>/dev/null; then
-    # The log's last line is often still in stdio buffers; wait one more
-    # tick so "initialization failed" can show instead of a false crash.
     sleep 0.2
-    if origin_init_done || origin_port_listening 9443; then
+    if origin_init_done; then
       ORIGIN_PORT=9443
       break
     fi
@@ -482,9 +466,19 @@ https_handshake() {
 # Confirm origin is accepting HTTPS before starting the cache. If this
 # fails the cache Stat of https://127.0.0.1:9443 becomes connection-refused
 # and checksum tests hang dumping a growing log.
-if ! curl --http1.1 --max-time 5 --cacert "$CA_DIR/tlsca.pem" \
-    "https://127.0.0.1:${ORIGIN_PORT}/.well-known/openid-configuration" \
-    -o /dev/null; then
+HTTPS_OK=0
+HTTPS_TRY=0
+while [ $HTTPS_TRY -lt 10 ]; do
+  if curl --http1.1 --connect-timeout 2 --max-time 5 --cacert "$CA_DIR/tlsca.pem" \
+      "https://127.0.0.1:${ORIGIN_PORT}/.well-known/openid-configuration" \
+      -o /dev/null; then
+    HTTPS_OK=1
+    break
+  fi
+  HTTPS_TRY=$((HTTPS_TRY+1))
+  sleep 0.3
+done
+if [ "$HTTPS_OK" -ne 1 ]; then
   echo "Origin is not serving HTTPS on port ${ORIGIN_PORT}"
   cat "$BINARY_DIR/tests/$TEST_NAME/origin.log"
   kill "$ORIGIN_PID" 2>/dev/null || true

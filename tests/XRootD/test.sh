@@ -134,13 +134,15 @@ function printlogs() {
 
 function daemon_pid_alive() {
 	local pidfile=$1
-	local pid state
+	local pid
 	[[ -s "${pidfile}" ]] || return 1
 	pid=$(tr -d '[:space:]' < "${pidfile}")
 	[[ "${pid}" =~ ^[0-9]+$ ]] || return 1
-	if [[ -r "/proc/${pid}/status" ]]; then
-		state=$(awk '/^State:/{print $2; exit}' "/proc/${pid}/status")
-		[[ "${state}" == "Z" ]] && return 1
+	# xrootd -b double-forks: the pidfile is the daemon, but an
+	# intermediate can sit as Z until the -b parent exits. kill -0
+	# and /proc/pid both succeed for zombies; that is OK here.
+	# Readiness is wait_for_init_log, not this check.
+	if [[ -d "/proc/${pid}" ]]; then
 		return 0
 	fi
 	kill -0 "${pid}" 2>/dev/null
@@ -148,10 +150,13 @@ function daemon_pid_alive() {
 
 function wait_for_pidfile() {
 	local pidfile=$1
-	local n
+	local n pid
 	for ((n = 0; n < 50; n++)); do
-		if daemon_pid_alive "${pidfile}"; then
-			return 0
+		if [[ -s "${pidfile}" ]]; then
+			pid=$(tr -d '[:space:]' < "${pidfile}")
+			if [[ "${pid}" =~ ^[0-9]+$ ]]; then
+				return 0
+			fi
 		fi
 		sleep 0.1
 	done
@@ -170,9 +175,6 @@ function wait_for_init_log() {
 			return 0
 		fi
 		if grep -a -qE -e 'xrootd [^[:space:]]+ initialization failed' "${logfile}" 2>/dev/null; then
-			return 1
-		fi
-		if ! daemon_pid_alive "${pidfile}"; then
 			return 1
 		fi
 		sleep 0.2

@@ -102,11 +102,12 @@ function test_http() {
   # by the correct amount between the first and second upload.  The first upload was done with transfer encoding, meaning
   # XRootD doesn't know the final size of the object and hence doesn't append the '?oss.asize=' flag
   # Locate the bridge open request for each upload and compare the logged URL lengths.
+  # grep -F: IPv6 identities are host@[::1]; BRE treats [::1] as a character class.
   uploadThread=$(grep -E 'open odm[^ ]* .*alphabet\.txt$' "$XROOTD_SERVER_LOGFILE" | awk '{print $4}' | head -n 1)
-  firstUrlLength=$(grep " $uploadThread " "$XROOTD_SERVER_LOGFILE" | grep 'Xrootd_Protocol: 0000 Bridge req=3010' | head -n 1 | tr '=' ' ' | awk '{print $NF}')
+  firstUrlLength=$(grep -F " $uploadThread " "$XROOTD_SERVER_LOGFILE" | grep 'Xrootd_Protocol: 0000 Bridge req=3010' | head -n 1 | tr '=' ' ' | awk '{print $NF}')
   # Next, the addition of '.2?oss.asize=26' is an increase of 15 characters
   uploadThread=$(grep -E 'open odm[^ ]* .*alphabet\.txt\.2$' "$XROOTD_SERVER_LOGFILE" | awk '{print $4}' | head -n 1)
-  secondUrlLength=$(grep " $uploadThread " "$XROOTD_SERVER_LOGFILE" | grep 'Xrootd_Protocol: 0000 Bridge req=3010' | head -n 1 | tr '=' ' ' | awk '{print $NF}')
+  secondUrlLength=$(grep -F " $uploadThread " "$XROOTD_SERVER_LOGFILE" | grep 'Xrootd_Protocol: 0000 Bridge req=3010' | head -n 1 | tr '=' ' ' | awk '{print $NF}')
   assert_eq "$((firstUrlLength+15))" "$secondUrlLength" "PUT request is missing oss.asize argument"
 
   assert curl -L -H 'Transfer-Encoding: chunked' "${HTTP_HOST}/$alphabetFilePath" --upload-file "$alphabetFilePath"
