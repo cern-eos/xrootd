@@ -145,6 +145,8 @@ namespace XrdCl
       //! Constructor
       //------------------------------------------------------------------------
       LocationInfo();
+      LocationInfo(const LocationInfo&) = default;
+      LocationInfo& operator=(const LocationInfo&) = default;
 
       //------------------------------------------------------------------------
       //! Destructor
@@ -940,6 +942,8 @@ namespace XrdCl
     //--------------------------------------------------------------------------
     ChunkInfo( uint64_t off = 0, uint32_t len = 0, void *buff = 0 ):
       offset( off ), length( len ), buffer(buff) {}
+    ChunkInfo(const ChunkInfo&) = default;
+    ChunkInfo& operator=(const ChunkInfo&) = default;
 
       //--------------------------------------------------------------------------
       //! Destructor
@@ -1086,6 +1090,8 @@ namespace XrdCl
     //--------------------------------------------------------------------------
     TractInfo( uint64_t off = 0, uint32_t len = 0, File* fp = 0 ):
       offset( off ), length( len ), pFile( fp ) {}
+    TractInfo(const TractInfo&) = default;
+    TractInfo& operator=(const TractInfo&) = default;
 
       //--------------------------------------------------------------------------
       //! Destructor

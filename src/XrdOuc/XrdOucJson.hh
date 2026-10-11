@@ -4,7 +4,9 @@
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wstringop-overflow"
+#if __GNUC__ >= 11
 #pragma GCC diagnostic ignored "-Wstringop-overread"
+#endif
 #endif
 #ifdef USE_SYSTEM_NLOHMANN_JSON
 #include <nlohmann/json.hpp>
