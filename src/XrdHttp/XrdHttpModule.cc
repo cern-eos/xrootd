@@ -29,7 +29,7 @@ extern "C" {
     // Return the protocol object to be used if static init succeeds
     //
     if (XrdHttpProtocol::Configure(parms, pi))
-      pp = (XrdProtocol *)new XrdHttpProtocol(false);
+      pp = (XrdProtocol *)XrdHttpProtocol::Create(false);
     else txt = "failed.";
     pi->eDest->Say("------ HTTP protocol initialization ", txt);
     return pp;

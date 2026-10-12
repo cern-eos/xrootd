@@ -60,15 +60,15 @@ target_link_libraries(XrdHttpUtils
 target_include_directories(XrdHttpUtils PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 if(BUILD_KRB5)
-  target_compile_definitions(XrdHttpUtils PRIVATE HAVE_HTTP_KRB5)
-  target_include_directories(XrdHttpUtils PRIVATE ${KERBEROS5_INCLUDE_DIR})
-  target_link_libraries(XrdHttpUtils PRIVATE ${KERBEROS5_LIBRARIES})
+  target_compile_definitions(XrdHttpUtils PUBLIC HAVE_HTTP_KRB5)
+  target_include_directories(XrdHttpUtils PUBLIC ${KERBEROS5_INCLUDE_DIR})
+  target_link_libraries(XrdHttpUtils PUBLIC ${KERBEROS5_LIBRARIES})
 endif()
 
 if(BUILD_HTTP2)
-  target_compile_definitions(XrdHttpUtils PRIVATE HAVE_NGHTTP2)
-  target_include_directories(XrdHttpUtils PRIVATE ${NGHTTP2_INCLUDE_DIR})
-  target_link_libraries(XrdHttpUtils PRIVATE ${NGHTTP2_LIBRARY})
+  target_compile_definitions(XrdHttpUtils PUBLIC HAVE_NGHTTP2)
+  target_include_directories(XrdHttpUtils PUBLIC ${NGHTTP2_INCLUDE_DIR})
+  target_link_libraries(XrdHttpUtils PUBLIC ${NGHTTP2_LIBRARY})
 endif()
 
 set(XrdHttp XrdHttp-${PLUGIN_VERSION})

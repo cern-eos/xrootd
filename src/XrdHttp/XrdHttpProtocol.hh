@@ -180,6 +180,7 @@ public:
   XrdHttpProtocol(const XrdHttpProtocol&) = delete;
   XrdHttpProtocol &operator =(const XrdHttpProtocol &rhs);
   XrdHttpProtocol(bool imhttps);
+  static XrdHttpProtocol *Create(bool imhttps = false);
   ~XrdHttpProtocol() {
     Cleanup();
   }

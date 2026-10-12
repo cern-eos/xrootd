@@ -236,6 +236,10 @@ SecEntity(""), http1Session_()
 
 }
 
+XrdHttpProtocol *XrdHttpProtocol::Create(bool imhttps) {
+  return new XrdHttpProtocol(imhttps);
+}
+
 /******************************************************************************/
 /*                   A s s i g n m e n t   O p e r a t o r                    */
 
@@ -2269,10 +2273,12 @@ int XrdHttpProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
 
   // Set the redirect flag if we are a pure redirector
   myRole = kXR_isServer;
+  const char *xrdredir = getenv("XRDREDIRECT");
   if ((rdf = getenv("XRDROLE"))) {
       eDest.Emsg("Config", "XRDROLE: ", rdf);
 
-      if (!strcasecmp(rdf, "manager") || !strcasecmp(rdf, "supervisor")) {
+      if (strstr(rdf, "manager") || !strcasecmp(rdf, "supervisor") ||
+          (xrdredir && strcmp(xrdredir, "0") != 0)) {
         myRole = kXR_isManager;
         eDest.Emsg("Config", "Configured as HTTP(s) redirector.");
       } else {
@@ -2280,6 +2286,9 @@ int XrdHttpProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
         eDest.Emsg("Config", "Configured as HTTP(s) data server.");
       }
 
+  } else if (xrdredir && strcmp(xrdredir, "0") != 0) {
+    myRole = kXR_isManager;
+    eDest.Emsg("Config", "Configured as HTTP(s) redirector.");
   } else {
     eDest.Emsg("Config", "No XRDROLE specified.");
   }
