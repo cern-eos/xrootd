@@ -13,7 +13,13 @@ export KRB5_CONFIG="${PWD}/krb5.conf"
 export KRB5_KDC_PROFILE="${PWD}/kdc.conf"
 
 function setup() {
-	rm -f "${KRB5CCNAME}" krb5.keytab kdc/{db*,*.{log,pem,srl}}
+	if test -s "${PWD}/krb5kdc.pid"; then
+		local oldpid="$(tr -d '[:space:]' < "${PWD}/krb5kdc.pid")"
+		if [[ "${oldpid}" =~ ^[0-9]+$ ]] && kill -0 "${oldpid}" 2>/dev/null; then
+			kill -s TERM "${oldpid}" 2>/dev/null || true
+		fi
+	fi
+	rm -f "${KRB5CCNAME}" krb5.keytab kdc/{db*,*.{log,pem,srl}} "${PWD}/krb5kdc.pid"
 
 	pushd kdc >/dev/null || exit 1
 
@@ -45,7 +51,30 @@ function setup() {
 	kdb5_util create -s -r XROOTD.ORG -P xrootd
 
 	# Start the KDC daemons
-	krb5kdc -P "${PWD}"/krb5kdc.pid
+	if ! krb5kdc -P "${PWD}"/krb5kdc.pid; then
+		echo "krb5kdc failed to start" >&2
+		tail -n "${MAXLINES:-200}" kdc/*.log 2>/dev/null || true
+		exit 1
+	fi
+
+	local started=0
+	local i
+	for ((i = 0; i < 50; i++)); do
+		if [ -s "${PWD}/krb5kdc.pid" ]; then
+			local pid
+			pid="$(tr -d '[:space:]' < "${PWD}/krb5kdc.pid")"
+			if [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null; then
+				started=1
+				break
+			fi
+		fi
+		sleep 0.1
+	done
+	if [ "${started}" -ne 1 ]; then
+		echo "krb5kdc pidfile missing or process exited" >&2
+		tail -n "${MAXLINES:-200}" kdc/*.log 2>/dev/null || true
+		exit 1
+	fi
 
 	# Not really needed, since we use kadmin.local
 	# kadmind -P ${PWD}/kadmind.pid

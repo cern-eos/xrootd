@@ -22,7 +22,23 @@ PREDEF="./mvdata"
 PORTS_ENV="./ports.env"
 
 find_free_port() {
-       python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()'
+       python3 -c '
+import socket
+for _ in range(100):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("", 0))
+    p = s.getsockname()[1]
+    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        u.bind(("", p))
+        u.close()
+        s.close()
+        print(p)
+        break
+    except OSError:
+        s.close()
+'
 }
 
 allocate_ports() {
@@ -32,7 +48,7 @@ allocate_ports() {
        find_unique_port() {
               while true; do
                      p=$(find_free_port)
-                     for u in "${used[@]}"; do
+                     for u in "${used[@]}" 20088 20749 20464; do
                             [[ "$u" == "$p" ]] && continue 2
                      done
                      used+=("$p")
