@@ -1,6 +1,7 @@
 #include "XrdHttpS3Ops.hh"
 
 #include "XrdHttp/XrdHttpExtHandler.hh"
+#include "XrdHttpS3Client.hh"
 #include "XrdHttpS3Fs.hh"
 #include "XrdHttpS3Paths.hh"
 #include "XrdHttpS3SigV4.hh"
@@ -174,16 +175,6 @@ namespace {
 const char *kSubresources[] = {
     "acl", "cors", "lifecycle", "location", "logging", "notification", "policy",
     "requestPayment", "tagging", "uploads", "versioning", "website", nullptr};
-
-struct Identity {
-  std::string name;
-  XrdSecEntity ent;
-  explicit Identity(const std::string &user) : name(user), ent("s3") {
-    if (!name.empty())
-      ent.name = &name[0];
-  }
-  const XrdSecEntity *get() const { return &ent; }
-};
 
 const std::string *Hdr(const XrdHttpExtReq &req, const char *name) {
   auto it = req.headers.find(name);
@@ -386,7 +377,7 @@ int Ops::GetAcl(XrdHttpExtReq &req, const KeyRecord &key, const std::string &buc
   if (owned <= 0)
     return owned;
   if (object) {
-    Identity id(key.user);
+    Client id(key.user);
     struct stat st;
     int err = 0;
     if (m_meta.Store().Stat(ObjectFile(m_cfg, key.user, bucket, objKey), id.get(), st, err) != 0 ||
@@ -604,7 +595,7 @@ int Ops::DeleteBucket(XrdHttpExtReq &req, const KeyRecord &key, const std::strin
   int owned = LoadOwned(req, key, bucket, rec);
   if (owned <= 0)
     return owned;
-  Identity id(key.user);
+  Client id(key.user);
   std::vector<std::string> names;
   int err = 0;
   std::string data = BucketData(m_cfg, key.user, bucket);
@@ -612,7 +603,8 @@ int Ops::DeleteBucket(XrdHttpExtReq &req, const KeyRecord &key, const std::strin
     return Fail(req, 409, "BucketNotEmpty", "The bucket still contains objects");
   if (err != 0 && err != ENOENT)
     return Fail(req, 500, "InternalError", "Could not inspect the bucket");
-  m_meta.Store().Rmdir(data, id.get(), err);
+  if (m_meta.Store().Rmdir(data, id.get(), err) != 0)
+    m_meta.Store().Rmdir(data, m_meta.MetaWho(), err);
   m_meta.RemoveBucket(bucket, key.user, err);
   if (req.SendSimpleResp(204, nullptr, nullptr, nullptr, 0) != 0)
     return -1;
@@ -655,7 +647,7 @@ int Ops::ListObjects(XrdHttpExtReq &req, const KeyRecord &key, const std::string
       return Fail(req, 400, "InvalidArgument", "max-keys must be between 0 and 1000");
   }
 
-  Identity id(key.user);
+  Client id(key.user);
   std::vector<FileInfo> files;
   bool scanTruncated = false;
   int err = 0;
@@ -733,7 +725,7 @@ int Ops::PutObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
     return Fail(req, 400, "InvalidArgument", "A user metadata name or value is not valid");
   if (metaRc == 2)
     return Fail(req, 400, "MetadataTooLarge", "User metadata is larger than 2048 bytes");
-  Identity id(key.user);
+  Client id(key.user);
   std::string path = ObjectFile(m_cfg, key.user, bucket, objKey);
   struct stat st;
   int err = 0;
@@ -785,7 +777,7 @@ int Ops::GetObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
   int owned = LoadOwned(req, key, bucket, rec);
   if (owned <= 0)
     return owned;
-  Identity id(key.user);
+  Client id(key.user);
   std::string path = ObjectFile(m_cfg, key.user, bucket, objKey);
   struct stat st;
   int err = 0;
@@ -888,7 +880,7 @@ int Ops::DeleteObject(XrdHttpExtReq &req, const KeyRecord &key, const std::strin
   int owned = LoadOwned(req, key, bucket, rec);
   if (owned <= 0)
     return owned;
-  Identity id(key.user);
+  Client id(key.user);
   int err = 0;
   int rc = m_meta.Store().Unlink(ObjectFile(m_cfg, key.user, bucket, objKey), id.get(), err);
   if (rc != 0 && err != ENOENT)

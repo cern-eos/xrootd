@@ -226,6 +226,20 @@ int Fs::Mkdir(const std::string &path, const XrdSecEntity *who, int &err) {
   return -1;
 }
 
+int Fs::Chown(const std::string &path, uid_t uid, gid_t gid, const XrdSecEntity *who, int &err) {
+  XrdOucErrInfo ei(WhoName(who));
+  int rc = m_sfs.chown(path.c_str(), uid, gid, ei, who, nullptr);
+  rc = Wait(ei, rc);
+  if (rc == SFS_STALL)
+    rc = m_sfs.chown(path.c_str(), uid, gid, ei, who, nullptr);
+  if (rc != SFS_OK) {
+    err = ErrnoOf(ei, rc);
+    return -1;
+  }
+  err = 0;
+  return 0;
+}
+
 int Fs::Rmdir(const std::string &path, const XrdSecEntity *who, int &err) {
   XrdOucErrInfo ei(WhoName(who));
   int rc = m_sfs.remdir(path.c_str(), ei, who, nullptr);

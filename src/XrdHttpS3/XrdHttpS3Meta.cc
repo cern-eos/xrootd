@@ -1,5 +1,6 @@
 #include "XrdHttpS3Meta.hh"
 
+#include "XrdHttpS3Client.hh"
 #include "XrdHttpS3Fs.hh"
 #include "XrdHttpS3Paths.hh"
 #include "XrdSys/XrdSysError.hh"
@@ -176,8 +177,16 @@ int Meta::StoreBucket(const BucketRecord &rec, int &err) {
     return -1;
   if (WriteProps(UserBucketFile(m_cfg, rec.owner, rec.name), MetaWho(), props, 0644, err) != 0)
     return -1;
-  if (m_fs->Mkdir(BucketData(m_cfg, rec.owner, rec.name), MetaWho(), err) != 0)
+  std::string data = BucketData(m_cfg, rec.owner, rec.name);
+  Client owner(rec.owner);
+  int merr = 0;
+  if (m_fs->Mkdir(data, owner.get(), merr) != 0 && m_fs->Mkdir(data, MetaWho(), err) != 0)
     return -1;
+  uid_t uid = 0;
+  gid_t gid = 0;
+  int cerr = 0;
+  if (PosixId(rec.owner, uid, gid) == 0)
+    m_fs->Chown(data, uid, gid, MetaWho(), cerr);
   if (m_cfg.metacache > 0) {
     std::lock_guard<std::mutex> lock(m_mu);
     m_buckets.erase(rec.name);

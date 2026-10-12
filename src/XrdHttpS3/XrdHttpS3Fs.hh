@@ -3,6 +3,7 @@
 
 #include <string>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <vector>
 
 class XrdSecEntity;
@@ -33,6 +34,7 @@ public:
                mode_t mode, int &err);
   int Unlink(const std::string &path, const XrdSecEntity *who, int &err);
   int Mkdir(const std::string &path, const XrdSecEntity *who, int &err);
+  int Chown(const std::string &path, uid_t uid, gid_t gid, const XrdSecEntity *who, int &err);
   int Rmdir(const std::string &path, const XrdSecEntity *who, int &err);
   int Stat(const std::string &path, const XrdSecEntity *who, struct stat &st, int &err);
   int List(const std::string &path, const XrdSecEntity *who,

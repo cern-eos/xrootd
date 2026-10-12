@@ -1,6 +1,7 @@
 #include "XrdHttpS3Ops.hh"
 
 #include "XrdHttp/XrdHttpExtHandler.hh"
+#include "XrdHttpS3Client.hh"
 #include "XrdHttpS3Fs.hh"
 #include "XrdHttpS3Paths.hh"
 #include "XrdHttpS3SigV4.hh"
@@ -22,16 +23,6 @@
 
 namespace XrdHttpS3 {
 namespace {
-
-struct Who {
-  std::string name;
-  XrdSecEntity ent;
-  explicit Who(const std::string &user) : name(user), ent("s3") {
-    if (!name.empty())
-      ent.name = &name[0];
-  }
-  const XrdSecEntity *get() const { return &ent; }
-};
 
 const std::string *Hdr(const XrdHttpExtReq &req, const char *name) {
   auto it = req.headers.find(name);
@@ -483,7 +474,7 @@ int Ops::CopyObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string 
   if (Drain(req) != 0)
     return -1;
 
-  Who id(key.user);
+  Client id(key.user);
   std::string srcPath = ObjectFile(m_cfg, key.user, srcBucket, srcKey);
   struct stat st;
   int err = 0;
@@ -597,7 +588,7 @@ int Ops::DeleteObjects(XrdHttpExtReq &req, const KeyRecord &key, const std::stri
   if (keys.size() > 1000)
     return Fail(req, 400, "InvalidArgument", "DeleteObjects accepts at most 1000 keys");
 
-  Who id(key.user);
+  Client id(key.user);
   std::vector<std::string> deleted, errors, codes, messages;
   for (const std::string &objKey : keys) {
     if (!ValidObjectKey(objKey)) {
@@ -759,7 +750,7 @@ int Ops::UploadPartCopy(XrdHttpExtReq &req, const KeyRecord &key, const std::str
   if (Drain(req) != 0)
     return -1;
 
-  Who id(key.user);
+  Client id(key.user);
   std::string srcPath = ObjectFile(m_cfg, key.user, srcBucket, srcKey);
   struct stat st;
   if (m_meta.Store().Stat(srcPath, id.get(), st, err) != 0 || !S_ISREG(st.st_mode))
@@ -887,7 +878,7 @@ int Ops::CompleteMultipart(XrdHttpExtReq &req, const KeyRecord &key, const std::
   if (numbers.empty() || numbers.size() != etags.size())
     return Fail(req, 400, "MalformedXML", "CompleteMultipartUpload parts are not well formed");
 
-  Who id(key.user);
+  Client id(key.user);
   std::string dst = ObjectFile(m_cfg, key.user, bucket, objKey);
   OwnedFile out;
   int flags = SFS_O_CREAT | SFS_O_TRUNC | SFS_O_WRONLY | SFS_O_MKPTH;

@@ -71,8 +71,12 @@ region=us-east-1
 ETags are the MD5 of the bytes, kept in `.s3/objmeta/` and, when the
 filesystem allows it, as `user.s3.etag` / `user.s3.content-type`.
 
-Data-plane calls run as the bucket owner, so `acc.authdb` still applies to
-object paths. Meta reads and writes run as `s3.metaentity` (the daemon, when
+Data-plane calls run as the bucket owner: the security entity name is the
+access-key user with anything after `@` removed, and `uid` stays unset so
+`XrdFsOss` can map that name with `getpwnam`. The bucket directory is created
+as that user when the parent allows it, and otherwise as the meta identity
+followed by a best-effort `chown` to the passwd uid. `acc.authdb` still applies
+to object paths. Meta reads and writes run as `s3.metaentity` (the daemon, when
 that directive is empty). Hide the control plane from ordinary HTTP clients:
 
 ```text

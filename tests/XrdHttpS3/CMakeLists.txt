@@ -4,11 +4,15 @@ endif()
 
 add_executable(xrdhttp-s3-unit
   SigV4Test.cc
+  OwnerTest.cc
   ${PROJECT_SOURCE_DIR}/src/XrdHttpS3/XrdHttpS3SigV4.cc
   ${PROJECT_SOURCE_DIR}/src/XrdHttpS3/XrdHttpS3Paths.cc
 )
-target_include_directories(xrdhttp-s3-unit PRIVATE ${PROJECT_SOURCE_DIR}/src/XrdHttpS3)
-target_link_libraries(xrdhttp-s3-unit PRIVATE GTest::gtest_main OpenSSL::Crypto)
+target_include_directories(xrdhttp-s3-unit PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/XrdHttpS3
+)
+target_link_libraries(xrdhttp-s3-unit PRIVATE GTest::gtest_main OpenSSL::Crypto XrdUtils)
 gtest_discover_tests(xrdhttp-s3-unit PROPERTIES DISCOVERY_TIMEOUT 10)
 
 add_executable(xrdhttp-s3sign
