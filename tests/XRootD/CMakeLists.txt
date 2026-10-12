@@ -63,6 +63,11 @@ foreach(CONFIG ${XROOTD_CONFIGS})
   list(APPEND ${CONFIG}_LOGS ${CMAKE_CURRENT_BINARY_DIR}/${CONFIG}/client.log)
   list(APPEND ${CONFIG}_LOGS ${CMAKE_CURRENT_BINARY_DIR}/${CONFIG}/xrootd.log)
 
+  # Pre-create log files so CTest ATTACHED_FILES_ON_FAIL can archive them
+  # even if tests are skipped before setup creates them.
+  file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/${CONFIG})
+  file(TOUCH ${${CONFIG}_LOGS})
+
   list(APPEND ${CONFIG}_FIXTURES XRootD::${CONFIG})
 
   set_tests_properties(XRootD::${CONFIG}::test
