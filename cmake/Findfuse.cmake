@@ -14,7 +14,8 @@ if(PKG_CONFIG_FOUND)
   pkg_check_modules(PC_FUSE QUIET fuse)
 endif()
 
-# macFUSE installs into /usr/local even on Apple Silicon Homebrew hosts.
+# macFUSE / FUSE-T install into /usr/local or /opt/homebrew on macOS.
+# WinFsp installs into %ProgramFiles(x86)%\WinFsp on Windows.
 # /opt/brew is an alternate Homebrew prefix some machines use.
 set(_FUSE_HINTS
   ${FUSE_ROOT_DIR}
@@ -23,31 +24,37 @@ set(_FUSE_HINTS
   /usr/local
   /opt/homebrew
   /opt/brew
+  "/Library/Application Support/fuse-t"
+  "$ENV{WINFSP_DIR}"
+  "$ENV{ProgramFiles\(x86\)}/WinFsp"
+  "$ENV{ProgramFiles}/WinFsp"
+  "C:/Program Files (x86)/WinFsp"
+  "C:/Program Files/WinFsp"
 )
 
 find_path(FUSE_INCLUDE_DIR
-  NAMES fuse.h
+  NAMES fuse.h fuse-t/fuse.h
   HINTS ${_FUSE_HINTS} ${PC_FUSE_INCLUDE_DIRS}
-  PATHS /usr/local /opt/homebrew /opt/brew
-  PATH_SUFFIXES include/fuse include fuse
+  PATHS /usr/local /opt/homebrew /opt/brew "/Library/Application Support/fuse-t"
+  PATH_SUFFIXES include/fuse include/fuse-t include fuse fuse-t inc/fuse inc
 )
 
 if(NOT FUSE_INCLUDE_DIR)
   find_path(_FUSE_PARENT
-    NAMES fuse/fuse.h
+    NAMES fuse/fuse.h fuse-t/fuse.h
     HINTS ${_FUSE_HINTS}
-    PATHS /usr/local /opt/homebrew /opt/brew
-    PATH_SUFFIXES include)
+    PATHS /usr/local /opt/homebrew /opt/brew "/Library/Application Support/fuse-t"
+    PATH_SUFFIXES include inc)
   if(_FUSE_PARENT)
     set(FUSE_INCLUDE_DIR "${_FUSE_PARENT}/fuse")
   endif()
 endif()
 
 find_library(FUSE_LIBRARY
-  NAMES fuse
+  NAMES fuse fuse-t osxfuse winfsp-x64 winfsp-a64 winfsp-x86 winfsp fuse-2.8
   HINTS ${_FUSE_HINTS} ${PC_FUSE_LIBRARY_DIRS}
-  PATHS /usr/local /opt/homebrew /opt/brew
-  PATH_SUFFIXES lib
+  PATHS /usr/local /opt/homebrew /opt/brew "/Library/Application Support/fuse-t"
+  PATH_SUFFIXES lib lib/x64 lib/arm64 lib/x86
 )
 
 set(FUSE_INCLUDE_DIRS ${FUSE_INCLUDE_DIR})

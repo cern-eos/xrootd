@@ -2,6 +2,7 @@
 // Copyright (c) 2026 by the XRootD Collaboration
 //------------------------------------------------------------------------------
 #include "XioHttp2.hh"
+#include "XioKrb5.hh"
 
 #include <nghttp2/nghttp2.h>
 #include <openssl/err.h>
@@ -380,6 +381,12 @@ int Http2Session::connect(const Url &url, const Options &opt, std::string &err)
   max_concurrent_ = opt.max_streams ? opt.max_streams : 100;
   stop_ = false;
 
+  if (opt_.krb5 && opt_.negotiate.empty()) {
+    if (!getSpnegoToken(url_.host, opt_.principal, opt_.negotiate, err)) {
+      return -EACCES;
+    }
+  }
+
   int rc = tcpConnect(err);
   if (rc)
     return rc;
@@ -659,6 +666,9 @@ int Http2Session::request(const HttpRequest &req, HttpResponse &resp,
   std::string auth;
   if (!opt_.bearer.empty()) {
     auth = "Bearer " + opt_.bearer;
+    addHdr("authorization", auth);
+  } else if (!opt_.negotiate.empty()) {
+    auth = "Negotiate " + opt_.negotiate;
     addHdr("authorization", auth);
   }
   for (const auto &h : req.headers) {

@@ -18,17 +18,62 @@
 #define _DARWIN_USE_64_BIT_INODE 1
 #endif
 #endif
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#define FUSE_USE_VERSION 28
+#include <fuse.h>
+#include <io.h>
+#include <direct.h>
+#ifndef S_IFLNK
+#define S_IFLNK 0120000
+#endif
+#ifndef S_IFSOCK
+#define S_IFSOCK 0140000
+#endif
+#ifndef S_IFIFO
+#define S_IFIFO 0010000
+#endif
+#ifndef S_IFCHR
+#define S_IFCHR 0020000
+#endif
+#ifndef S_IFBLK
+#define S_IFBLK 0060000
+#endif
+#ifndef EACCES
+#define EACCES 13
+#endif
+#ifndef ESTALE
+#define ESTALE 116
+#endif
+#ifndef EPROTO
+#define EPROTO 71
+#endif
+#ifndef ERANGE
+#define ERANGE 34
+#endif
+typedef unsigned int uid_t;
+typedef unsigned int gid_t;
+typedef unsigned short mode_t;
+inline uid_t geteuid() { return 1000; }
+inline gid_t getegid() { return 1000; }
+inline uid_t getuid() { return 1000; }
+inline gid_t getgid() { return 1000; }
+#else
 #define FUSE_USE_VERSION 26
+#include <fuse.h>
+#include <unistd.h>
+#endif
 
 #include "XioClient.hh"
 #include "XioBearer.hh"
-
-#include <fuse.h>
 
 #include <cerrno>
 #include <cstdint>
 #include <fcntl.h>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <sys/stat.h>
@@ -39,7 +84,6 @@
 #include <sys/xattr.h>
 #endif
 #include <time.h>
-#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -522,11 +566,24 @@ fuse_operations xiofs_ops()
   return ops;
 }
 
+std::string readTokenFile(const std::string &path)
+{
+  std::ifstream f(path);
+  if (!f)
+    return {};
+  std::string tok;
+  std::getline(f, tok);
+  while (!tok.empty() && (tok.back() == '\r' || tok.back() == '\n' ||
+                          tok.back() == ' ' || tok.back() == '\t'))
+    tok.pop_back();
+  return tok;
+}
+
 void usage(const char *argv0)
 {
   std::cerr << "Usage: " << argv0
-            << " [--cacert FILE] [--insecure] [--token TOK] URL MOUNTPOINT "
-               "[fuse options]\n";
+            << " [--cacert FILE] [--insecure] [--token TOK] [--tokenfile FILE]"
+            << " [--krb5] [--principal USER] URL MOUNTPOINT [fuse options]\n";
 }
 
 } // namespace
@@ -547,6 +604,12 @@ int main(int argc, char **argv)
       opt.verify_peer = false;
     else if (a == "--token" && i + 1 < argc)
       opt.bearer = argv[++i];
+    else if (a == "--tokenfile" && i + 1 < argc)
+      opt.bearer = readTokenFile(argv[++i]);
+    else if (a == "--krb5")
+      opt.krb5 = true;
+    else if (a == "--principal" && i + 1 < argc)
+      opt.principal = argv[++i];
     else if (a == "-h" || a == "--help") {
       usage(argv[0]);
       return 0;
@@ -563,7 +626,7 @@ int main(int argc, char **argv)
     return 2;
   }
 
-  if (opt.bearer.empty()) {
+  if (!opt.krb5 && opt.bearer.empty()) {
     std::string tok, berr;
     bool missing = false;
     if (XioFS::loadBearerToken(geteuid(), tok, berr, &missing))
@@ -582,9 +645,11 @@ int main(int argc, char **argv)
   }
 
   fuse_argv.push_back(const_cast<char *>(mount.c_str()));
+#if !defined(_WIN32)
   fuse_argv.push_back(const_cast<char *>("-o"));
   fuse_argv.push_back(const_cast<char *>(
       "fsname=xiofs,subtype=xiofs,auto_cache,big_writes,max_readahead=4194304"));
+#endif
   fuse_argv.push_back(nullptr);
 
   auto ops = xiofs_ops();

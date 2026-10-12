@@ -45,6 +45,9 @@ public:
   struct Options {
     std::string cacert;
     std::string bearer;
+    std::string negotiate;
+    bool krb5{false};
+    std::string principal;
     int timeout_ms{30000};
     bool verify_peer{true};
     size_t max_body{64ull * 1024ull * 1024ull};

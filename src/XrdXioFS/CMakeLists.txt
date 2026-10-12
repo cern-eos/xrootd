@@ -8,6 +8,7 @@ add_library(XrdXioFS STATIC
   http/XioHttp2.cc
   http/XioClient.cc
   http/XioBearer.cc
+  http/XioKrb5.cc
 )
 
 target_include_directories(XrdXioFS
@@ -25,6 +26,16 @@ target_link_libraries(XrdXioFS
     ${NGHTTP2_LIBRARY}
     ${CMAKE_THREAD_LIBS_INIT}
 )
+
+if(BUILD_KRB5 AND KERBEROS5_FOUND)
+  target_compile_definitions(XrdXioFS PUBLIC HAVE_KRB5)
+  target_include_directories(XrdXioFS PUBLIC ${KERBEROS5_INCLUDE_DIR})
+  target_link_libraries(XrdXioFS PUBLIC ${KERBEROS5_LIBRARIES})
+elseif(APPLE)
+  target_link_libraries(XrdXioFS PUBLIC "-framework GSS")
+elseif(WIN32)
+  target_link_libraries(XrdXioFS PUBLIC Secur32)
+endif()
 
 add_executable(xiofscli fuse/xiofscli.cc)
 target_link_libraries(xiofscli PRIVATE XrdXioFS)
@@ -73,4 +84,56 @@ if(ENABLE_FUSE)
     endif()
     install(TARGETS xiofsd RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
   endif()
+endif()
+
+# Apple FileProvider: native macOS filesystem integration (Apple Silicon / Intel).
+if(APPLE)
+  add_library(XrdXioFSApple STATIC
+    apple/XioFSFileProviderConfig.mm
+    apple/XioFSFileProviderItem.mm
+    apple/XioFSFileProviderEnumerator.mm
+    apple/XioFSFileProviderExtension.mm
+  )
+  target_link_libraries(XrdXioFSApple
+    PUBLIC
+      XrdXioFS
+      "-framework Foundation"
+      "-framework FileProvider"
+      "-framework UniformTypeIdentifiers"
+  )
+  target_include_directories(XrdXioFSApple
+    PUBLIC
+      ${CMAKE_CURRENT_SOURCE_DIR}/apple
+  )
+
+  add_executable(xiofs-fileprovider apple/xiofs-fileprovider-cli.mm)
+  target_link_libraries(xiofs-fileprovider
+    PRIVATE
+      XrdXioFSApple
+  )
+  install(TARGETS xiofs-fileprovider RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+  add_library(XioFSFileProviderExtension MODULE
+    apple/XioFSFileProviderConfig.mm
+    apple/XioFSFileProviderItem.mm
+    apple/XioFSFileProviderEnumerator.mm
+    apple/XioFSFileProviderExtension.mm
+  )
+  set_target_properties(XioFSFileProviderExtension PROPERTIES
+    BUNDLE TRUE
+    BUNDLE_EXTENSION "appex"
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/apple/Info.plist.in"
+  )
+  target_link_libraries(XioFSFileProviderExtension
+    PRIVATE
+      XrdXioFS
+      "-framework Foundation"
+      "-framework FileProvider"
+      "-framework UniformTypeIdentifiers"
+  )
+  target_include_directories(XioFSFileProviderExtension
+    PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/apple
+  )
+  install(TARGETS XioFSFileProviderExtension LIBRARY DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()

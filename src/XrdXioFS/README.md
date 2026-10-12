@@ -116,12 +116,24 @@ left the HTTP/2 preface in `SSL_pending()` so `detectWireMode()` never
 saw it. `XrdHttpProtocol` now installs the ALPN callback on the CTX used
 for `SSL_accept` and always buffers pending TLS data before detection.
 
-## xiofsd (FUSE)
+## xiofsd (Cross-Platform FUSE: Linux, macOS, Windows)
 
-Linux libfuse or macFUSE:
+Linux libfuse, macOS (FUSE-T or macFUSE), and Windows (WinFsp):
 
 ```bash
+# macOS / Linux:
 xiofsd --cacert ca.pem https://localhost:7097/export /mnt/xiofs -f
+
+# With Kerberos (SPNEGO) via macOS GSS.framework / Linux GSS-API / Windows SSPI:
+xiofsd --krb5 --cacert ca.pem https://localhost:7097/export /mnt/xiofs -f
+
+# With OIDC / WLCG Bearer token:
+xiofsd --token "eyJhbG..." --cacert ca.pem https://localhost:7097/export /mnt/xiofs -f
+# or from a token file:
+xiofsd --tokenfile /path/to/token.jwt --cacert ca.pem https://localhost:7097/export /mnt/xiofs -f
+
+# Windows (WinFsp):
+xiofsd.exe --cacert ca.pem https://localhost:7097/export Z:
 ```
 
 FUSE I/O uses Range GETs for reads and PATCH (`Content-Range`) for
@@ -139,6 +151,33 @@ non-FUSE client.
 The HTTP/2 session keeps one TLS connection and multiplexes streams on
 an I/O thread, so concurrent FUSE reads and writes do not wait for each
 other to finish.
+
+## Apple FileProvider (macOS Apple Silicon & Intel)
+
+macOS 11+ native filesystem integration via `NSFileProviderReplicatedExtension`.
+Zero kernel extensions required, integrates directly into Finder with on-demand
+file hydration and cloud sync badges in `~/Library/CloudStorage/`.
+
+Manage domains with `xiofs-fileprovider`:
+
+```bash
+# Add a domain with OIDC token:
+xiofs-fileprovider add MyStorage --url https://storage.example:7097/export \
+    --token "eyJhbG..." --cacert ca.pem
+
+# Add a domain with Kerberos (SPNEGO):
+xiofs-fileprovider add MyStorage --url https://storage.example:7097/export \
+    --krb5 --cacert ca.pem
+
+# List registered domains:
+xiofs-fileprovider list
+
+# Show domain status and auth method:
+xiofs-fileprovider status MyStorage
+
+# Remove domain:
+xiofs-fileprovider remove MyStorage
+```
 
 ## xiofsagent (Linux kernel mount)
 
