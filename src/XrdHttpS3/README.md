@@ -106,5 +106,8 @@ suffix stay `/<bucket>/<key>`.
 Also implemented: `CopyObject` (`x-amz-copy-source`), `DeleteObjects`
 (`POST /bucket?delete`, `Content-MD5` required), and multipart upload
 (`POST ?uploads`, `PUT ?partNumber&uploadId`, `POST ?uploadId`,
-`DELETE ?uploadId`). The multipart ETag is the MD5 of the part MD5s plus the
+`DELETE ?uploadId`, `GET ?uploadId` to list parts, and `GET ?uploads` to
+list uploads in a bucket). The multipart ETag is the MD5 of the part MD5s plus the
 part count. Part files live under the user's `.s3/uploads/` tree.
+`GET /bucket?location` returns the configured region. For `us-east-1` the
+constraint element is empty, matching S3.

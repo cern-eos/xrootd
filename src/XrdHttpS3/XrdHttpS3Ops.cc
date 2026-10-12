@@ -290,6 +290,10 @@ int Ops::Dispatch(XrdHttpExtReq &req, const KeyRecord &key) {
   }
 
   auto query = ParseQuery(QueryOf(req));
+  if (onlyBucket && req.verb == "GET" && query.count("location"))
+    return GetBucketLocation(req, key, bucket);
+  if (onlyBucket && req.verb == "GET" && query.count("uploads"))
+    return ListMultipartUploads(req, key, bucket);
   if (onlyBucket) {
     for (int i = 0; kSubresources[i]; i++) {
       if (query.count(kSubresources[i]))
@@ -319,6 +323,8 @@ int Ops::Dispatch(XrdHttpExtReq &req, const KeyRecord &key) {
       return CompleteMultipart(req, key, bucket, objKey);
     if (req.verb == "DELETE")
       return AbortMultipart(req, key, bucket, objKey);
+    if (req.verb == "GET")
+      return ListParts(req, key, bucket, objKey);
     return Fail(req, 501, "NotImplemented", "This multipart operation is not implemented");
   }
 

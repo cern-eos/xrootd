@@ -860,4 +860,157 @@ int Ops::AbortMultipart(XrdHttpExtReq &req, const KeyRecord &key, const std::str
   return 0;
 }
 
+int Ops::ListParts(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,
+                   const std::string &objKey) {
+  BucketRecord rec;
+  int owned = LoadOwned(req, key, bucket, rec);
+  if (owned <= 0)
+    return owned;
+  auto query = ParseQuery(QueryOf(req));
+  std::string upload = query.count("uploadId") ? query["uploadId"] : std::string();
+  if (!ValidUploadId(upload))
+    return Fail(req, 404, "NoSuchUpload", "The specified upload does not exist");
+  std::string metaBody;
+  int err = 0;
+  if (m_meta.Store().ReadAll(UploadMeta(m_cfg, key.user, upload), m_meta.MetaWho(), metaBody,
+                             err) != 0)
+    return Fail(req, 404, "NoSuchUpload", "The specified upload does not exist");
+  auto props = ParseProps(metaBody);
+  if (props["bucket"] != bucket || props["key"] != objKey)
+    return Fail(req, 404, "NoSuchUpload", "The upload does not belong to this object");
+
+  int marker = 0;
+  int maxParts = 1000;
+  if (query.count("part-number-marker") && !query["part-number-marker"].empty()) {
+    try {
+      marker = std::stoi(query["part-number-marker"]);
+    } catch (...) {
+      return Fail(req, 400, "InvalidArgument", "part-number-marker is not an integer");
+    }
+  }
+  if (query.count("max-parts") && !query["max-parts"].empty()) {
+    try {
+      maxParts = std::stoi(query["max-parts"]);
+    } catch (...) {
+      return Fail(req, 400, "InvalidArgument", "max-parts is not an integer");
+    }
+    if (maxParts < 0 || maxParts > 1000)
+      return Fail(req, 400, "InvalidArgument", "max-parts must be between 0 and 1000");
+  }
+
+  std::vector<std::string> names;
+  m_meta.Store().List(JoinPath(UploadDir(m_cfg, key.user, upload), "parts"), m_meta.MetaWho(),
+                      names, err);
+  std::vector<ListedPart> all;
+  for (const std::string &name : names) {
+    if (name.size() >= 5 && name.compare(name.size() - 5, 5, ".etag") == 0)
+      continue;
+    int number = 0;
+    try {
+      number = std::stoi(name);
+    } catch (...) {
+      continue;
+    }
+    if (number <= marker)
+      continue;
+    ListedPart part;
+    part.number = number;
+    struct stat st;
+    std::string path = UploadPartFile(m_cfg, key.user, upload, name);
+    if (m_meta.Store().Stat(path, m_meta.MetaWho(), st, err) == 0) {
+      part.size = st.st_size;
+      part.mtime = st.st_mtime;
+    }
+    std::string etag;
+    if (m_meta.Store().ReadAll(path + ".etag", m_meta.MetaWho(), etag, err) == 0) {
+      while (!etag.empty() && (etag.back() == '\n' || etag.back() == '\r'))
+        etag.pop_back();
+      part.etag = etag;
+    }
+    all.push_back(part);
+  }
+  std::sort(all.begin(), all.end(),
+            [](const ListedPart &a, const ListedPart &b) { return a.number < b.number; });
+  bool truncated = static_cast<int>(all.size()) > maxParts;
+  if (truncated)
+    all.resize(static_cast<size_t>(maxParts));
+  std::string body = ListPartsXml(bucket, objKey, upload, maxParts, marker, all, truncated);
+  std::string hdr = "Content-Type: application/xml";
+  if (req.SendSimpleResp(200, nullptr, hdr.c_str(), body.data(),
+                         static_cast<long long>(body.size())) != 0)
+    return -1;
+  return 0;
+}
+
+int Ops::ListMultipartUploads(XrdHttpExtReq &req, const KeyRecord &key,
+                              const std::string &bucket) {
+  BucketRecord rec;
+  int owned = LoadOwned(req, key, bucket, rec);
+  if (owned <= 0)
+    return owned;
+  auto query = ParseQuery(QueryOf(req));
+  std::string prefix = query.count("prefix") ? query["prefix"] : std::string();
+  int maxUploads = 1000;
+  if (query.count("max-uploads") && !query["max-uploads"].empty()) {
+    try {
+      maxUploads = std::stoi(query["max-uploads"]);
+    } catch (...) {
+      return Fail(req, 400, "InvalidArgument", "max-uploads is not an integer");
+    }
+    if (maxUploads < 0 || maxUploads > 1000)
+      return Fail(req, 400, "InvalidArgument", "max-uploads must be between 0 and 1000");
+  }
+  std::vector<std::string> ids;
+  int err = 0;
+  m_meta.Store().List(JoinPath(UserMeta(m_cfg, key.user), "uploads"), m_meta.MetaWho(), ids, err);
+  std::vector<ListedUpload> all;
+  for (const std::string &id : ids) {
+    if (!ValidUploadId(id))
+      continue;
+    std::string metaBody;
+    if (m_meta.Store().ReadAll(UploadMeta(m_cfg, key.user, id), m_meta.MetaWho(), metaBody,
+                               err) != 0)
+      continue;
+    auto props = ParseProps(metaBody);
+    if (props["bucket"] != bucket)
+      continue;
+    if (prefix.size() > props["key"].size() ||
+        props["key"].compare(0, prefix.size(), prefix) != 0)
+      continue;
+    ListedUpload up;
+    up.key = props["key"];
+    up.uploadId = id;
+    up.initiated = static_cast<time_t>(std::atoll(props["created"].c_str()));
+    all.push_back(up);
+  }
+  std::sort(all.begin(), all.end(), [](const ListedUpload &a, const ListedUpload &b) {
+    if (a.key != b.key)
+      return a.key < b.key;
+    return a.uploadId < b.uploadId;
+  });
+  bool truncated = static_cast<int>(all.size()) > maxUploads;
+  if (truncated)
+    all.resize(static_cast<size_t>(maxUploads));
+  std::string body = ListUploadsXml(bucket, prefix, maxUploads, all, truncated);
+  std::string hdr = "Content-Type: application/xml";
+  if (req.SendSimpleResp(200, nullptr, hdr.c_str(), body.data(),
+                         static_cast<long long>(body.size())) != 0)
+    return -1;
+  return 0;
+}
+
+int Ops::GetBucketLocation(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket) {
+  BucketRecord rec;
+  int owned = LoadOwned(req, key, bucket, rec);
+  if (owned <= 0)
+    return owned;
+  std::string region = rec.region.empty() ? m_cfg.region : rec.region;
+  std::string body = LocationXml(region);
+  std::string hdr = "Content-Type: application/xml";
+  if (req.SendSimpleResp(200, nullptr, hdr.c_str(), body.data(),
+                         static_cast<long long>(body.size())) != 0)
+    return -1;
+  return 0;
+}
+
 }

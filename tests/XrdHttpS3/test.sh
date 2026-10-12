@@ -234,6 +234,14 @@ if ! grep -q otherbucket "$ROOT/out" || ! grep -q mybucket "$ROOT/out"; then
   exit 1
 fi
 
+code=$(call_s3 GET "$PORT_ON" '/mybucket?location' UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetBucketLocation"
+if ! grep -q 'LocationConstraint' "$ROOT/out"; then
+  echo "GetBucketLocation missing LocationConstraint" >&2
+  cat "$ROOT/out" >&2
+  exit 1
+fi
+
 code=$(call_s3 DELETE "$PORT_ON" /otherbucket UNSIGNED-PAYLOAD "")
 expect_code "$code" 204 "DeleteBucket"
 
@@ -315,6 +323,20 @@ etag1=$(awk 'BEGIN{IGNORECASE=1} /^[Ee][Tt][Aa][Gg]:/ {gsub(/[\r"]/,"",$2); prin
 code=$(call_s3 PUT "$PORT_ON" "/mybucket/hello-mp?partNumber=2&uploadId=${uid}" "@$ROOT/p2" "$ROOT/p2")
 expect_code "$code" 200 "UploadPart 2"
 etag2=$(awk 'BEGIN{IGNORECASE=1} /^[Ee][Tt][Aa][Gg]:/ {gsub(/[\r"]/,"",$2); print $2; exit}' "$ROOT/hdr")
+code=$(call_s3 GET "$PORT_ON" "/mybucket/hello-mp?uploadId=${uid}" UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "ListParts"
+if ! grep -q '<PartNumber>1</PartNumber>' "$ROOT/out" || ! grep -q '<PartNumber>2</PartNumber>' "$ROOT/out"; then
+  echo "ListParts did not return both parts" >&2
+  cat "$ROOT/out" >&2
+  exit 1
+fi
+code=$(call_s3 GET "$PORT_ON" '/mybucket?uploads' UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "ListMultipartUploads"
+if ! grep -q "$uid" "$ROOT/out"; then
+  echo "ListMultipartUploads did not return the upload" >&2
+  cat "$ROOT/out" >&2
+  exit 1
+fi
 printf '%s' "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>\"${etag1}\"</ETag></Part><Part><PartNumber>2</PartNumber><ETag>\"${etag2}\"</ETag></Part></CompleteMultipartUpload>" > "$ROOT/done.xml"
 code=$(call_s3 POST "$PORT_ON" "/mybucket/hello-mp?uploadId=${uid}" "@$ROOT/done.xml" "$ROOT/done.xml")
 expect_code "$code" 200 "CompleteMultipartUpload"

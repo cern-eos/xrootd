@@ -45,6 +45,29 @@ std::string CreateMultipartXml(const std::string &bucket, const std::string &key
 std::string CompleteMultipartXml(const std::string &bucket, const std::string &key,
                                  const std::string &etag);
 
+struct ListedPart {
+  int number{0};
+  long long size{0};
+  time_t mtime{0};
+  std::string etag;
+};
+
+std::string ListPartsXml(const std::string &bucket, const std::string &key,
+                         const std::string &uploadId, int maxParts, int marker,
+                         const std::vector<ListedPart> &parts, bool truncated);
+
+struct ListedUpload {
+  std::string key;
+  std::string uploadId;
+  time_t initiated{0};
+};
+
+std::string ListUploadsXml(const std::string &bucket, const std::string &prefix,
+                           int maxUploads, const std::vector<ListedUpload> &uploads,
+                           bool truncated);
+
+std::string LocationXml(const std::string &region);
+
 }
 
 #endif

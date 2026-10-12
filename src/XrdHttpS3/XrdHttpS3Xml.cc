@@ -148,4 +148,51 @@ std::string CompleteMultipartXml(const std::string &bucket, const std::string &k
          XmlEscape(etag) + "&quot;</ETag></CompleteMultipartUploadResult>\n";
 }
 
+std::string ListPartsXml(const std::string &bucket, const std::string &key,
+                         const std::string &uploadId, int maxParts, int marker,
+                         const std::vector<ListedPart> &parts, bool truncated) {
+  std::string xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    "<ListPartsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                    "<Bucket>" + XmlEscape(bucket) + "</Bucket><Key>" + XmlEscape(key) +
+                    "</Key><UploadId>" + XmlEscape(uploadId) + "</UploadId><PartNumberMarker>" +
+                    std::to_string(marker) + "</PartNumberMarker><MaxParts>" +
+                    std::to_string(maxParts) + "</MaxParts><IsTruncated>" +
+                    (truncated ? "true" : "false") + "</IsTruncated>";
+  if (truncated && !parts.empty())
+    xml += "<NextPartNumberMarker>" + std::to_string(parts.back().number) +
+           "</NextPartNumberMarker>";
+  for (const auto &part : parts) {
+    xml += "<Part><PartNumber>" + std::to_string(part.number) +
+           "</PartNumber><LastModified>" + IsoDate(part.mtime) + "</LastModified><ETag>&quot;" +
+           XmlEscape(part.etag) + "&quot;</ETag><Size>" + std::to_string(part.size) +
+           "</Size></Part>";
+  }
+  xml += "</ListPartsResult>\n";
+  return xml;
+}
+
+std::string ListUploadsXml(const std::string &bucket, const std::string &prefix,
+                           int maxUploads, const std::vector<ListedUpload> &uploads,
+                           bool truncated) {
+  std::string xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    "<ListMultipartUploadsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                    "<Bucket>" + XmlEscape(bucket) + "</Bucket><Prefix>" + XmlEscape(prefix) +
+                    "</Prefix><MaxUploads>" + std::to_string(maxUploads) +
+                    "</MaxUploads><IsTruncated>" + (truncated ? "true" : "false") +
+                    "</IsTruncated>";
+  for (const auto &up : uploads) {
+    xml += "<Upload><Key>" + XmlEscape(up.key) + "</Key><UploadId>" + XmlEscape(up.uploadId) +
+           "</UploadId><Initiated>" + IsoDate(up.initiated) + "</Initiated></Upload>";
+  }
+  xml += "</ListMultipartUploadsResult>\n";
+  return xml;
+}
+
+std::string LocationXml(const std::string &region) {
+  std::string body = region == "us-east-1" ? std::string() : XmlEscape(region);
+  return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+         "<LocationConstraint xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">" +
+         body + "</LocationConstraint>\n";
+}
+
 }

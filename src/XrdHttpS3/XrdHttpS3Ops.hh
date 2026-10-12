@@ -40,6 +40,11 @@ private:
                         const std::string &objKey);
   int AbortMultipart(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,
                      const std::string &objKey);
+  int ListParts(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,
+                const std::string &objKey);
+  int ListMultipartUploads(XrdHttpExtReq &req, const KeyRecord &key,
+                           const std::string &bucket);
+  int GetBucketLocation(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket);
   // 1 on success. 0 or -1 when a response was already sent.
   int WriteObjectBytes(XrdHttpExtReq &req, const KeyRecord &key, const std::string &path,
                        const XrdSecEntity *who, std::string &etag);
