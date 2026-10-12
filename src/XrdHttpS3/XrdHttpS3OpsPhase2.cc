@@ -453,6 +453,9 @@ int Ops::CopyObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string 
   int owned = LoadOwned(req, key, bucket, rec);
   if (owned <= 0)
     return owned;
+  int acl = RejectAclChange(req);
+  if (acl <= 0)
+    return acl;
   const std::string *srcHdr = Hdr(req, "x-amz-copy-source");
   if (!srcHdr)
     return Fail(req, 400, "InvalidArgument", "x-amz-copy-source is required");

@@ -21,6 +21,7 @@ struct ListedBucket {
 };
 
 std::string ListBucketsXml(const std::string &owner, const std::vector<ListedBucket> &buckets);
+std::string AclXml(const std::string &owner);
 
 struct ListedObject {
   bool common{false};

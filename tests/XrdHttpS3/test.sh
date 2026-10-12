@@ -237,6 +237,30 @@ expect_code "$code" 412 "PutObject If-None-Match"
 code=$(call_s3 HEAD "$PORT_ON" /mybucket/hello.txt UNSIGNED-PAYLOAD "")
 expect_code "$code" 200 "HeadObject"
 
+code=$(call_s3 GET "$PORT_ON" '/mybucket?acl' UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetBucketAcl"
+if ! grep -q 'FULL_CONTROL' "$ROOT/out" || ! grep -q '>foo<' "$ROOT/out"; then
+  echo "bucket ACL was not a private policy for foo" >&2
+  cat "$ROOT/out" >&2
+  exit 1
+fi
+code=$(call_s3 GET "$PORT_ON" '/mybucket/hello.txt?acl' UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetObjectAcl"
+if ! grep -q 'FULL_CONTROL' "$ROOT/out"; then
+  echo "object ACL was not FULL_CONTROL" >&2
+  cat "$ROOT/out" >&2
+  exit 1
+fi
+code=$(call_s3 GET "$PORT_ON" \
+  '/mybucket/hello.txt?response-content-disposition=attachment%3B%20filename%3D%22a.txt%22' \
+  UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetObject response override"
+if ! grep -q 'Content-Disposition: attachment; filename="a.txt"' "$ROOT/hdr"; then
+  echo "response-content-disposition was not applied" >&2
+  cat "$ROOT/hdr" >&2
+  exit 1
+fi
+
 code=$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT_ON}/mybucket/hello.txt")
 if [ "$code" != "404" ]; then
   echo "unsigned GET of the S3 path should stay on native HTTP, got $code" >&2

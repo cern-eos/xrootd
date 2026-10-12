@@ -70,6 +70,17 @@ std::string ListBucketsXml(const std::string &owner, const std::vector<ListedBuc
   return xml;
 }
 
+std::string AclXml(const std::string &owner) {
+  std::string id = XmlEscape(owner);
+  return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+         "<AccessControlPolicy><Owner><ID>" + id + "</ID><DisplayName>" + id +
+         "</DisplayName></Owner><AccessControlList><Grant>"
+         "<Grantee xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" "
+         "xsi:type=\"CanonicalUser\"><ID>" + id + "</ID><DisplayName>" + id +
+         "</DisplayName></Grantee><Permission>FULL_CONTROL</Permission></Grant>"
+         "</AccessControlList></AccessControlPolicy>\n";
+}
+
 std::string ListObjectsXml(const std::string &bucket, const std::string &prefix,
                            const std::string &delimiter, int maxKeys,
                            const std::vector<ListedObject> &page, bool truncated,

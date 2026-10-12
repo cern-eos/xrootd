@@ -219,6 +219,16 @@ int Drain(XrdHttpExtReq &req) {
   return 0;
 }
 
+bool HeaderValueOk(const std::string &value) {
+  if (value.size() > 512)
+    return false;
+  for (unsigned char c : value) {
+    if (c < 0x20 || c == 0x7f)
+      return false;
+  }
+  return true;
+}
+
 std::string CleanType(const std::string &in) {
   std::string out;
   for (char c : in) {
@@ -356,6 +366,41 @@ int Ops::LoadOwned(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
   return 1;
 }
 
+int Ops::RejectAclChange(XrdHttpExtReq &req) {
+  const std::string *acl = Hdr(req, "x-amz-acl");
+  if (acl && *acl != "private")
+    return Fail(req, 501, "NotImplemented", "Only the private canned ACL is supported");
+  const char *grants[] = {"x-amz-grant-read", "x-amz-grant-write", "x-amz-grant-read-acp",
+                          "x-amz-grant-write-acp", "x-amz-grant-full-control", nullptr};
+  for (int i = 0; grants[i]; i++) {
+    if (Hdr(req, grants[i]))
+      return Fail(req, 501, "NotImplemented", "Only the private canned ACL is supported");
+  }
+  return 1;
+}
+
+int Ops::GetAcl(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,
+                const std::string &objKey, bool object) {
+  BucketRecord rec;
+  int owned = LoadOwned(req, key, bucket, rec);
+  if (owned <= 0)
+    return owned;
+  if (object) {
+    Identity id(key.user);
+    struct stat st;
+    int err = 0;
+    if (m_meta.Store().Stat(ObjectFile(m_cfg, key.user, bucket, objKey), id.get(), st, err) != 0 ||
+        !S_ISREG(st.st_mode))
+      return Fail(req, 404, "NoSuchKey", "The specified key does not exist");
+  }
+  std::string body = AclXml(key.user);
+  std::string hdr = "Content-Type: application/xml";
+  if (req.SendSimpleResp(200, nullptr, hdr.c_str(), body.data(),
+                         static_cast<long long>(body.size())) != 0)
+    return -1;
+  return 0;
+}
+
 bool VhostTarget(const Config &cfg, const XrdHttpExtReq &req, const std::string &path,
                  std::string &bucket, std::string &objKey, bool &onlyBucket) {
   if (cfg.vhost.empty())
@@ -440,6 +485,11 @@ int Ops::Dispatch(XrdHttpExtReq &req, const KeyRecord &key) {
   }
 
   auto query = ParseQuery(QueryOf(req));
+  if (onlyBucket && query.count("acl")) {
+    if (req.verb == "GET")
+      return GetAcl(req, key, bucket, std::string(), false);
+    return Fail(req, 501, "NotImplemented", "Changing an ACL is not implemented");
+  }
   if (onlyBucket && req.verb == "GET" && query.count("location"))
     return GetBucketLocation(req, key, bucket);
   if (onlyBucket && req.verb == "GET" && query.count("uploads"))
@@ -481,6 +531,12 @@ int Ops::Dispatch(XrdHttpExtReq &req, const KeyRecord &key) {
     return Fail(req, 501, "NotImplemented", "This multipart operation is not implemented");
   }
 
+  if (!onlyBucket && query.count("acl")) {
+    if (req.verb == "GET")
+      return GetAcl(req, key, bucket, objKey, true);
+    return Fail(req, 501, "NotImplemented", "Changing an ACL is not implemented");
+  }
+
   if (req.verb == "PUT" && Hdr(req, "x-amz-copy-source"))
     return CopyObject(req, key, bucket, objKey);
   if (req.verb == "PUT")
@@ -515,6 +571,9 @@ int Ops::ListBuckets(XrdHttpExtReq &req, const KeyRecord &key) {
 }
 
 int Ops::CreateBucket(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket) {
+  int acl = RejectAclChange(req);
+  if (acl <= 0)
+    return acl;
   if (Drain(req) != 0)
     return -1;
   BucketRecord existing;
@@ -665,6 +724,9 @@ int Ops::PutObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
     return owned;
   if (req.length < 0)
     return Fail(req, 411, "MissingContentLength", "Content-Length is required");
+  int acl = RejectAclChange(req);
+  if (acl <= 0)
+    return acl;
   ObjectMeta meta;
   int metaRc = CollectUserMeta(req.headers, meta.user);
   if (metaRc == 1)
@@ -760,8 +822,30 @@ int Ops::GetObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
     partial = true;
   }
   long long send = partial ? (end - start + 1) : static_cast<long long>(st.st_size);
-  std::string hdr = "Accept-Ranges: bytes\r\nContent-Type: " + meta.contentType +
-                    "\r\nLast-Modified: " + HttpDate(st.st_mtime);
+  auto query = ParseQuery(QueryOf(req));
+  std::string contentType = meta.contentType;
+  std::string extra;
+  const char *overrides[][2] = {
+      {"response-content-type", ""},
+      {"response-content-disposition", "Content-Disposition"},
+      {"response-cache-control", "Cache-Control"},
+      {"response-content-encoding", "Content-Encoding"},
+      {"response-content-language", "Content-Language"},
+      {"response-expires", "Expires"},
+      {nullptr, nullptr}};
+  for (int i = 0; overrides[i][0]; i++) {
+    auto it = query.find(overrides[i][0]);
+    if (it == query.end() || it->second.empty())
+      continue;
+    if (!HeaderValueOk(it->second))
+      return Fail(req, 400, "InvalidArgument", "A response header override is not valid");
+    if (std::string(overrides[i][0]) == "response-content-type")
+      contentType = it->second;
+    else
+      extra += "\r\n" + std::string(overrides[i][1]) + ": " + it->second;
+  }
+  std::string hdr = "Accept-Ranges: bytes\r\nContent-Type: " + contentType +
+                    "\r\nLast-Modified: " + HttpDate(st.st_mtime) + extra;
   if (!meta.etag.empty())
     hdr += "\r\nETag: \"" + meta.etag + "\"";
   hdr += UserMetaHeaders(meta.user);

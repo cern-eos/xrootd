@@ -113,5 +113,10 @@ to copy a byte range into a part, `POST ?uploadId`,
 `DELETE ?uploadId`, `GET ?uploadId` to list parts, and `GET ?uploads` to
 list uploads in a bucket). The multipart ETag is the MD5 of the part MD5s plus the
 part count. Part files live under the user's `.s3/uploads/` tree.
+`GET ?acl` on a bucket or object returns a private `FULL_CONTROL` policy for the
+owning user. A canned ACL other than `private`, and the `x-amz-grant-*` headers,
+are not implemented. GetObject accepts `response-content-type`,
+`response-content-disposition`, `response-cache-control`,
+`response-content-encoding`, `response-content-language`, and `response-expires`.
 `GET /bucket?location` returns the configured region. For `us-east-1` the
 constraint element is empty, matching S3.

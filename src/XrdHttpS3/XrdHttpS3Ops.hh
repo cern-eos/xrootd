@@ -65,6 +65,9 @@ private:
   int ListMultipartUploads(XrdHttpExtReq &req, const KeyRecord &key,
                            const std::string &bucket);
   int GetBucketLocation(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket);
+  int GetAcl(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,
+             const std::string &objKey, bool object);
+  int RejectAclChange(XrdHttpExtReq &req);
   // 1 on success. 0 or -1 when a response was already sent.
   int WriteObjectBytes(XrdHttpExtReq &req, const KeyRecord &key, const std::string &path,
                        const XrdSecEntity *who, std::string &etag);
