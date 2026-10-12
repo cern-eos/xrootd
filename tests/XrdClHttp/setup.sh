@@ -401,69 +401,100 @@ export HOSTNAME=localhost
 # Clear out old client logging
 echo > "$BINARY_DIR/tests/$TEST_NAME/client.log"
 
+wait_for_pidfile() {
+  n=0
+  while [ "$n" -lt 50 ]; do
+    for f in "$@"; do
+      if [ -s "$f" ]; then
+        pid=$(tr -d '[:space:]' < "$f")
+        case $pid in
+          ''|*[!0-9]*) ;;
+          *) echo "$f"; return 0 ;;
+        esac
+      fi
+    done
+    sleep 0.1
+    n=$((n + 1))
+  done
+  return 1
+}
+
+wait_for_init_log() {
+  logfile=$1
+  n=0
+  while [ "$n" -lt 150 ]; do
+    if grep -a -qE -e 'xrootd [^[:space:]]+ initialization completed' \
+        "$logfile" 2>/dev/null; then
+      return 0
+    fi
+    if grep -a -qE -e 'xrootd [^[:space:]]+ initialization failed' \
+        "$logfile" 2>/dev/null; then
+      return 1
+    fi
+    sleep 0.2
+    n=$((n + 1))
+  done
+  return 1
+}
+
+dump_xrd_logs() {
+  inst=$1
+  for f in "$RUNDIR/${inst}.log" "$RUNDIR/${inst}/${inst}.log"; do
+    if [ -f "$f" ]; then
+      echo "=== $f ==="
+      cat "$f"
+    fi
+  done
+}
+
+read_init_port() {
+  logfile=$1
+  inst=$2
+  default=$3
+  port=$(grep -E -a -e "xrootd ${inst}@[^[:space:]]+ initialization completed" \
+    "$logfile" 2>/dev/null | tail -n 1 | \
+    sed -n 's/.*:\([0-9][0-9]*\) initialization completed.*/\1/p')
+  if [ -n "$port" ]; then
+    echo "$port"
+  else
+    echo "$default"
+  fi
+}
+
 ###########################
 # Launch XRootD services. #
 ###########################
-echo > "$BINARY_DIR/tests/$TEST_NAME/origin.log"
-echo > "$BINARY_DIR/tests/$TEST_NAME/cache.log"
 # ECDSA host cert: do not set XRD_TLSMAXPROTO. SSL_CTX_set_max_proto_version
 # aborted OpenSSL 3.0 (Ubuntu) and 3.5 (Fedora) during HTTP init / SSL_accept.
-# </dev/null not 0<&-: a closed stdin lets the next open() reuse fd 0, and
-# Ubuntu OpenSSL 3 then dies after HTTPS init (connection reset / "crashed").
-# Do not use -l here: with -n origin, xrootd rewrites the path to
-# .../origin/origin.log, so the waiter grepping origin.log never sees
-# "initialization completed" and every Linux job fails this fixture.
-ORIGIN_LOG="$BINARY_DIR/tests/$TEST_NAME/origin.log"
-"$BINDIR/xrootd" -n origin -c "$ORIGIN_CONFIG" \
-  </dev/null >"$ORIGIN_LOG" 2>&1 &
-ORIGIN_PID=$!
+# Use xrootd -b like httph2. Foreground Ubuntu origin died after HTTP
+# sysConfig; kill -0 on $! then reported "crashed". -N localhost is the
+# identity (gethostname() on Azure GHA is a 70+ char FQDN not in the SAN).
+# -n rewrites -l origin.log to origin/origin.log; -s origin.pid stays in cwd.
+ORIGIN_LOG="$RUNDIR/origin/origin.log"
+"$BINDIR/xrootd" -b -n origin -N localhost -c "$ORIGIN_CONFIG" \
+  -l origin.log -s origin.pid </dev/null
+if [ $? -ne 0 ]; then
+  dump_xrd_logs origin
+  echo "Origin xrootd -b failed - failing"
+  exit 1
+fi
+ORIGIN_PIDFILE=$(wait_for_pidfile origin.pid \
+  "$XROOTD_RUNDIR/origin/xrootd.pid" "$XROOTD_RUNDIR/origin/origin/xrootd.pid")
+if [ -z "$ORIGIN_PIDFILE" ]; then
+  dump_xrd_logs origin
+  echo "Origin pidfile missing - failing"
+  exit 1
+fi
+ORIGIN_PID=$(tr -d '[:space:]' < "$ORIGIN_PIDFILE")
 echo "Origin PID: $ORIGIN_PID"
+echo "Origin logs are available at $ORIGIN_LOG"
 
-echo "Origin logs are available at $BINARY_DIR/tests/$TEST_NAME/origin.log"
-
-origin_init_done() {
-  grep -E -a -q -e 'xrootd origin@[^[:space:]]+ initialization completed' \
-    "$BINARY_DIR/tests/$TEST_NAME/origin.log" 2>/dev/null
-}
-
-# TCP accept is not ready: xrd.port binds before HTTPS is up, and Ubuntu
-# curl then gets "connection reset by peer". Wait for init completed.
-ORIGIN_PORT=""
-IDX=0
-while [ -z "$ORIGIN_PORT" ]; do
-  if origin_init_done; then
-    ORIGIN_PORT=$(grep -E -a -e 'xrootd origin@[^[:space:]]+ initialization completed' \
-      "$BINARY_DIR/tests/$TEST_NAME/origin.log" | tail -n 1 | sed -n 's/.*:\([0-9][0-9]*\) initialization completed.*/\1/p')
-    [ -n "$ORIGIN_PORT" ] || ORIGIN_PORT=9443
-    break
-  fi
-  if grep -E -a -q -e 'xrootd origin@[^[:space:]]+ initialization failed' \
-      "$BINARY_DIR/tests/$TEST_NAME/origin.log" 2>/dev/null; then
-    cat "$BINARY_DIR/tests/$TEST_NAME/origin.log"
-    echo "Origin failed to initialize - failing"
-    exit 1
-  fi
-  sleep 0.2
-  IDX=$((IDX+1))
-  if [ $IDX -gt 5 ]; then
-    echo "Waiting for origin to start ($IDX checks so far) ..."
-  fi
-  if ! kill -0 "$ORIGIN_PID" 2>/dev/null; then
-    sleep 0.2
-    if origin_init_done; then
-      ORIGIN_PORT=9443
-      break
-    fi
-    cat "$BINARY_DIR/tests/$TEST_NAME/origin.log"
-    echo "Origin process crashed - failing"
-    exit 1
-  fi
-  if [ $IDX -eq 150 ]; then
-    cat "$BINARY_DIR/tests/$TEST_NAME/origin.log"
-    echo "Origin failed to start - failing"
-    exit 1
-  fi
-done
+if ! wait_for_init_log "$ORIGIN_LOG"; then
+  dump_xrd_logs origin
+  echo "Origin failed to start - failing"
+  exit 1
+fi
+ORIGIN_PORT=$(read_init_port "$ORIGIN_LOG" origin 9443)
 echo "Origin started at port $ORIGIN_PORT"
 
 https_handshake() {
@@ -490,53 +521,59 @@ while [ $HTTPS_TRY -lt 10 ]; do
 done
 if [ "$HTTPS_OK" -ne 1 ]; then
   echo "Origin is not serving HTTPS on port ${ORIGIN_PORT}"
-  cat "$BINARY_DIR/tests/$TEST_NAME/origin.log"
+  dump_xrd_logs origin
   kill "$ORIGIN_PID" 2>/dev/null || true
   exit 1
 fi
 
-echo > "$BINARY_DIR/tests/$TEST_NAME/cache.log"
-CACHE_LOG="$BINARY_DIR/tests/$TEST_NAME/cache.log"
-"$BINDIR/xrootd" -n cache -c "$CACHE_CONFIG" \
-  </dev/null >"$CACHE_LOG" 2>&1 &
-CACHE_PID=$!
+CACHE_LOG="$RUNDIR/cache/cache.log"
+"$BINDIR/xrootd" -b -n cache -N localhost -c "$CACHE_CONFIG" \
+  -l cache.log -s cache.pid </dev/null
+if [ $? -ne 0 ]; then
+  dump_xrd_logs cache
+  echo "Cache xrootd -b failed - failing"
+  kill "$ORIGIN_PID" 2>/dev/null || true
+  exit 1
+fi
+CACHE_PIDFILE=$(wait_for_pidfile cache.pid \
+  "$XROOTD_RUNDIR/cache/xrootd.pid" "$XROOTD_RUNDIR/cache/cache/xrootd.pid")
+if [ -z "$CACHE_PIDFILE" ]; then
+  dump_xrd_logs cache
+  echo "Cache pidfile missing - failing"
+  kill "$ORIGIN_PID" 2>/dev/null || true
+  exit 1
+fi
+CACHE_PID=$(tr -d '[:space:]' < "$CACHE_PIDFILE")
 echo "Cache PID: $CACHE_PID"
+echo "Cache logs are available at $CACHE_LOG"
 
-echo "Cache logs are available at $BINARY_DIR/tests/$TEST_NAME/cache.log"
-
-CACHE_PORT=$(grep -E -a '\-\-\-\-\-\- xrootd cache@.*:[0-9]+ initialization completed' "$BINARY_DIR/tests/$TEST_NAME/cache.log" | tr ':' ' ' | awk '{print $4}')
-IDX=0
-while [ -z "$CACHE_PORT" ]; do
-  sleep 1
-  CACHE_PORT=$(grep -E -a '\-\-\-\-\-\- xrootd cache@.*:[0-9]+ initialization completed' "$BINARY_DIR/tests/$TEST_NAME/cache.log" | tr ':' ' ' | awk '{print $4}')
-  IDX=$((IDX+1))
-  if [ $IDX -gt 1 ]; then
-    echo "Waiting for cache to start ($IDX seconds so far) ..."
-  fi
-  if ! kill -0 "$CACHE_PID" 2>/dev/null; then
-    cat "$BINARY_DIR/tests/$TEST_NAME/cache.log"
-    echo "Cache process crashed - failing"
-    exit 1
-  fi
-  if [ $IDX -eq 50 ]; then
-    cat "$BINARY_DIR/tests/$TEST_NAME/cache.log"
-    echo "Cache failed to start - failing"
-    exit 1
-  fi
-done
+if ! wait_for_init_log "$CACHE_LOG"; then
+  dump_xrd_logs cache
+  echo "Cache failed to start - failing"
+  kill "$ORIGIN_PID" 2>/dev/null || true
+  exit 1
+fi
+CACHE_PORT=$(read_init_port "$CACHE_LOG" cache "")
+if [ -z "$CACHE_PORT" ]; then
+  dump_xrd_logs cache
+  echo "Cache port missing - failing"
+  kill "$ORIGIN_PID" 2>/dev/null || true
+  kill "$CACHE_PID" 2>/dev/null || true
+  exit 1
+fi
 echo "Cache started at port $CACHE_PORT"
 
 # Probe the cache with a default ClientHello (ECDSA allows TLS 1.3).
 if ! https_handshake "$CACHE_PORT"; then
   echo "Cache is not serving HTTPS on port ${CACHE_PORT}"
-  cat "$BINARY_DIR/tests/$TEST_NAME/cache.log"
+  dump_xrd_logs cache
   kill "$CACHE_PID" 2>/dev/null || true
   kill "$ORIGIN_PID" 2>/dev/null || true
   exit 1
 fi
 if ! kill -0 "$CACHE_PID" 2>/dev/null; then
   echo "Cache crashed during HTTPS health check"
-  cat "$BINARY_DIR/tests/$TEST_NAME/cache.log"
+  dump_xrd_logs cache
   kill "$ORIGIN_PID" 2>/dev/null || true
   exit 1
 fi
