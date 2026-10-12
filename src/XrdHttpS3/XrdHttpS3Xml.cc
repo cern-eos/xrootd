@@ -104,6 +104,36 @@ std::string ListObjectsXml(const std::string &bucket, const std::string &prefix,
   return xml;
 }
 
+std::string ListObjectsV1Xml(const std::string &bucket, const std::string &prefix,
+                             const std::string &delimiter, const std::string &marker,
+                             int maxKeys, const std::vector<ListedObject> &page,
+                             bool truncated) {
+  std::string body;
+  for (const auto &item : page) {
+    if (item.common) {
+      body += "<CommonPrefixes><Prefix>" + XmlEscape(item.key) + "</Prefix></CommonPrefixes>";
+    } else {
+      body += "<Contents><Key>" + XmlEscape(item.key) + "</Key><LastModified>" +
+              IsoDate(item.mtime) + "</LastModified><ETag>&quot;" + XmlEscape(item.etag) +
+              "&quot;</ETag><Size>" + std::to_string(item.size) +
+              "</Size><StorageClass>STANDARD</StorageClass></Contents>";
+    }
+  }
+  std::string xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    "<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                    "<Name>" + XmlEscape(bucket) + "</Name><Prefix>" + XmlEscape(prefix) +
+                    "</Prefix><Marker>" + XmlEscape(marker) + "</Marker><MaxKeys>" +
+                    std::to_string(maxKeys) + "</MaxKeys><IsTruncated>" +
+                    (truncated ? "true" : "false") + "</IsTruncated>";
+  if (!delimiter.empty())
+    xml += "<Delimiter>" + XmlEscape(delimiter) + "</Delimiter>";
+  if (truncated && !page.empty())
+    xml += "<NextMarker>" + XmlEscape(page.back().key) + "</NextMarker>";
+  xml += body;
+  xml += "</ListBucketResult>\n";
+  return xml;
+}
+
 std::string CopyObjectXml(const std::string &etag, time_t modified) {
   return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
          "<CopyObjectResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"

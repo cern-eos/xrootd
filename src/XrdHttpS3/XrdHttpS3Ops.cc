@@ -308,8 +308,8 @@ int Ops::Dispatch(XrdHttpExtReq &req, const KeyRecord &key) {
     if (req.verb == "HEAD")
       return HeadBucket(req, key, bucket);
     if (req.verb == "GET") {
-      if (query.count("list-type") && query["list-type"] != "2")
-        return Fail(req, 501, "NotImplemented", "ListObjects version 1 is not implemented");
+      if (query.count("list-type") && query["list-type"] != "2" && query["list-type"] != "1")
+        return Fail(req, 501, "NotImplemented", "This list-type is not implemented");
       return ListObjects(req, key, bucket);
     }
   }
@@ -317,8 +317,11 @@ int Ops::Dispatch(XrdHttpExtReq &req, const KeyRecord &key) {
   if (!onlyBucket && query.count("uploads") && req.verb == "POST")
     return CreateMultipart(req, key, bucket, objKey);
   if (!onlyBucket && query.count("uploadId")) {
-    if (query.count("partNumber") && req.verb == "PUT")
+    if (query.count("partNumber") && req.verb == "PUT") {
+      if (Hdr(req, "x-amz-copy-source"))
+        return UploadPartCopy(req, key, bucket, objKey);
       return UploadPart(req, key, bucket, objKey);
+    }
     if (req.verb == "POST")
       return CompleteMultipart(req, key, bucket, objKey);
     if (req.verb == "DELETE")
@@ -426,7 +429,12 @@ int Ops::ListObjects(XrdHttpExtReq &req, const KeyRecord &key, const std::string
   auto query = ParseQuery(QueryOf(req));
   std::string prefix = query.count("prefix") ? query["prefix"] : std::string();
   std::string delimiter = query.count("delimiter") ? query["delimiter"] : std::string();
-  std::string token = query.count("continuation-token") ? query["continuation-token"] : std::string();
+  bool v2 = query.count("list-type") && query["list-type"] == "2";
+  std::string token;
+  if (v2)
+    token = query.count("continuation-token") ? query["continuation-token"] : std::string();
+  else
+    token = query.count("marker") ? query["marker"] : std::string();
   int maxKeys = 1000;
   if (query.count("max-keys")) {
     try {
@@ -490,7 +498,8 @@ int Ops::ListObjects(XrdHttpExtReq &req, const KeyRecord &key, const std::string
   }
   if (scanTruncated)
     more = true;
-  std::string body = ListObjectsXml(bucket, prefix, delimiter, maxKeys, page, more, token);
+  std::string body = v2 ? ListObjectsXml(bucket, prefix, delimiter, maxKeys, page, more, token)
+                       : ListObjectsV1Xml(bucket, prefix, delimiter, token, maxKeys, page, more);
   std::string hdr = "Content-Type: application/xml";
   if (req.SendSimpleResp(200, nullptr, hdr.c_str(), body.data(),
                          static_cast<long long>(body.size())) != 0)

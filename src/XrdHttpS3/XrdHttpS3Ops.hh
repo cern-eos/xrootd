@@ -36,6 +36,8 @@ private:
                       const std::string &objKey);
   int UploadPart(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,
                  const std::string &objKey);
+  int UploadPartCopy(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,
+                     const std::string &objKey);
   int CompleteMultipart(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,
                         const std::string &objKey);
   int AbortMultipart(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,

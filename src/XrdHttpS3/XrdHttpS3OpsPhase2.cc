@@ -683,6 +683,141 @@ int Ops::UploadPart(XrdHttpExtReq &req, const KeyRecord &key, const std::string 
   return 0;
 }
 
+int Ops::UploadPartCopy(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,
+                        const std::string &objKey) {
+  BucketRecord rec;
+  int owned = LoadOwned(req, key, bucket, rec);
+  if (owned <= 0)
+    return owned;
+  auto query = ParseQuery(QueryOf(req));
+  std::string upload = query["uploadId"];
+  if (!ValidUploadId(upload))
+    return Fail(req, 404, "NoSuchUpload", "The specified upload does not exist");
+  int part = 0;
+  try {
+    part = std::stoi(query["partNumber"]);
+  } catch (...) {
+    return Fail(req, 400, "InvalidArgument", "partNumber is not an integer");
+  }
+  if (part < 1 || part > 10000)
+    return Fail(req, 400, "InvalidArgument", "partNumber must be between 1 and 10000");
+  std::string metaBody;
+  int err = 0;
+  if (m_meta.Store().ReadAll(UploadMeta(m_cfg, key.user, upload), m_meta.MetaWho(), metaBody,
+                             err) != 0)
+    return Fail(req, 404, "NoSuchUpload", "The specified upload does not exist");
+  auto props = ParseProps(metaBody);
+  if (props["bucket"] != bucket || props["key"] != objKey)
+    return Fail(req, 404, "NoSuchUpload", "The upload does not belong to this object");
+
+  const std::string *srcHdr = Hdr(req, "x-amz-copy-source");
+  if (!srcHdr)
+    return Fail(req, 400, "InvalidArgument", "x-amz-copy-source is required");
+  std::string src = PercentDecode(*srcHdr);
+  size_t qpos = src.find('?');
+  if (qpos != std::string::npos)
+    src.resize(qpos);
+  if (!src.empty() && src[0] == '/')
+    src.erase(src.begin());
+  size_t slash = src.find('/');
+  if (slash == std::string::npos || slash == 0 || slash + 1 >= src.size())
+    return Fail(req, 400, "InvalidArgument", "x-amz-copy-source is not bucket/key");
+  std::string srcBucket = src.substr(0, slash);
+  std::string srcKey = src.substr(slash + 1);
+  if (!ValidBucket(srcBucket) || !ValidObjectKey(srcKey))
+    return Fail(req, 400, "InvalidArgument", "x-amz-copy-source is not a valid object");
+  BucketRecord srcRec;
+  int srcOwned = LoadOwned(req, key, srcBucket, srcRec);
+  if (srcOwned <= 0)
+    return srcOwned;
+  if (Drain(req) != 0)
+    return -1;
+
+  Who id(key.user);
+  std::string srcPath = ObjectFile(m_cfg, key.user, srcBucket, srcKey);
+  struct stat st;
+  if (m_meta.Store().Stat(srcPath, id.get(), st, err) != 0 || !S_ISREG(st.st_mode))
+    return Fail(req, 404, "NoSuchKey", "The source key does not exist");
+  long long start = 0;
+  long long end = st.st_size > 0 ? st.st_size - 1 : -1;
+  const std::string *range = Hdr(req, "x-amz-copy-source-range");
+  if (range) {
+    if (range->compare(0, 6, "bytes=") != 0 || range->find(',') != std::string::npos)
+      return Fail(req, 400, "InvalidArgument", "x-amz-copy-source-range is not a single byte range");
+    size_t dash = range->find('-', 6);
+    if (dash == std::string::npos)
+      return Fail(req, 400, "InvalidArgument", "x-amz-copy-source-range is not a single byte range");
+    try {
+      start = std::stoll(range->substr(6, dash - 6));
+      end = std::stoll(range->substr(dash + 1));
+    } catch (...) {
+      return Fail(req, 400, "InvalidArgument", "x-amz-copy-source-range is not a single byte range");
+    }
+    if (start < 0 || end < start || end >= st.st_size)
+      return Fail(req, 416, "InvalidRange", "The requested range is not satisfiable");
+  }
+  if (end < start)
+    return Fail(req, 400, "InvalidArgument", "The source object is empty");
+
+  OwnedFile in;
+  if (m_meta.Store().Open(srcPath, id.get(), SFS_O_RDONLY, 0, in, err) != 0)
+    return Fail(req, 500, "InternalError", "Could not open the source object");
+  std::string path = UploadPartFile(m_cfg, key.user, upload, std::to_string(part));
+  OwnedFile out;
+  int flags = SFS_O_CREAT | SFS_O_TRUNC | SFS_O_WRONLY | SFS_O_MKPTH;
+  if (m_meta.Store().Open(path, m_meta.MetaWho(), flags, 0644, out, err) != 0)
+    return Fail(req, 500, "InternalError", "Could not create the part");
+
+  EVP_MD_CTX *md5 = EVP_MD_CTX_new();
+  EVP_DigestInit_ex(md5, EVP_md5(), nullptr);
+  std::vector<char> buf(65536);
+  XrdSfsFileOffset roff = start;
+  XrdSfsFileOffset woff = 0;
+  bool ok = true;
+  long long left = end - start + 1;
+  while (left > 0) {
+    int want = static_cast<int>(std::min<long long>(left, 65536));
+    int n = in.fh->read(roff, buf.data(), want);
+    if (n <= 0) {
+      ok = false;
+      break;
+    }
+    if (WriteAt(out.fh, woff, buf.data(), n) != 0) {
+      ok = false;
+      break;
+    }
+    EVP_DigestUpdate(md5, buf.data(), static_cast<size_t>(n));
+    roff += n;
+    left -= n;
+  }
+  unsigned char md[EVP_MAX_MD_SIZE];
+  unsigned int nmd = 0;
+  EVP_DigestFinal_ex(md5, md, &nmd);
+  EVP_MD_CTX_free(md5);
+  out.fh->sync();
+  out.fh->close();
+  delete out.fh;
+  out.fh = nullptr;
+  if (!ok) {
+    m_meta.Store().Unlink(path, m_meta.MetaWho(), err);
+    return Fail(req, 500, "InternalError", "Could not copy the part");
+  }
+  std::string etag = HexOf(md, nmd);
+  if (m_meta.Store().WriteAll(path + ".etag", m_meta.MetaWho(), etag + "\n", 0644, err) != 0) {
+    m_meta.Store().Unlink(path, m_meta.MetaWho(), err);
+    return Fail(req, 500, "InternalError", "Could not record the part etag");
+  }
+  std::string body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                     "<CopyPartResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                     "<LastModified>" + IsoDate(time(nullptr)) + "</LastModified><ETag>&quot;" +
+                     XmlEscape(etag) + "&quot;</ETag></CopyPartResult>\n";
+  std::string hdr = "ETag: \"" + etag + "\"\r\nContent-Type: application/xml";
+  if (req.SendSimpleResp(200, nullptr, hdr.c_str(), body.data(),
+                         static_cast<long long>(body.size())) != 0)
+    return -1;
+  return 0;
+}
+
 int Ops::CompleteMultipart(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,
                            const std::string &objKey) {
   BucketRecord rec;

@@ -219,6 +219,40 @@ if ! grep -q 'hello.txt' "$ROOT/out"; then
   exit 1
 fi
 
+code=$(call_s3 GET "$PORT_ON" /mybucket UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "ListObjects v1"
+if ! grep -q '<Marker>' "$ROOT/out" || grep -q '<KeyCount>' "$ROOT/out"; then
+  echo "listing without list-type was not ListObjects v1" >&2
+  cat "$ROOT/out" >&2
+  exit 1
+fi
+
+code=$(call_s3 POST "$PORT_ON" '/mybucket/from-copy?uploads' \
+  e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 "")
+expect_code "$code" 200 "CreateMultipartUpload for part copy"
+uid=$(sed -n 's/.*<UploadId>\([^<]*\)<\/UploadId>.*/\1/p' "$ROOT/out")
+SIGNED=$("$S3SIGN" "$SECRET" "$AKID" us-east-1 PUT "127.0.0.1:${PORT_ON}" \
+  /mybucket/from-copy "partNumber=1&uploadId=${uid}" UNSIGNED-PAYLOAD \
+  x-amz-copy-source /mybucket/hello.txt x-amz-copy-source-range bytes=0-4)
+printf '%s\n' "$SIGNED" > "$ROOT/sig"
+load_sig
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' -X PUT \
+  -H "x-amz-date: $S3_DATE" -H "x-amz-content-sha256: $S3_HASH" \
+  -H "Authorization: $S3_AUTH" -H "x-amz-copy-source: /mybucket/hello.txt" \
+  -H "x-amz-copy-source-range: bytes=0-4" \
+  "http://127.0.0.1:${PORT_ON}/mybucket/from-copy?partNumber=1&uploadId=${uid}")
+expect_code "$code" 200 "UploadPartCopy"
+cetag=$(awk 'BEGIN{IGNORECASE=1} /^[Ee][Tt][Aa][Gg]:/ {gsub(/[\r"]/,"",$2); print $2; exit}' "$ROOT/hdr")
+printf '%s' "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>\"${cetag}\"</ETag></Part></CompleteMultipartUpload>" > "$ROOT/done-copy.xml"
+code=$(call_s3 POST "$PORT_ON" "/mybucket/from-copy?uploadId=${uid}" "@$ROOT/done-copy.xml" "$ROOT/done-copy.xml")
+expect_code "$code" 200 "Complete UploadPartCopy"
+code=$(call_s3 GET "$PORT_ON" /mybucket/from-copy UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetObject part copy"
+if [ "$(cat "$ROOT/out")" != "hello" ]; then
+  echo "copied part body mismatch [$(cat "$ROOT/out")]" >&2
+  exit 1
+fi
+
 code=$(call_s3 PUT "$PORT_ON" /otherbucket "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" "")
 expect_code "$code" 200 "CreateBucket"
 if [ ! -f "$ROOT/data/s3meta/buckets/otherbucket" ] || [ ! -d "$ROOT/data/prefix/f/foo/otherbucket" ]; then

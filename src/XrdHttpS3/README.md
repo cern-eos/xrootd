@@ -89,6 +89,8 @@ Adjust the names to the site's authdb. The plugin will not serve `.s3` or
 ListBuckets, CreateBucket, DeleteBucket (empty only), HeadBucket, PutObject,
 GetObject (one byte range), HeadObject, DeleteObject, and ListObjectsV2
 (`list-type=2`, `prefix`, `delimiter`, `max-keys`, `continuation-token`).
+A listing without `list-type`, or with `list-type=1`, is ListObjects v1
+(`marker`, `NextMarker`).
 
 Header SigV4 accepts a payload hash, `UNSIGNED-PAYLOAD`, and
 `STREAMING-AWS4-HMAC-SHA256-PAYLOAD` (aws-chunked, one signature per chunk).
@@ -105,7 +107,8 @@ suffix stay `/<bucket>/<key>`.
 
 Also implemented: `CopyObject` (`x-amz-copy-source`), `DeleteObjects`
 (`POST /bucket?delete`, `Content-MD5` required), and multipart upload
-(`POST ?uploads`, `PUT ?partNumber&uploadId`, `POST ?uploadId`,
+(`POST ?uploads`, `PUT ?partNumber&uploadId`, `PUT` with `x-amz-copy-source`
+to copy a byte range into a part, `POST ?uploadId`,
 `DELETE ?uploadId`, `GET ?uploadId` to list parts, and `GET ?uploads` to
 list uploads in a bucket). The multipart ETag is the MD5 of the part MD5s plus the
 part count. Part files live under the user's `.s3/uploads/` tree.

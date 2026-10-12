@@ -34,6 +34,10 @@ std::string ListObjectsXml(const std::string &bucket, const std::string &prefix,
                            const std::string &delimiter, int maxKeys,
                            const std::vector<ListedObject> &page, bool truncated,
                            const std::string &token);
+std::string ListObjectsV1Xml(const std::string &bucket, const std::string &prefix,
+                             const std::string &delimiter, const std::string &marker,
+                             int maxKeys, const std::vector<ListedObject> &page,
+                             bool truncated);
 
 std::string CopyObjectXml(const std::string &etag, time_t modified);
 std::string DeleteObjectsXml(const std::vector<std::string> &deleted,
