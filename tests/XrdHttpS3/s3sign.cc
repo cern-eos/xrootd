@@ -19,7 +19,18 @@ std::string NowAmz() {
 
 std::string FileBytes(const std::string &path) {
   std::ifstream in(path, std::ios::binary);
-  return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  if (!in)
+    return std::string();
+  in.seekg(0, std::ios::end);
+  std::streamoff n = in.tellg();
+  if (n <= 0)
+    return std::string();
+  std::string out(static_cast<std::string::size_type>(n), '\0');
+  in.seekg(0, std::ios::beg);
+  in.read(&out[0], n);
+  if (!in)
+    return std::string();
+  return out;
 }
 
 }
