@@ -97,8 +97,11 @@ GetObject (one byte range, `x-amz-meta-*`, and `If-Match` / `If-None-Match` /
 A listing without `list-type`, or with `list-type=1`, is ListObjects v1
 (`marker`, `NextMarker`).
 
-Header SigV4 accepts a payload hash, `UNSIGNED-PAYLOAD`, and
-`STREAMING-AWS4-HMAC-SHA256-PAYLOAD` (aws-chunked, one signature per chunk).
+Header SigV4 accepts a payload hash, `UNSIGNED-PAYLOAD`,
+`STREAMING-AWS4-HMAC-SHA256-PAYLOAD` (aws-chunked, one signature per chunk),
+`STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER`, and
+`STREAMING-UNSIGNED-PAYLOAD-TRAILER`. HTTP `Transfer-Encoding: chunked` is
+decoded for PutObject and UploadPart.
 Presigned query URLs are accepted for the same operations. Every `x-amz-*`
 header on a signed request has to be listed in `SignedHeaders`.
 
@@ -117,10 +120,29 @@ to copy a byte range into a part, `POST ?uploadId`,
 `DELETE ?uploadId`, `GET ?uploadId` to list parts, and `GET ?uploads` to
 list uploads in a bucket). The multipart ETag is the MD5 of the part MD5s plus the
 part count. Part files live under the user's `.s3/uploads/` tree.
-`GET ?acl` on a bucket or object returns a private `FULL_CONTROL` policy for the
-owning user. A canned ACL other than `private`, and the `x-amz-grant-*` headers,
-are not implemented. GetObject accepts `response-content-type`,
+`GET ?acl` returns the stored ACL. The default is a private `FULL_CONTROL`
+grant for the owning user. `PUT` accepts the canned values `private`,
+`public-read`, `public-read-write`, `authenticated-read`, `bucket-owner-read`,
+`bucket-owner-full-control`, and `aws-exec-read`, or `x-amz-grant-*` headers, or
+an `AccessControlPolicy` document with `Content-MD5`. A canned ACL and grant
+headers together are rejected. GetObject accepts `response-content-type`,
 `response-content-disposition`, `response-cache-control`,
 `response-content-encoding`, `response-content-language`, and `response-expires`.
 `GET /bucket?location` returns the configured region. For `us-east-1` the
 constraint element is empty, matching S3.
+
+`PUT`, `GET`, and `DELETE` of `?cors`, `?tagging`, and `?policy` store the
+document on the bucket. `GET ?notification` returns an empty configuration
+when none is stored, and `GET ?requestPayment` defaults to `BucketOwner`.
+Object `?tagging` is stored beside the object; a missing tag set reads back
+as an empty `TagSet`. `Content-MD5` is required on these `PUT`s. `HEAD` of a
+multipart part (`?uploadId&partNumber`) returns that part's `ETag` and size.
+A browser `POST` with `multipart/form-data` is accepted when the policy
+signature, expiration, bucket, and key conditions match. `OPTIONS` with an
+`Origin` header is answered from the bucket CORS rules, and the same
+`Access-Control-Allow-Origin` headers are added to later responses that match
+a rule.
+
+Versioning, lifecycle, logging, website, and replication are not implemented.
+`CopyObject` with `versionId` is not implemented. Completing a multipart
+upload still copies part bytes into the object.

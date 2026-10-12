@@ -154,6 +154,10 @@ int Meta::LoadBucket(const std::string &name, BucketRecord &out, int &err) {
   out.created = props.count("created") ? std::atoll(props["created"].c_str()) : 0;
   out.acl = props.count("acl") && !props["acl"].empty() ? props["acl"] : "private";
   out.region = props.count("region") && !props["region"].empty() ? props["region"] : m_cfg.region;
+  for (const auto &kv : props) {
+    if (kv.first.compare(0, 6, "grant-") == 0 && kv.first.size() > 6)
+      out.grants[kv.first.substr(6)] = kv.second;
+  }
   if (!ValidUser(out.owner)) {
     err = EINVAL;
     return -1;
@@ -173,6 +177,10 @@ int Meta::StoreBucket(const BucketRecord &rec, int &err) {
   props["created"] = std::to_string(rec.created);
   props["acl"] = rec.acl.empty() ? "private" : rec.acl;
   props["region"] = rec.region.empty() ? m_cfg.region : rec.region;
+  for (const auto &kv : rec.grants) {
+    if (kv.second.find('\n') == std::string::npos && kv.second.find('\r') == std::string::npos)
+      props["grant-" + kv.first] = kv.second;
+  }
   if (WriteProps(BucketIndex(m_cfg, rec.name), MetaWho(), props, 0644, err) != 0)
     return -1;
   if (WriteProps(UserBucketFile(m_cfg, rec.owner, rec.name), MetaWho(), props, 0644, err) != 0)
@@ -243,6 +251,12 @@ int Meta::ReadObjectMeta(const std::string &user, const std::string &bucket,
       out.etag = props["etag"];
     if (!props["content-type"].empty())
       out.contentType = props["content-type"];
+    if (!props["acl"].empty())
+      out.acl = props["acl"];
+    for (const auto &kv : props) {
+      if (kv.first.compare(0, 6, "grant-") == 0 && kv.first.size() > 6)
+        out.grants[kv.first.substr(6)] = kv.second;
+    }
     for (const auto &kv : props) {
       if (kv.first.compare(0, 5, "user.") == 0 && kv.first.size() > 5)
         out.user[kv.first.substr(5)] = kv.second;
@@ -265,6 +279,11 @@ int Meta::WriteObjectMeta(const std::string &user, const std::string &bucket,
   std::map<std::string, std::string> props;
   props["etag"] = meta.etag;
   props["content-type"] = meta.contentType;
+  props["acl"] = meta.acl.empty() ? "private" : meta.acl;
+  for (const auto &kv : meta.grants) {
+    if (kv.second.find('\n') == std::string::npos && kv.second.find('\r') == std::string::npos)
+      props["grant-" + kv.first] = kv.second;
+  }
   for (const auto &kv : meta.user) {
     if (kv.second.find('\n') != std::string::npos || kv.second.find('\r') != std::string::npos)
       continue;

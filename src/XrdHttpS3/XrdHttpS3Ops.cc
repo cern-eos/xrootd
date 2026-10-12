@@ -173,8 +173,7 @@ int EvalWriteCond(const std::map<std::string, std::string> &headers, bool exists
 namespace {
 
 const char *kSubresources[] = {
-    "acl", "cors", "lifecycle", "location", "logging", "notification", "policy",
-    "requestPayment", "tagging", "uploads", "versioning", "website", nullptr};
+    "acl", "lifecycle", "location", "logging", "uploads", "versioning", "website", nullptr};
 
 const std::string *Hdr(const XrdHttpExtReq &req, const char *name) {
   auto it = req.headers.find(name);
@@ -334,7 +333,7 @@ Ops::Ops(Meta &meta, const Config &cfg, XrdSysError &log)
 int Ops::Fail(XrdHttpExtReq &req, int http, const char *code, const std::string &message) {
   std::string body = ErrorXml(code, message, req.resource);
   std::string hdr = "Content-Type: application/xml";
-  if (req.SendSimpleResp(http, nullptr, hdr.c_str(), body.data(),
+  if (Reply(req, http, nullptr, hdr.c_str(), body.data(),
                          static_cast<long long>(body.size())) != 0)
     return -1;
   return 0;
@@ -357,17 +356,53 @@ int Ops::LoadOwned(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
   return 1;
 }
 
+namespace {
+
+bool KnownCanned(const std::string &acl) {
+  return acl == "private" || acl == "public-read" || acl == "public-read-write" ||
+         acl == "authenticated-read" || acl == "bucket-owner-read" ||
+         acl == "bucket-owner-full-control" || acl == "aws-exec-read";
+}
+
+const char *kGrantHeaders[] = {"x-amz-grant-read",           "read",
+                               "x-amz-grant-write",          "write",
+                               "x-amz-grant-read-acp",       "read-acp",
+                               "x-amz-grant-write-acp",      "write-acp",
+                               "x-amz-grant-full-control",   "full-control",
+                               nullptr,                      nullptr};
+
+}
+
 int Ops::RejectAclChange(XrdHttpExtReq &req) {
   const std::string *acl = Hdr(req, "x-amz-acl");
-  if (acl && *acl != "private")
-    return Fail(req, 501, "NotImplemented", "Only the private canned ACL is supported");
-  const char *grants[] = {"x-amz-grant-read", "x-amz-grant-write", "x-amz-grant-read-acp",
-                          "x-amz-grant-write-acp", "x-amz-grant-full-control", nullptr};
-  for (int i = 0; grants[i]; i++) {
-    if (Hdr(req, grants[i]))
-      return Fail(req, 501, "NotImplemented", "Only the private canned ACL is supported");
+  bool grants = false;
+  for (int i = 0; kGrantHeaders[i]; i += 2) {
+    if (Hdr(req, kGrantHeaders[i]))
+      grants = true;
   }
+  if (acl && grants)
+    return Fail(req, 400, "InvalidArgument", "A canned ACL and grant headers are mutually exclusive");
+  if (acl && !KnownCanned(*acl))
+    return Fail(req, 400, "InvalidArgument", "The canned ACL is not supported");
   return 1;
+}
+
+void Ops::CollectAcl(const XrdHttpExtReq &req, std::string &canned,
+                     std::map<std::string, std::string> &grants) {
+  canned = "private";
+  grants.clear();
+  for (int i = 0; kGrantHeaders[i]; i += 2) {
+    const std::string *v = Hdr(req, kGrantHeaders[i]);
+    if (v && !v->empty())
+      grants[kGrantHeaders[i + 1]] = *v;
+  }
+  if (!grants.empty()) {
+    canned.clear();
+    return;
+  }
+  const std::string *acl = Hdr(req, "x-amz-acl");
+  if (acl && KnownCanned(*acl))
+    canned = *acl;
 }
 
 int Ops::GetAcl(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,
@@ -384,9 +419,21 @@ int Ops::GetAcl(XrdHttpExtReq &req, const KeyRecord &key, const std::string &buc
         !S_ISREG(st.st_mode))
       return Fail(req, 404, "NoSuchKey", "The specified key does not exist");
   }
-  std::string body = AclXml(key.user);
+  std::string canned = "private";
+  std::map<std::string, std::string> grants;
+  if (object) {
+    ObjectMeta meta;
+    if (m_meta.ReadObjectMeta(key.user, bucket, objKey, meta) == 0) {
+      canned = meta.acl;
+      grants = meta.grants;
+    }
+  } else {
+    canned = rec.acl.empty() ? "private" : rec.acl;
+    grants = rec.grants;
+  }
+  std::string body = AclXml(key.user, canned, grants);
   std::string hdr = "Content-Type: application/xml";
-  if (req.SendSimpleResp(200, nullptr, hdr.c_str(), body.data(),
+  if (Reply(req, 200, nullptr, hdr.c_str(), body.data(),
                          static_cast<long long>(body.size())) != 0)
     return -1;
   return 0;
@@ -434,10 +481,6 @@ int Ops::Dispatch(XrdHttpExtReq &req, const KeyRecord &key) {
       req.verb != "POST")
     return Fail(req, 501, "NotImplemented", "This S3 operation is not implemented");
 
-  const std::string *te = Hdr(req, "transfer-encoding");
-  if (te && te->find("chunked") != std::string::npos)
-    return Fail(req, 501, "NotImplemented", "Chunked uploads are not implemented");
-
   std::string path = req.resource;
   if (path.empty())
     path = "/";
@@ -455,7 +498,7 @@ int Ops::Dispatch(XrdHttpExtReq &req, const KeyRecord &key) {
     if (req.verb == "GET")
       return ListBuckets(req, key);
     if (req.verb == "HEAD") {
-      if (req.SendSimpleResp(200, nullptr, nullptr, nullptr, 0) != 0)
+      if (Reply(req, 200, nullptr, nullptr, nullptr, 0) != 0)
         return -1;
       return 0;
     }
@@ -479,8 +522,20 @@ int Ops::Dispatch(XrdHttpExtReq &req, const KeyRecord &key) {
   if (onlyBucket && query.count("acl")) {
     if (req.verb == "GET")
       return GetAcl(req, key, bucket, std::string(), false);
+    if (req.verb == "PUT")
+      return PutAcl(req, key, bucket, std::string(), false);
     return Fail(req, 501, "NotImplemented", "Changing an ACL is not implemented");
   }
+  if (onlyBucket && query.count("cors"))
+    return BucketDocOp(req, key, bucket, "cors");
+  if (onlyBucket && query.count("tagging"))
+    return BucketDocOp(req, key, bucket, "tagging");
+  if (onlyBucket && query.count("policy"))
+    return BucketDocOp(req, key, bucket, "policy");
+  if (onlyBucket && query.count("notification"))
+    return BucketDocOp(req, key, bucket, "notification");
+  if (onlyBucket && query.count("requestPayment"))
+    return BucketDocOp(req, key, bucket, "requestPayment");
   if (onlyBucket && req.verb == "GET" && query.count("location"))
     return GetBucketLocation(req, key, bucket);
   if (onlyBucket && req.verb == "GET" && query.count("uploads"))
@@ -513,6 +568,8 @@ int Ops::Dispatch(XrdHttpExtReq &req, const KeyRecord &key) {
         return UploadPartCopy(req, key, bucket, objKey);
       return UploadPart(req, key, bucket, objKey);
     }
+    if (query.count("partNumber") && req.verb == "HEAD")
+      return HeadPart(req, key, bucket, objKey);
     if (req.verb == "POST")
       return CompleteMultipart(req, key, bucket, objKey);
     if (req.verb == "DELETE")
@@ -525,7 +582,19 @@ int Ops::Dispatch(XrdHttpExtReq &req, const KeyRecord &key) {
   if (!onlyBucket && query.count("acl")) {
     if (req.verb == "GET")
       return GetAcl(req, key, bucket, objKey, true);
+    if (req.verb == "PUT")
+      return PutAcl(req, key, bucket, objKey, true);
     return Fail(req, 501, "NotImplemented", "Changing an ACL is not implemented");
+  }
+  if (!onlyBucket && query.count("tagging"))
+    return ObjectTagging(req, key, bucket, objKey);
+  {
+    const char *blocked[] = {"torrent", "restore", "select", "legal-hold", "retention",
+                             "attributes", nullptr};
+    for (int i = 0; blocked[i]; i++) {
+      if (query.count(blocked[i]))
+        return Fail(req, 501, "NotImplemented", "This object subresource is not implemented");
+    }
   }
 
   if (req.verb == "PUT" && Hdr(req, "x-amz-copy-source"))
@@ -555,7 +624,7 @@ int Ops::ListBuckets(XrdHttpExtReq &req, const KeyRecord &key) {
   }
   std::string body = ListBucketsXml(key.user, listed);
   std::string hdr = "Content-Type: application/xml";
-  if (req.SendSimpleResp(200, nullptr, hdr.c_str(), body.data(),
+  if (Reply(req, 200, nullptr, hdr.c_str(), body.data(),
                          static_cast<long long>(body.size())) != 0)
     return -1;
   return 0;
@@ -580,12 +649,14 @@ int Ops::CreateBucket(XrdHttpExtReq &req, const KeyRecord &key, const std::strin
   rec.name = bucket;
   rec.owner = key.user;
   rec.created = static_cast<long long>(time(nullptr));
-  rec.acl = "private";
+  CollectAcl(req, rec.acl, rec.grants);
+  if (rec.acl.empty())
+    rec.acl = "private";
   rec.region = m_cfg.region;
   if (m_meta.StoreBucket(rec, err) != 0)
     return Fail(req, 500, "InternalError", "Could not create the bucket");
   std::string hdr = "Location: /" + bucket;
-  if (req.SendSimpleResp(200, nullptr, hdr.c_str(), nullptr, 0) != 0)
+  if (Reply(req, 200, nullptr, hdr.c_str(), nullptr, 0) != 0)
     return -1;
   return 0;
 }
@@ -606,7 +677,7 @@ int Ops::DeleteBucket(XrdHttpExtReq &req, const KeyRecord &key, const std::strin
   if (m_meta.Store().Rmdir(data, id.get(), err) != 0)
     m_meta.Store().Rmdir(data, m_meta.MetaWho(), err);
   m_meta.RemoveBucket(bucket, key.user, err);
-  if (req.SendSimpleResp(204, nullptr, nullptr, nullptr, 0) != 0)
+  if (Reply(req, 204, nullptr, nullptr, nullptr, 0) != 0)
     return -1;
   return 0;
 }
@@ -617,7 +688,7 @@ int Ops::HeadBucket(XrdHttpExtReq &req, const KeyRecord &key, const std::string 
   if (owned <= 0)
     return owned;
   std::string hdr = "x-amz-bucket-region: " + rec.region;
-  if (req.SendSimpleResp(200, nullptr, hdr.c_str(), nullptr, 0) != 0)
+  if (Reply(req, 200, nullptr, hdr.c_str(), nullptr, 0) != 0)
     return -1;
   return 0;
 }
@@ -702,7 +773,7 @@ int Ops::ListObjects(XrdHttpExtReq &req, const KeyRecord &key, const std::string
   std::string body = v2 ? ListObjectsXml(bucket, prefix, delimiter, maxKeys, page, more, token)
                        : ListObjectsV1Xml(bucket, prefix, delimiter, token, maxKeys, page, more);
   std::string hdr = "Content-Type: application/xml";
-  if (req.SendSimpleResp(200, nullptr, hdr.c_str(), body.data(),
+  if (Reply(req, 200, nullptr, hdr.c_str(), body.data(),
                          static_cast<long long>(body.size())) != 0)
     return -1;
   return 0;
@@ -745,11 +816,13 @@ int Ops::PutObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
     return Fail(req, 412, "PreconditionFailed", "At least one of the preconditions you specified did not hold");
   const std::string *hash = Hdr(req, "x-amz-content-sha256");
   if (hash && hash->compare(0, 10, "STREAMING-") == 0 &&
-      *hash != "STREAMING-AWS4-HMAC-SHA256-PAYLOAD")
+      *hash != "STREAMING-AWS4-HMAC-SHA256-PAYLOAD" &&
+      *hash != "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER" &&
+      *hash != "STREAMING-UNSIGNED-PAYLOAD-TRAILER")
     return Fail(req, 501, "NotImplemented", "This streaming payload encoding is not implemented");
 
   if (WantsContinue(req)) {
-    if (req.SendSimpleResp(100, nullptr, nullptr, nullptr, 0) != 0)
+    if (Reply(req, 100, nullptr, nullptr, nullptr, 0) != 0)
       return -1;
   }
 
@@ -761,10 +834,11 @@ int Ops::PutObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
   meta.etag = etag;
   const std::string *ctype = Hdr(req, "content-type");
   meta.contentType = CleanType(ctype ? *ctype : "");
+  CollectAcl(req, meta.acl, meta.grants);
   m_meta.WriteObjectMeta(key.user, bucket, objKey, meta, err);
 
   std::string hdr = "ETag: \"" + etag + "\"";
-  if (req.SendSimpleResp(200, nullptr, hdr.c_str(), nullptr, 0) != 0)
+  if (Reply(req, 200, nullptr, hdr.c_str(), nullptr, 0) != 0)
     return -1;
   if (m_cfg.traceInfo)
     m_log.Say("S3", "PutObject", bucket.c_str(), objKey.c_str());
@@ -793,7 +867,7 @@ int Ops::GetObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
   if (cond == ReadCond::NotModified) {
     std::string hdr = "ETag: \"" + meta.etag + "\"\r\nLast-Modified: " + HttpDate(st.st_mtime) +
                       UserMetaHeaders(meta.user);
-    if (req.SendSimpleResp(304, nullptr, hdr.c_str(), nullptr, 0) != 0)
+    if (Reply(req, 304, nullptr, hdr.c_str(), nullptr, 0) != 0)
       return -1;
     return 0;
   }
@@ -806,7 +880,7 @@ int Ops::GetObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
       std::string hdr = "Content-Range: bytes */" + std::to_string(static_cast<long long>(st.st_size));
       std::string body = ErrorXml("InvalidRange", "The requested range is not satisfiable", req.resource);
       std::string all = hdr + "\r\nContent-Type: application/xml";
-      if (req.SendSimpleResp(416, nullptr, all.c_str(), body.data(),
+      if (Reply(req, 416, nullptr, all.c_str(), body.data(),
                              static_cast<long long>(body.size())) != 0)
         return -1;
       return 0;
@@ -847,14 +921,15 @@ int Ops::GetObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
 
   int code = partial ? 206 : 200;
   if (head || send == 0) {
-    if (req.SendSimpleResp(code, nullptr, hdr.c_str(), nullptr, send) != 0)
+    if (Reply(req, code, nullptr, hdr.c_str(), nullptr, send) != 0)
       return -1;
     return 0;
   }
   OwnedFile file;
   if (m_meta.Store().Open(path, id.get(), SFS_O_RDONLY, 0, file, err) != 0)
     return Fail(req, 500, "InternalError", "Could not open the object");
-  if (req.StartSimpleResp(code, nullptr, hdr.c_str(), send, true) != 0)
+  std::string sendHdr = WithCors(req, hdr);
+  if (req.StartSimpleResp(code, nullptr, sendHdr.c_str(), send, true) != 0)
     return -1;
   long long left = send;
   XrdSfsFileOffset off = start;
@@ -886,7 +961,7 @@ int Ops::DeleteObject(XrdHttpExtReq &req, const KeyRecord &key, const std::strin
   if (rc != 0 && err != ENOENT)
     return Fail(req, 500, "InternalError", "Could not delete the object");
   m_meta.RemoveObjectMeta(key.user, bucket, objKey);
-  if (req.SendSimpleResp(204, nullptr, nullptr, nullptr, 0) != 0)
+  if (Reply(req, 204, nullptr, nullptr, nullptr, 0) != 0)
     return -1;
   return 0;
 }

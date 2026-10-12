@@ -11,6 +11,7 @@ add_library(${XrdHttpS3} MODULE
   XrdHttpS3Meta.cc     XrdHttpS3Meta.hh
   XrdHttpS3Ops.cc      XrdHttpS3Ops.hh
   XrdHttpS3OpsPhase2.cc
+  XrdHttpS3OpsPhase3.cc
   XrdHttpS3Paths.cc    XrdHttpS3Paths.hh
   XrdHttpS3SigV4.cc    XrdHttpS3SigV4.hh
   XrdHttpS3Xml.cc      XrdHttpS3Xml.hh

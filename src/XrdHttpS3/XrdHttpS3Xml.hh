@@ -1,6 +1,7 @@
 #ifndef XRDHTTPS3_XML_HH
 #define XRDHTTPS3_XML_HH
 
+#include <map>
 #include <string>
 #include <time.h>
 #include <vector>
@@ -21,7 +22,8 @@ struct ListedBucket {
 };
 
 std::string ListBucketsXml(const std::string &owner, const std::vector<ListedBucket> &buckets);
-std::string AclXml(const std::string &owner);
+std::string AclXml(const std::string &owner, const std::string &canned = "private",
+                    const std::map<std::string, std::string> &grants = {});
 
 struct ListedObject {
   bool common{false};

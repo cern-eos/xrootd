@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdio>
 #include <ctime>
+#include <sstream>
 
 namespace XrdHttpS3 {
 
@@ -70,14 +71,69 @@ std::string ListBucketsXml(const std::string &owner, const std::vector<ListedBuc
   return xml;
 }
 
-std::string AclXml(const std::string &owner) {
+namespace {
+
+std::string GrantXml(const std::string &who, const std::string &permission) {
+  std::string g = "<Grant><Grantee xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" ";
+  if (who.compare(0, 4, "uri=") == 0) {
+    g += "xsi:type=\"Group\"><URI>" + XmlEscape(who.substr(4)) + "</URI></Grantee>";
+  } else {
+    std::string id = who.compare(0, 3, "id=") == 0 ? who.substr(3) : who;
+    g += "xsi:type=\"CanonicalUser\"><ID>" + XmlEscape(id) + "</ID><DisplayName>" +
+         XmlEscape(id) + "</DisplayName></Grantee>";
+  }
+  g += "<Permission>" + XmlEscape(permission) + "</Permission></Grant>";
+  return g;
+}
+
+std::string PermName(const std::string &key) {
+  if (key == "read")
+    return "READ";
+  if (key == "write")
+    return "WRITE";
+  if (key == "read-acp")
+    return "READ_ACP";
+  if (key == "write-acp")
+    return "WRITE_ACP";
+  if (key == "full-control")
+    return "FULL_CONTROL";
+  return "FULL_CONTROL";
+}
+
+}
+
+std::string AclXml(const std::string &owner, const std::string &canned,
+                   const std::map<std::string, std::string> &grants) {
   std::string id = XmlEscape(owner);
+  std::string body;
+  if (!grants.empty()) {
+    for (const auto &kv : grants) {
+      std::stringstream ss(kv.second);
+      std::string item;
+      while (std::getline(ss, item, ',')) {
+        size_t a = 0;
+        while (a < item.size() && item[a] == ' ')
+          a++;
+        if (a)
+          item.erase(0, a);
+        if (!item.empty())
+          body += GrantXml(item, PermName(kv.first));
+      }
+    }
+  } else {
+    body = GrantXml("id=" + owner, "FULL_CONTROL");
+    const std::string all = "uri=http://acs.amazonaws.com/groups/global/AllUsers";
+    const std::string auth = "uri=http://acs.amazonaws.com/groups/global/AuthenticatedUsers";
+    if (canned == "public-read" || canned == "public-read-write")
+      body += GrantXml(all, "READ");
+    if (canned == "public-read-write")
+      body += GrantXml(all, "WRITE");
+    if (canned == "authenticated-read")
+      body += GrantXml(auth, "READ");
+  }
   return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
          "<AccessControlPolicy><Owner><ID>" + id + "</ID><DisplayName>" + id +
-         "</DisplayName></Owner><AccessControlList><Grant>"
-         "<Grantee xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" "
-         "xsi:type=\"CanonicalUser\"><ID>" + id + "</ID><DisplayName>" + id +
-         "</DisplayName></Grantee><Permission>FULL_CONTROL</Permission></Grant>"
+         "</DisplayName></Owner><AccessControlList>" + body +
          "</AccessControlList></AccessControlPolicy>\n";
 }
 

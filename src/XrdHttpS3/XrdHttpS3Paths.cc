@@ -173,4 +173,15 @@ std::string UploadPartFile(const Config &cfg, const std::string &user,
   return JoinPath(JoinPath(UploadDir(cfg, user, uploadId), "parts"), part);
 }
 
+std::string BucketDoc(const Config &cfg, const std::string &user, const std::string &bucket,
+                      const std::string &kind) {
+  return JoinPath(JoinPath(JoinPath(JoinPath(UserMeta(cfg, user), "docs"), bucket), kind),
+                  "body");
+}
+
+std::string ObjectTags(const Config &cfg, const std::string &user, const std::string &bucket,
+                       const std::string &key) {
+  return ObjectRecord(cfg, user, bucket, key) + ".tags";
+}
+
 }

@@ -348,6 +348,19 @@ std::string SignatureHex(const std::string &secret, const std::string &amzDate,
                    static_cast<unsigned int>(raw.size()));
 }
 
+std::string PolicySignature(const std::string &secret, const std::string &amzDate,
+                            const std::string &region, const std::string &policy) {
+  std::string date = amzDate.size() >= 8 ? amzDate.substr(0, 8) : amzDate;
+  std::string kSecret = "AWS4" + secret;
+  std::string kDate = HmacRaw(kSecret, date);
+  std::string kRegion = HmacRaw(kDate, region);
+  std::string kService = HmacRaw(kRegion, "s3");
+  std::string kSigning = HmacRaw(kService, "aws4_request");
+  std::string raw = HmacRaw(kSigning, policy);
+  return HexLower(reinterpret_cast<const unsigned char *>(raw.data()),
+                   static_cast<unsigned int>(raw.size()));
+}
+
 AuthFail VerifySigV4(const VerifyInput &in, const std::string &secret,
                      std::string &detail) {
   ParsedAuth auth = ParseAuthorization(in.authorization);

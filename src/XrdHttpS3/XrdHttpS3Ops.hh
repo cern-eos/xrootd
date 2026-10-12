@@ -34,6 +34,8 @@ public:
 
   int Fail(XrdHttpExtReq &req, int http, const char *code, const std::string &message);
   int Dispatch(XrdHttpExtReq &req, const KeyRecord &key);
+  int Options(XrdHttpExtReq &req);
+  int PostObject(XrdHttpExtReq &req);
 
 private:
   int ListBuckets(XrdHttpExtReq &req, const KeyRecord &key);
@@ -67,7 +69,20 @@ private:
   int GetBucketLocation(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket);
   int GetAcl(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,
              const std::string &objKey, bool object);
+  int PutAcl(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,
+             const std::string &objKey, bool object);
   int RejectAclChange(XrdHttpExtReq &req);
+  void CollectAcl(const XrdHttpExtReq &req, std::string &canned,
+                  std::map<std::string, std::string> &grants);
+  int BucketDocOp(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,
+                  const std::string &kind);
+  int ObjectTagging(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,
+                    const std::string &objKey);
+  int HeadPart(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,
+               const std::string &objKey);
+  std::string WithCors(const XrdHttpExtReq &req, const std::string &hdr);
+  int Reply(XrdHttpExtReq &req, int code, const char *text, const char *hdr, const char *body,
+            long long len);
   // 1 on success. 0 or -1 when a response was already sent.
   int WriteObjectBytes(XrdHttpExtReq &req, const KeyRecord &key, const std::string &path,
                        const XrdSecEntity *who, std::string &etag);

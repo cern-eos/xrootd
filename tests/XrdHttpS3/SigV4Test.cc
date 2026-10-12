@@ -109,6 +109,12 @@ TEST(S3SigV4, PresignRoundTrip) {
   EXPECT_EQ(auth.accessKey, in.accessKey);
 }
 
+TEST(S3SigV4, PolicySignatureVector) {
+  EXPECT_EQ(PolicySignature("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "20130524T000000Z",
+                            "us-east-1", "policy-b64"),
+            "e7fb6a955df6984c973821e5b917d5c3e92a901194b69d7566b731dc2d662e9d");
+}
+
 TEST(S3SigV4, CanonicalQueryEncodesSlash) {
   EXPECT_EQ(CanonicalQuery("prefix=a/b&list-type=2"), "list-type=2&prefix=a%2Fb");
   EXPECT_EQ(CanonicalQuery("&list-type=2"), "list-type=2");

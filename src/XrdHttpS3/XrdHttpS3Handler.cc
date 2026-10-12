@@ -8,6 +8,7 @@
 #include "XrdSys/XrdSysError.hh"
 #include "XrdVersion.hh"
 
+#include <cctype>
 #include <cerrno>
 #include <cstring>
 #include <ctime>
@@ -63,15 +64,44 @@ int Handler::Init(const char *) {
   return 0;
 }
 
+bool FormPost(const XrdHttpReq &req) {
+  if (req.requestverb != "POST")
+    return false;
+  const std::string *ct = HeaderOf(req, "content-type");
+  if (!ct)
+    return false;
+  std::string low = *ct;
+  for (char &c : low)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return low.find("multipart/form-data") != std::string::npos;
+}
+
 bool Handler::Claim(const XrdHttpReq &req) const {
   if (!m_cfg.enabled)
     return false;
+  if (req.requestverb == "OPTIONS") {
+    const std::string *origin = HeaderOf(req, "origin");
+    return origin && !origin->empty();
+  }
+  if (FormPost(req))
+    return true;
   return HeaderAuth(req) || Presigned(req);
 }
 
 int Handler::ProcessReq(XrdHttpExtReq &req) {
   if (!m_cfg.enabled)
     return m_ops->Fail(req, 403, "AccessDenied", "S3 is switched off");
+
+  if (req.verb == "OPTIONS")
+    return m_ops->Options(req);
+  auto typeIt = req.headers.find("content-type");
+  if (req.verb == "POST" && typeIt != req.headers.end()) {
+    std::string low = typeIt->second;
+    for (char &c : low)
+      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (low.find("multipart/form-data") != std::string::npos)
+      return m_ops->PostObject(req);
+  }
 
   auto authIt = req.headers.find("authorization");
   bool headerAuth = authIt != req.headers.end() &&

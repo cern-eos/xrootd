@@ -33,6 +33,10 @@ std::string UploadMeta(const Config &cfg, const std::string &user,
                        const std::string &uploadId);
 std::string UploadPartFile(const Config &cfg, const std::string &user,
                            const std::string &uploadId, const std::string &part);
+std::string BucketDoc(const Config &cfg, const std::string &user, const std::string &bucket,
+                      const std::string &kind);
+std::string ObjectTags(const Config &cfg, const std::string &user, const std::string &bucket,
+                       const std::string &key);
 
 }
 

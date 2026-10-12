@@ -40,6 +40,9 @@ std::string CanonicalRequest(const std::string &method, const std::string &uri,
 std::string SignatureHex(const std::string &secret, const std::string &amzDate,
                          const std::string &region, const std::string &service,
                          const std::string &canonical);
+// HMAC of a browser POST policy. amzDate supplies the credential date.
+std::string PolicySignature(const std::string &secret, const std::string &amzDate,
+                            const std::string &region, const std::string &policy);
 
 enum class AuthFail {
   Ok = 0,

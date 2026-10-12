@@ -420,6 +420,13 @@ printf 'bbb' > "$ROOT/p2"
 code=$(call_s3 PUT "$PORT_ON" "/mybucket/hello-mp?partNumber=1&uploadId=${uid}" "@$ROOT/p1" "$ROOT/p1")
 expect_code "$code" 200 "UploadPart 1"
 etag1=$(awk 'BEGIN{IGNORECASE=1} /^[Ee][Tt][Aa][Gg]:/ {gsub(/[\r"]/,"",$2); print $2; exit}' "$ROOT/hdr")
+code=$(call_s3 HEAD "$PORT_ON" "/mybucket/hello-mp?partNumber=1&uploadId=${uid}" UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "HeadPart"
+if ! grep -q "$etag1" "$ROOT/hdr"; then
+  echo "HeadPart did not return the part ETag" >&2
+  cat "$ROOT/hdr" >&2
+  exit 1
+fi
 code=$(call_s3 PUT "$PORT_ON" "/mybucket/hello-mp?partNumber=2&uploadId=${uid}" "@$ROOT/p2" "$ROOT/p2")
 expect_code "$code" 200 "UploadPart 2"
 etag2=$(awk 'BEGIN{IGNORECASE=1} /^[Ee][Tt][Aa][Gg]:/ {gsub(/[\r"]/,"",$2); print $2; exit}' "$ROOT/hdr")
@@ -479,6 +486,239 @@ code=$(call_s3 GET "$PORT_ON" /mybucket/chunked.txt UNSIGNED-PAYLOAD "")
 expect_code "$code" 200 "GetObject chunked"
 if [ "$(cat "$ROOT/out")" != "hello" ]; then
   echo "chunked body mismatch [$(cat "$ROOT/out")]" >&2
+  exit 1
+fi
+
+printf '%s' '<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>GET</AllowedMethod><AllowedHeader>*</AllowedHeader><ExposeHeader>ETag</ExposeHeader><MaxAgeSeconds>3000</MaxAgeSeconds></CORSRule></CORSConfiguration>' > "$ROOT/cors.xml"
+corsmd5=$(openssl dgst -md5 -binary "$ROOT/cors.xml" | openssl base64 | tr -d '\n')
+sign PUT /mybucket cors "@$ROOT/cors.xml" "127.0.0.1:${PORT_ON}"
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' -X PUT \
+  -H "x-amz-date: $S3_DATE" -H "x-amz-content-sha256: $S3_HASH" \
+  -H "Authorization: $S3_AUTH" -H "Content-MD5: $corsmd5" \
+  --data-binary "@$ROOT/cors.xml" \
+  "http://127.0.0.1:${PORT_ON}/mybucket?cors")
+expect_code "$code" 200 "PutBucketCors"
+code=$(call_s3 GET "$PORT_ON" '/mybucket?cors' UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetBucketCors"
+if ! grep -q AllowedOrigin "$ROOT/out"; then
+  echo "GetBucketCors body mismatch" >&2
+  cat "$ROOT/out" >&2
+  exit 1
+fi
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' -X OPTIONS \
+  -H "Origin: https://example.com" -H "Access-Control-Request-Method: GET" \
+  "http://127.0.0.1:${PORT_ON}/mybucket/hello.txt")
+expect_code "$code" 200 "CORS preflight"
+if ! grep -qi 'Access-Control-Allow-Origin: \*' "$ROOT/hdr"; then
+  echo "preflight missing Access-Control-Allow-Origin" >&2
+  cat "$ROOT/hdr" >&2
+  exit 1
+fi
+sign GET /mybucket/hello.txt "" UNSIGNED-PAYLOAD "127.0.0.1:${PORT_ON}"
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' \
+  -H "x-amz-date: $S3_DATE" -H "x-amz-content-sha256: $S3_HASH" \
+  -H "Authorization: $S3_AUTH" -H "Origin: https://example.com" \
+  "http://127.0.0.1:${PORT_ON}/mybucket/hello.txt")
+expect_code "$code" 200 "GetObject with CORS"
+if ! grep -qi 'Access-Control-Allow-Origin' "$ROOT/hdr"; then
+  echo "GetObject missing Access-Control-Allow-Origin" >&2
+  cat "$ROOT/hdr" >&2
+  exit 1
+fi
+
+printf '%s' '<Tagging><TagSet><Tag><Key>color</Key><Value>blue</Value></Tag></TagSet></Tagging>' > "$ROOT/tags.xml"
+tagmd5=$(openssl dgst -md5 -binary "$ROOT/tags.xml" | openssl base64 | tr -d '\n')
+sign PUT /mybucket/hello.txt tagging "@$ROOT/tags.xml" "127.0.0.1:${PORT_ON}"
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' -X PUT \
+  -H "x-amz-date: $S3_DATE" -H "x-amz-content-sha256: $S3_HASH" \
+  -H "Authorization: $S3_AUTH" -H "Content-MD5: $tagmd5" \
+  --data-binary "@$ROOT/tags.xml" \
+  "http://127.0.0.1:${PORT_ON}/mybucket/hello.txt?tagging")
+expect_code "$code" 200 "PutObjectTagging"
+code=$(call_s3 GET "$PORT_ON" '/mybucket/hello.txt?tagging' UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetObjectTagging"
+if ! grep -q blue "$ROOT/out"; then
+  echo "object tags mismatch" >&2
+  cat "$ROOT/out" >&2
+  exit 1
+fi
+sign PUT /mybucket tagging "@$ROOT/tags.xml" "127.0.0.1:${PORT_ON}"
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' -X PUT \
+  -H "x-amz-date: $S3_DATE" -H "x-amz-content-sha256: $S3_HASH" \
+  -H "Authorization: $S3_AUTH" -H "Content-MD5: $tagmd5" \
+  --data-binary "@$ROOT/tags.xml" \
+  "http://127.0.0.1:${PORT_ON}/mybucket?tagging")
+expect_code "$code" 204 "PutBucketTagging"
+code=$(call_s3 GET "$PORT_ON" '/mybucket?tagging' UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetBucketTagging"
+if ! grep -q blue "$ROOT/out"; then
+  echo "bucket tags mismatch" >&2
+  cat "$ROOT/out" >&2
+  exit 1
+fi
+
+printf '%s' '<Policy>{"Version":"2012-10-17"}</Policy>' > "$ROOT/policy.xml"
+polmd5=$(openssl dgst -md5 -binary "$ROOT/policy.xml" | openssl base64 | tr -d '\n')
+sign PUT /mybucket policy "@$ROOT/policy.xml" "127.0.0.1:${PORT_ON}"
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' -X PUT \
+  -H "x-amz-date: $S3_DATE" -H "x-amz-content-sha256: $S3_HASH" \
+  -H "Authorization: $S3_AUTH" -H "Content-MD5: $polmd5" \
+  --data-binary "@$ROOT/policy.xml" \
+  "http://127.0.0.1:${PORT_ON}/mybucket?policy")
+expect_code "$code" 200 "PutBucketPolicy"
+code=$(call_s3 GET "$PORT_ON" '/mybucket?policy' UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetBucketPolicy"
+if ! grep -q 2012-10-17 "$ROOT/out"; then
+  echo "bucket policy mismatch" >&2
+  cat "$ROOT/out" >&2
+  exit 1
+fi
+code=$(call_s3 GET "$PORT_ON" '/mybucket?notification' UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetBucketNotification"
+if ! grep -q NotificationConfiguration "$ROOT/out"; then
+  echo "notification default missing" >&2
+  cat "$ROOT/out" >&2
+  exit 1
+fi
+code=$(call_s3 GET "$PORT_ON" '/mybucket?requestPayment' UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetBucketRequestPayment"
+if ! grep -q BucketOwner "$ROOT/out"; then
+  echo "requestPayment default missing" >&2
+  cat "$ROOT/out" >&2
+  exit 1
+fi
+
+SIGNED=$("$S3SIGN" "$SECRET" "$AKID" us-east-1 PUT "127.0.0.1:${PORT_ON}" \
+  /mybucket/acl.txt "" "@$ROOT/body.txt" x-amz-acl public-read)
+printf '%s\n' "$SIGNED" > "$ROOT/sig"
+load_sig
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' -X PUT \
+  -H "x-amz-date: $S3_DATE" -H "x-amz-content-sha256: $S3_HASH" \
+  -H "Authorization: $S3_AUTH" -H "x-amz-acl: public-read" \
+  --data-binary "@$ROOT/body.txt" \
+  "http://127.0.0.1:${PORT_ON}/mybucket/acl.txt")
+expect_code "$code" 200 "PutObject public-read"
+code=$(call_s3 GET "$PORT_ON" '/mybucket/acl.txt?acl' UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetObjectAcl public-read"
+if ! grep -q AllUsers "$ROOT/out"; then
+  echo "public-read ACL missing AllUsers" >&2
+  cat "$ROOT/out" >&2
+  exit 1
+fi
+
+CHUNKHASH=$(printf 'hello' | openssl dgst -sha256 | awk '{print $NF}')
+sign PUT /mybucket/httpchunk.txt "" "$CHUNKHASH" "127.0.0.1:${PORT_ON}"
+status=$(python3 - "$PORT_ON" "$S3_DATE" "$S3_HASH" "$S3_AUTH" "$ROOT/httpchunk.resp" << 'PY'
+import socket, sys
+port, date, digest, auth, path = sys.argv[1:]
+req = (
+    "PUT /mybucket/httpchunk.txt HTTP/1.1\r\n"
+    "Host: 127.0.0.1:%s\r\n"
+    "Transfer-Encoding: chunked\r\n"
+    "x-amz-date: %s\r\n"
+    "x-amz-content-sha256: %s\r\n"
+    "Authorization: %s\r\n"
+    "Connection: close\r\n"
+    "\r\n"
+    "5\r\nhello\r\n0\r\n\r\n"
+) % (port, date, digest, auth)
+sock = socket.create_connection(("127.0.0.1", int(port)), 5)
+sock.sendall(req.encode())
+sock.settimeout(5)
+data = b""
+while True:
+    try:
+        chunk = sock.recv(4096)
+    except socket.timeout:
+        break
+    if not chunk:
+        break
+    data += chunk
+    if b"\r\n\r\n" in data and len(data) > 200:
+        break
+open(path, "wb").write(data)
+line = data.split(b"\r\n", 1)[0].decode()
+sys.stdout.write(line)
+PY
+)
+code=$(printf '%s' "$status" | awk '{print $2}')
+expect_code "$code" 200 "HTTP chunked PutObject"
+code=$(call_s3 GET "$PORT_ON" /mybucket/httpchunk.txt UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetObject http chunked"
+if [ "$(cat "$ROOT/out")" != "hello" ]; then
+  echo "http chunked body mismatch [$(cat "$ROOT/out")]" >&2
+  exit 1
+fi
+
+printf '%s' 'hello-form' > "$ROOT/form-file"
+AMZ=$(date -u +%Y%m%dT%H%M%SZ)
+policy='{"expiration":"2099-01-01T00:00:00Z","conditions":[{"bucket":"mybucket"},{"key":"form.txt"}]}'
+b64=$(printf '%s' "$policy" | openssl base64 | tr -d '\n')
+psig=$("$S3SIGN" policy "$SECRET" us-east-1 "$AMZ" "$b64")
+cred="${AKID}/${AMZ:0:8}/us-east-1/s3/aws4_request"
+{
+  printf -- '--Bnd\r\nContent-Disposition: form-data; name="key"\r\n\r\nform.txt\r\n'
+  printf -- '--Bnd\r\nContent-Disposition: form-data; name="policy"\r\n\r\n%s\r\n' "$b64"
+  printf -- '--Bnd\r\nContent-Disposition: form-data; name="x-amz-algorithm"\r\n\r\nAWS4-HMAC-SHA256\r\n'
+  printf -- '--Bnd\r\nContent-Disposition: form-data; name="x-amz-credential"\r\n\r\n%s\r\n' "$cred"
+  printf -- '--Bnd\r\nContent-Disposition: form-data; name="x-amz-date"\r\n\r\n%s\r\n' "$AMZ"
+  printf -- '--Bnd\r\nContent-Disposition: form-data; name="x-amz-signature"\r\n\r\n%s\r\n' "$psig"
+  printf -- '--Bnd\r\nContent-Disposition: form-data; name="file"; filename="form.txt"\r\nContent-Type: text/plain\r\n\r\nhello-form\r\n'
+  printf -- '--Bnd--\r\n'
+} > "$ROOT/form.body"
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' -X POST \
+  -H "Content-Type: multipart/form-data; boundary=Bnd" \
+  --data-binary "@$ROOT/form.body" \
+  "http://127.0.0.1:${PORT_ON}/mybucket")
+expect_code "$code" 204 "POST form upload"
+code=$(call_s3 GET "$PORT_ON" /mybucket/form.txt UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetObject form"
+if [ "$(cat "$ROOT/out")" != "hello-form" ]; then
+  echo "form upload body mismatch [$(cat "$ROOT/out")]" >&2
+  exit 1
+fi
+
+printf 'hello' > "$ROOT/chunk-payload"
+: > "$ROOT/empty"
+SIGNED=$("$S3SIGN" "$SECRET" "$AKID" us-east-1 PUT "127.0.0.1:${PORT_ON}" \
+  /mybucket/trailer.txt "" STREAMING-UNSIGNED-PAYLOAD-TRAILER \
+  x-amz-decoded-content-length 5)
+printf '%s\n' "$SIGNED" > "$ROOT/sig"
+load_sig
+printf '5\r\nhello\r\n0\r\nx-amz-checksum-crc32:AAAA\r\n\r\n' > "$ROOT/framed"
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' -X PUT \
+  -H "x-amz-date: $S3_DATE" -H "x-amz-content-sha256: $S3_HASH" \
+  -H "Authorization: $S3_AUTH" -H "x-amz-decoded-content-length: 5" \
+  --data-binary "@$ROOT/framed" \
+  "http://127.0.0.1:${PORT_ON}/mybucket/trailer.txt")
+expect_code "$code" 200 "unsigned trailer PutObject"
+code=$(call_s3 GET "$PORT_ON" /mybucket/trailer.txt UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetObject trailer"
+if [ "$(cat "$ROOT/out")" != "hello" ]; then
+  echo "trailer body mismatch [$(cat "$ROOT/out")]" >&2
+  exit 1
+fi
+
+SIGNED=$("$S3SIGN" "$SECRET" "$AKID" us-east-1 PUT "127.0.0.1:${PORT_ON}" \
+  /mybucket/signed-trailer.txt "" STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER \
+  x-amz-decoded-content-length 5)
+printf '%s\n' "$SIGNED" > "$ROOT/sig"
+load_sig
+SEED=${S3_AUTH##*Signature=}
+SIG1=$("$S3SIGN" chunk "$SECRET" us-east-1 "$S3_DATE" "$SEED" "$ROOT/chunk-payload")
+SIG0=$("$S3SIGN" chunk "$SECRET" us-east-1 "$S3_DATE" "$SIG1" "$ROOT/empty")
+printf '5;chunk-signature=%s\r\nhello\r\n0;chunk-signature=%s\r\nx-amz-checksum-crc32:AAAA\r\n\r\n' \
+  "$SIG1" "$SIG0" > "$ROOT/framed"
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' -X PUT \
+  -H "x-amz-date: $S3_DATE" -H "x-amz-content-sha256: $S3_HASH" \
+  -H "Authorization: $S3_AUTH" -H "x-amz-decoded-content-length: 5" \
+  --data-binary "@$ROOT/framed" \
+  "http://127.0.0.1:${PORT_ON}/mybucket/signed-trailer.txt")
+expect_code "$code" 200 "signed trailer PutObject"
+code=$(call_s3 GET "$PORT_ON" /mybucket/signed-trailer.txt UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetObject signed trailer"
+if [ "$(cat "$ROOT/out")" != "hello" ]; then
+  echo "signed trailer body mismatch [$(cat "$ROOT/out")]" >&2
   exit 1
 fi
 

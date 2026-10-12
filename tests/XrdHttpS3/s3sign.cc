@@ -35,6 +35,10 @@ int main(int argc, char **argv) {
               << '\n';
     return 0;
   }
+  if (argc == 6 && std::string(argv[1]) == "policy") {
+    std::cout << XrdHttpS3::PolicySignature(argv[2], argv[4], argv[3], argv[5]) << '\n';
+    return 0;
+  }
   if (argc == 9 && std::string(argv[1]) == "presign") {
     XrdHttpS3::SignInput in;
     in.secret = argv[2];
@@ -52,7 +56,8 @@ int main(int argc, char **argv) {
   if (argc < 9 || ((argc - 9) % 2) != 0) {
     std::cerr << "usage: s3sign secret access-key region method host uri query hash-or-@file [header value]...\n"
                  "       s3sign presign secret access-key region method host uri expires\n"
-                 "       s3sign chunk secret region amz-date previous-signature payload-file\n";
+                 "       s3sign chunk secret region amz-date previous-signature payload-file\n"
+                 "       s3sign policy secret region amz-date policy-b64\n";
     return 2;
   }
   XrdHttpS3::SignInput in;

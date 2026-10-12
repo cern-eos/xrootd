@@ -32,12 +32,15 @@ struct BucketRecord {
   long long created{0};
   std::string acl{"private"};
   std::string region;
+  std::map<std::string, std::string> grants;
 };
 
 struct ObjectMeta {
   std::string etag;
   std::string contentType{"application/octet-stream"};
+  std::string acl{"private"};
   std::map<std::string, std::string> user;
+  std::map<std::string, std::string> grants;
 };
 
 class Meta {

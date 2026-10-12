@@ -225,13 +225,16 @@ struct Wire {
   XrdHttpExtReq &req;
   long long left;
   std::string buf;
-  explicit Wire(XrdHttpExtReq &r) : req(r), left(r.length) {}
+  explicit Wire(XrdHttpExtReq &r, bool unbounded = false)
+      : req(r), left(unbounded ? (1LL << 62) : r.length) {}
   bool Pull() {
     if (left <= 0)
       return false;
     char *data = nullptr;
     int want = static_cast<int>(std::min<long long>(left, 65536));
-    int n = req.BuffgetData(want, &data, true);
+    int n = req.BuffgetData(want, &data, false);
+    if (n <= 0)
+      n = req.BuffgetData(want, &data, true);
     if (n <= 0)
       return false;
     buf.append(data, static_cast<size_t>(n));
@@ -280,7 +283,13 @@ int WriteAt(XrdSfsFile *fh, XrdSfsFileOffset &off, const char *data, int n) {
 int Ops::WriteObjectBytes(XrdHttpExtReq &req, const KeyRecord &key, const std::string &path,
                           const XrdSecEntity *who, std::string &etag) {
   const std::string *hash = Hdr(req, "x-amz-content-sha256");
-  bool streaming = hash && *hash == "STREAMING-AWS4-HMAC-SHA256-PAYLOAD";
+  bool signedTrailer = hash && *hash == "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER";
+  bool unsignedTrailer = hash && *hash == "STREAMING-UNSIGNED-PAYLOAD-TRAILER";
+  bool streaming = unsignedTrailer || signedTrailer ||
+                   (hash && *hash == "STREAMING-AWS4-HMAC-SHA256-PAYLOAD");
+  bool httpChunked = false;
+  if (const std::string *te = Hdr(req, "transfer-encoding"))
+    httpChunked = te->find("chunked") != std::string::npos;
   OwnedFile file;
   int err = 0;
   int flags = SFS_O_CREAT | SFS_O_TRUNC | SFS_O_WRONLY | SFS_O_MKPTH;
@@ -305,7 +314,58 @@ int Ops::WriteObjectBytes(XrdHttpExtReq &req, const KeyRecord &key, const std::s
   std::string message = "The request body ended early";
   bool hangup = true;
 
+  auto drainTrailers = [](Wire &wire) {
+    std::string extra;
+    while (wire.Line(extra)) {
+      if (extra.empty())
+        break;
+    }
+  };
+
   if (!streaming) {
+    if (httpChunked) {
+      Wire wire(req, true);
+      while (!bad) {
+        std::string line;
+        if (!wire.Line(line)) {
+          bad = true;
+          break;
+        }
+        size_t semi = line.find(';');
+        std::string sizeText = semi == std::string::npos ? line : line.substr(0, semi);
+        char *end = nullptr;
+        unsigned long sz = std::strtoul(sizeText.c_str(), &end, 16);
+        if (!end || *end || sz > 16 * 1024 * 1024) {
+          bad = true;
+          code = "InvalidArgument";
+          message = "Chunk size is not valid";
+          hangup = false;
+          break;
+        }
+        std::string data;
+        if (sz && !wire.Take(static_cast<size_t>(sz), data)) {
+          bad = true;
+          break;
+        }
+        std::string crlf;
+        if (!wire.Take(2, crlf) || crlf != "\r\n") {
+          bad = true;
+          break;
+        }
+        if (sz == 0)
+          break;
+        if (WriteAt(file.fh, off, data.data(), static_cast<int>(data.size())) != 0) {
+          bad = true;
+          http = 500;
+          code = "InternalError";
+          message = "Could not write the object";
+          break;
+        }
+        EVP_DigestUpdate(sha, data.data(), data.size());
+        EVP_DigestUpdate(md5, data.data(), data.size());
+        decoded += static_cast<long long>(data.size());
+      }
+    } else {
     long long left = req.length;
     while (left > 0) {
       char *data = nullptr;
@@ -326,6 +386,7 @@ int Ops::WriteObjectBytes(XrdHttpExtReq &req, const KeyRecord &key, const std::s
       EVP_DigestUpdate(md5, data, static_cast<size_t>(n));
       left -= n;
       decoded += n;
+    }
     }
   } else {
     const std::string *amz = Hdr(req, "x-amz-date");
@@ -353,13 +414,16 @@ int Ops::WriteObjectBytes(XrdHttpExtReq &req, const KeyRecord &key, const std::s
         std::string marker = "chunk-signature=";
         size_t sp = line.find(marker);
         if (sp == std::string::npos) {
-          bad = true;
-          http = 403;
-          code = "SignatureDoesNotMatch";
-          message = "aws-chunked body is missing a chunk signature";
-          break;
+          if (!unsignedTrailer) {
+            bad = true;
+            http = 403;
+            code = "SignatureDoesNotMatch";
+            message = "aws-chunked body is missing a chunk signature";
+            break;
+          }
+        } else {
+          sig = line.substr(sp + marker.size());
         }
-        sig = line.substr(sp + marker.size());
         char *end = nullptr;
         unsigned long sz = std::strtoul(sizeText.c_str(), &end, 16);
         if (!end || *end || sz > 16 * 1024 * 1024) {
@@ -370,29 +434,35 @@ int Ops::WriteObjectBytes(XrdHttpExtReq &req, const KeyRecord &key, const std::s
           break;
         }
         std::string data;
-        if (sz && !wire.Take(static_cast<size_t>(sz), data)) {
-          bad = true;
+        if (sz) {
+          if (!wire.Take(static_cast<size_t>(sz), data)) {
+            bad = true;
+            break;
+          }
+          std::string crlf;
+          if (!wire.Take(2, crlf) || crlf != "\r\n") {
+            bad = true;
+            break;
+          }
+        }
+        if (!unsignedTrailer) {
+          std::string expectSig =
+              ChunkSignature(key.secret, *amz, m_cfg.region, previous, data);
+          for (char &c : sig)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+          if (!ConstantTimeEqual(expectSig, sig)) {
+            bad = true;
+            http = 403;
+            code = "SignatureDoesNotMatch";
+            message = "aws-chunked chunk signature does not match";
+            break;
+          }
+          previous = sig;
+        }
+        if (sz == 0) {
+          drainTrailers(wire);
           break;
         }
-        std::string crlf;
-        if (!wire.Take(2, crlf) || crlf != "\r\n") {
-          bad = true;
-          break;
-        }
-        std::string expectSig =
-            ChunkSignature(key.secret, *amz, m_cfg.region, previous, data);
-        for (char &c : sig)
-          c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        if (!ConstantTimeEqual(expectSig, sig)) {
-          bad = true;
-          http = 403;
-          code = "SignatureDoesNotMatch";
-          message = "aws-chunked chunk signature does not match";
-          break;
-        }
-        previous = sig;
-        if (sz == 0)
-          break;
         if (WriteAt(file.fh, off, data.data(), static_cast<int>(data.size())) != 0) {
           bad = true;
           http = 500;
@@ -544,15 +614,18 @@ int Ops::CopyObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string 
     const std::string *ctype = Hdr(req, "content-type");
     meta.contentType = CleanType(ctype ? *ctype : "");
     meta.user = replaceUser;
+    CollectAcl(req, meta.acl, meta.grants);
   } else {
     meta.contentType = srcMeta.contentType;
     meta.user = srcMeta.user;
+    meta.acl = srcMeta.acl;
+    meta.grants = srcMeta.grants;
   }
   meta.etag = etag;
   m_meta.WriteObjectMeta(key.user, bucket, objKey, meta, err);
   std::string body = CopyObjectXml(etag, time(nullptr));
   std::string hdr = "Content-Type: application/xml";
-  if (req.SendSimpleResp(200, nullptr, hdr.c_str(), body.data(),
+  if (Reply(req, 200, nullptr, hdr.c_str(), body.data(),
                          static_cast<long long>(body.size())) != 0)
     return -1;
   return 0;
@@ -611,7 +684,7 @@ int Ops::DeleteObjects(XrdHttpExtReq &req, const KeyRecord &key, const std::stri
   }
   std::string xml = DeleteObjectsXml(deleted, errors, codes, messages);
   std::string hdr = "Content-Type: application/xml";
-  if (req.SendSimpleResp(200, nullptr, hdr.c_str(), xml.data(),
+  if (Reply(req, 200, nullptr, hdr.c_str(), xml.data(),
                          static_cast<long long>(xml.size())) != 0)
     return -1;
   return 0;
@@ -646,7 +719,7 @@ int Ops::CreateMultipart(XrdHttpExtReq &req, const KeyRecord &key, const std::st
     return Fail(req, 500, "InternalError", "Could not create the multipart upload");
   std::string body = CreateMultipartXml(bucket, objKey, id);
   std::string hdr = "Content-Type: application/xml";
-  if (req.SendSimpleResp(200, nullptr, hdr.c_str(), body.data(),
+  if (Reply(req, 200, nullptr, hdr.c_str(), body.data(),
                          static_cast<long long>(body.size())) != 0)
     return -1;
   return 0;
@@ -681,7 +754,7 @@ int Ops::UploadPart(XrdHttpExtReq &req, const KeyRecord &key, const std::string 
   if (req.length < 0)
     return Fail(req, 411, "MissingContentLength", "Content-Length is required");
   if (WantsContinue(req)) {
-    if (req.SendSimpleResp(100, nullptr, nullptr, nullptr, 0) != 0)
+    if (Reply(req, 100, nullptr, nullptr, nullptr, 0) != 0)
       return -1;
   }
   std::string partName = std::to_string(part);
@@ -695,7 +768,7 @@ int Ops::UploadPart(XrdHttpExtReq &req, const KeyRecord &key, const std::string 
     return Fail(req, 500, "InternalError", "Could not record the part etag");
   }
   std::string hdr = "ETag: \"" + etag + "\"";
-  if (req.SendSimpleResp(200, nullptr, hdr.c_str(), nullptr, 0) != 0)
+  if (Reply(req, 200, nullptr, hdr.c_str(), nullptr, 0) != 0)
     return -1;
   return 0;
 }
@@ -836,7 +909,7 @@ int Ops::UploadPartCopy(XrdHttpExtReq &req, const KeyRecord &key, const std::str
                      "<LastModified>" + IsoDate(time(nullptr)) + "</LastModified><ETag>&quot;" +
                      XmlEscape(etag) + "&quot;</ETag></CopyPartResult>\n";
   std::string hdr = "ETag: \"" + etag + "\"\r\nContent-Type: application/xml";
-  if (req.SendSimpleResp(200, nullptr, hdr.c_str(), body.data(),
+  if (Reply(req, 200, nullptr, hdr.c_str(), body.data(),
                          static_cast<long long>(body.size())) != 0)
     return -1;
   return 0;
@@ -982,7 +1055,7 @@ int Ops::CompleteMultipart(XrdHttpExtReq &req, const KeyRecord &key, const std::
   AbortMultipart(req, key, bucket, objKey);
   std::string body = CompleteMultipartXml(bucket, objKey, etag);
   std::string hdr = "Content-Type: application/xml";
-  if (req.SendSimpleResp(200, nullptr, hdr.c_str(), body.data(),
+  if (Reply(req, 200, nullptr, hdr.c_str(), body.data(),
                          static_cast<long long>(body.size())) != 0)
     return -1;
   return 0;
@@ -1018,7 +1091,7 @@ int Ops::AbortMultipart(XrdHttpExtReq &req, const KeyRecord &key, const std::str
     return found ? 0 : 0;
   if (!found)
     return Fail(req, 404, "NoSuchUpload", "The specified upload does not exist");
-  if (req.SendSimpleResp(204, nullptr, nullptr, nullptr, 0) != 0)
+  if (Reply(req, 204, nullptr, nullptr, nullptr, 0) != 0)
     return -1;
   return 0;
 }
@@ -1099,7 +1172,7 @@ int Ops::ListParts(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
     all.resize(static_cast<size_t>(maxParts));
   std::string body = ListPartsXml(bucket, objKey, upload, maxParts, marker, all, truncated);
   std::string hdr = "Content-Type: application/xml";
-  if (req.SendSimpleResp(200, nullptr, hdr.c_str(), body.data(),
+  if (Reply(req, 200, nullptr, hdr.c_str(), body.data(),
                          static_cast<long long>(body.size())) != 0)
     return -1;
   return 0;
@@ -1156,7 +1229,7 @@ int Ops::ListMultipartUploads(XrdHttpExtReq &req, const KeyRecord &key,
     all.resize(static_cast<size_t>(maxUploads));
   std::string body = ListUploadsXml(bucket, prefix, maxUploads, all, truncated);
   std::string hdr = "Content-Type: application/xml";
-  if (req.SendSimpleResp(200, nullptr, hdr.c_str(), body.data(),
+  if (Reply(req, 200, nullptr, hdr.c_str(), body.data(),
                          static_cast<long long>(body.size())) != 0)
     return -1;
   return 0;
@@ -1170,7 +1243,7 @@ int Ops::GetBucketLocation(XrdHttpExtReq &req, const KeyRecord &key, const std::
   std::string region = rec.region.empty() ? m_cfg.region : rec.region;
   std::string body = LocationXml(region);
   std::string hdr = "Content-Type: application/xml";
-  if (req.SendSimpleResp(200, nullptr, hdr.c_str(), body.data(),
+  if (Reply(req, 200, nullptr, hdr.c_str(), body.data(),
                          static_cast<long long>(body.size())) != 0)
     return -1;
   return 0;
