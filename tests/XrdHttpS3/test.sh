@@ -192,6 +192,48 @@ RANGE_DATE=$S3_DATE
 RANGE_HASH=$S3_HASH
 RANGE_AUTH=$S3_AUTH
 
+SIGNED=$("$S3SIGN" "$SECRET" "$AKID" us-east-1 PUT "127.0.0.1:${PORT_ON}" \
+  /mybucket/meta.txt "" "@$ROOT/body.txt" x-amz-meta-color blue)
+printf '%s\n' "$SIGNED" > "$ROOT/sig"
+load_sig
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' -X PUT \
+  -H "x-amz-date: $S3_DATE" -H "x-amz-content-sha256: $S3_HASH" \
+  -H "Authorization: $S3_AUTH" -H "x-amz-meta-color: blue" \
+  --data-binary "@$ROOT/body.txt" \
+  "http://127.0.0.1:${PORT_ON}/mybucket/meta.txt")
+expect_code "$code" 200 "PutObject user metadata"
+meta_etag=$(awk 'BEGIN{IGNORECASE=1} /^[Ee][Tt][Aa][Gg]:/ {gsub(/[\r"]/,"",$2); print $2; exit}' "$ROOT/hdr")
+code=$(call_s3 HEAD "$PORT_ON" /mybucket/meta.txt UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "HeadObject user metadata"
+if ! grep -q 'x-amz-meta-color: blue' "$ROOT/hdr"; then
+  echo "HeadObject did not return x-amz-meta-color" >&2
+  cat "$ROOT/hdr" >&2
+  exit 1
+fi
+code=$(call_s3 GET "$PORT_ON" /mybucket/meta.txt UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetObject user metadata"
+load_sig
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' \
+  -H "x-amz-date: $S3_DATE" -H "x-amz-content-sha256: $S3_HASH" \
+  -H "Authorization: $S3_AUTH" -H "If-None-Match: \"${meta_etag}\"" \
+  "http://127.0.0.1:${PORT_ON}/mybucket/meta.txt")
+expect_code "$code" 304 "GetObject If-None-Match"
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' \
+  -H "x-amz-date: $S3_DATE" -H "x-amz-content-sha256: $S3_HASH" \
+  -H "Authorization: $S3_AUTH" -H "If-Match: \"deadbeef\"" \
+  "http://127.0.0.1:${PORT_ON}/mybucket/meta.txt")
+expect_code "$code" 412 "GetObject If-Match"
+SIGNED=$("$S3SIGN" "$SECRET" "$AKID" us-east-1 PUT "127.0.0.1:${PORT_ON}" \
+  /mybucket/meta.txt "" "@$ROOT/body.txt")
+printf '%s\n' "$SIGNED" > "$ROOT/sig"
+load_sig
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' -X PUT \
+  -H "x-amz-date: $S3_DATE" -H "x-amz-content-sha256: $S3_HASH" \
+  -H "Authorization: $S3_AUTH" -H "If-None-Match: *" \
+  --data-binary "@$ROOT/body.txt" \
+  "http://127.0.0.1:${PORT_ON}/mybucket/meta.txt")
+expect_code "$code" 412 "PutObject If-None-Match"
+
 code=$(call_s3 HEAD "$PORT_ON" /mybucket/hello.txt UNSIGNED-PAYLOAD "")
 expect_code "$code" 200 "HeadObject"
 

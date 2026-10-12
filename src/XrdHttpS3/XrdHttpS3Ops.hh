@@ -3,12 +3,30 @@
 
 #include "XrdHttpS3Meta.hh"
 
+#include <ctime>
+#include <map>
 #include <string>
 
 class XrdHttpExtReq;
 class XrdSysError;
 
 namespace XrdHttpS3 {
+
+// 0 when the metadata fits, 1 when a name or value is not usable, 2 when it exceeds 2 KiB.
+int CollectUserMeta(const std::map<std::string, std::string> &headers,
+                    std::map<std::string, std::string> &user);
+std::string UserMetaHeaders(const std::map<std::string, std::string> &user);
+
+enum class ReadCond { Ok, NotModified, Failed };
+
+ReadCond EvalReadCond(const std::map<std::string, std::string> &headers, const std::string &etag,
+                      time_t mtime, const char *ifMatch = "if-match",
+                      const char *ifNone = "if-none-match",
+                      const char *ifUnmod = "if-unmodified-since",
+                      const char *ifMod = "if-modified-since");
+// 0 to proceed, 400 when If-None-Match is not "*", 412 when the precondition fails.
+int EvalWriteCond(const std::map<std::string, std::string> &headers, bool exists,
+                  const std::string &etag);
 
 class Ops {
 public:

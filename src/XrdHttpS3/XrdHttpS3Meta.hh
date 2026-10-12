@@ -37,6 +37,7 @@ struct BucketRecord {
 struct ObjectMeta {
   std::string etag;
   std::string contentType{"application/octet-stream"};
+  std::map<std::string, std::string> user;
 };
 
 class Meta {

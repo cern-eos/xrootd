@@ -234,6 +234,10 @@ int Meta::ReadObjectMeta(const std::string &user, const std::string &bucket,
       out.etag = props["etag"];
     if (!props["content-type"].empty())
       out.contentType = props["content-type"];
+    for (const auto &kv : props) {
+      if (kv.first.compare(0, 5, "user.") == 0 && kv.first.size() > 5)
+        out.user[kv.first.substr(5)] = kv.second;
+    }
     return 0;
   }
   std::string etag;
@@ -252,6 +256,11 @@ int Meta::WriteObjectMeta(const std::string &user, const std::string &bucket,
   std::map<std::string, std::string> props;
   props["etag"] = meta.etag;
   props["content-type"] = meta.contentType;
+  for (const auto &kv : meta.user) {
+    if (kv.second.find('\n') != std::string::npos || kv.second.find('\r') != std::string::npos)
+      continue;
+    props["user." + kv.first] = kv.second;
+  }
   if (WriteProps(ObjectRecord(m_cfg, user, bucket, key), MetaWho(), props, 0644, err) != 0)
     return -1;
   int xerr = 0;

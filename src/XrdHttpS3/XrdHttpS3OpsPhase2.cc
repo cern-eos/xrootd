@@ -486,6 +486,22 @@ int Ops::CopyObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string 
   int err = 0;
   if (m_meta.Store().Stat(srcPath, id.get(), st, err) != 0 || !S_ISREG(st.st_mode))
     return Fail(req, 404, "NoSuchKey", "The source key does not exist");
+  ObjectMeta srcMeta;
+  m_meta.ReadObjectMeta(key.user, srcBucket, srcKey, srcMeta);
+  if (EvalReadCond(req.headers, srcMeta.etag, st.st_mtime, "x-amz-copy-source-if-match",
+                   "x-amz-copy-source-if-none-match", "x-amz-copy-source-if-unmodified-since",
+                   "x-amz-copy-source-if-modified-since") != ReadCond::Ok)
+    return Fail(req, 412, "PreconditionFailed",
+                "At least one of the preconditions you specified did not hold");
+  const std::string *dir = Hdr(req, "x-amz-metadata-directive");
+  bool replace = dir && *dir == "REPLACE";
+  std::map<std::string, std::string> replaceUser;
+  if (replace) {
+    int metaRc = CollectUserMeta(req.headers, replaceUser);
+    if (metaRc != 0)
+      return Fail(req, 400, metaRc == 2 ? "MetadataTooLarge" : "InvalidArgument",
+                  "Replacement user metadata is not valid");
+  }
 
   OwnedFile in;
   OwnedFile out;
@@ -530,14 +546,13 @@ int Ops::CopyObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string 
   }
   std::string etag = HexOf(md, nmd);
   ObjectMeta meta;
-  const std::string *dir = Hdr(req, "x-amz-metadata-directive");
-  if (dir && *dir == "REPLACE") {
+  if (replace) {
     const std::string *ctype = Hdr(req, "content-type");
     meta.contentType = CleanType(ctype ? *ctype : "");
+    meta.user = replaceUser;
   } else {
-    ObjectMeta srcMeta;
-    m_meta.ReadObjectMeta(key.user, srcBucket, srcKey, srcMeta);
     meta.contentType = srcMeta.contentType;
+    meta.user = srcMeta.user;
   }
   meta.etag = etag;
   m_meta.WriteObjectMeta(key.user, bucket, objKey, meta, err);
@@ -614,6 +629,12 @@ int Ops::CreateMultipart(XrdHttpExtReq &req, const KeyRecord &key, const std::st
   int owned = LoadOwned(req, key, bucket, rec);
   if (owned <= 0)
     return owned;
+  std::map<std::string, std::string> userMeta;
+  int metaRc = CollectUserMeta(req.headers, userMeta);
+  if (metaRc == 1)
+    return Fail(req, 400, "InvalidArgument", "A user metadata name or value is not valid");
+  if (metaRc == 2)
+    return Fail(req, 400, "MetadataTooLarge", "User metadata is larger than 2048 bytes");
   if (Drain(req) != 0)
     return -1;
   std::string id = NewUploadId();
@@ -622,6 +643,8 @@ int Ops::CreateMultipart(XrdHttpExtReq &req, const KeyRecord &key, const std::st
   props["bucket"] = bucket;
   props["key"] = objKey;
   props["content-type"] = CleanType(ctype ? *ctype : "");
+  for (const auto &kv : userMeta)
+    props["user." + kv.first] = kv.second;
   props["created"] = std::to_string(static_cast<long long>(time(nullptr)));
   int err = 0;
   if (m_meta.Store().WriteAll(UploadMeta(m_cfg, key.user, id), m_meta.MetaWho(),
@@ -738,6 +761,13 @@ int Ops::UploadPartCopy(XrdHttpExtReq &req, const KeyRecord &key, const std::str
   struct stat st;
   if (m_meta.Store().Stat(srcPath, id.get(), st, err) != 0 || !S_ISREG(st.st_mode))
     return Fail(req, 404, "NoSuchKey", "The source key does not exist");
+  ObjectMeta srcMeta;
+  m_meta.ReadObjectMeta(key.user, srcBucket, srcKey, srcMeta);
+  if (EvalReadCond(req.headers, srcMeta.etag, st.st_mtime, "x-amz-copy-source-if-match",
+                   "x-amz-copy-source-if-none-match", "x-amz-copy-source-if-unmodified-since",
+                   "x-amz-copy-source-if-modified-since") != ReadCond::Ok)
+    return Fail(req, 412, "PreconditionFailed",
+                "At least one of the preconditions you specified did not hold");
   long long start = 0;
   long long end = st.st_size > 0 ? st.st_size - 1 : -1;
   const std::string *range = Hdr(req, "x-amz-copy-source-range");
@@ -950,6 +980,10 @@ int Ops::CompleteMultipart(XrdHttpExtReq &req, const KeyRecord &key, const std::
   meta.etag = etag;
   meta.contentType = props["content-type"].empty() ? "application/octet-stream"
                                                     : props["content-type"];
+  for (const auto &kv : props) {
+    if (kv.first.compare(0, 5, "user.") == 0 && kv.first.size() > 5)
+      meta.user[kv.first.substr(5)] = kv.second;
+  }
   m_meta.WriteObjectMeta(key.user, bucket, objKey, meta, err);
   AbortMultipart(req, key, bucket, objKey);
   std::string body = CompleteMultipartXml(bucket, objKey, etag);

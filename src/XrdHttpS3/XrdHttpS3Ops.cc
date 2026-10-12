@@ -21,6 +21,156 @@
 namespace XrdHttpS3 {
 namespace {
 
+std::string Trim(const std::string &in) {
+  size_t a = 0;
+  while (a < in.size() && (in[a] == ' ' || in[a] == '\t'))
+    a++;
+  size_t b = in.size();
+  while (b > a && (in[b - 1] == ' ' || in[b - 1] == '\t' || in[b - 1] == '\r'))
+    b--;
+  return in.substr(a, b - a);
+}
+
+bool MetaNameOk(const std::string &name) {
+  if (name.empty() || name.size() > 128)
+    return false;
+  for (unsigned char c : name) {
+    if (!(std::isalnum(c) || c == '-' || c == '_' || c == '.'))
+      return false;
+  }
+  return true;
+}
+
+std::string CanonEtag(std::string s) {
+  s = Trim(s);
+  if (s.size() >= 2 && (s[0] == 'W' || s[0] == 'w') && s[1] == '/')
+    s = Trim(s.substr(2));
+  if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
+    s = s.substr(1, s.size() - 2);
+  for (char &c : s)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return s;
+}
+
+bool EtagListed(const std::string &header, const std::string &etag, bool &any) {
+  any = false;
+  std::string want = CanonEtag(etag);
+  size_t i = 0;
+  while (i < header.size()) {
+    size_t comma = header.find(',', i);
+    if (comma == std::string::npos)
+      comma = header.size();
+    std::string tok = Trim(header.substr(i, comma - i));
+    i = comma + 1;
+    if (tok.empty())
+      continue;
+    if (tok == "*") {
+      any = true;
+      continue;
+    }
+    if (CanonEtag(tok) == want)
+      return true;
+  }
+  return false;
+}
+
+bool ParseHttpDate(const std::string &in, time_t &out) {
+  std::tm tm{};
+  const char *rest = strptime(Trim(in).c_str(), "%a, %d %b %Y %H:%M:%S", &tm);
+  if (!rest)
+    return false;
+  out = timegm(&tm);
+  return out != static_cast<time_t>(-1);
+}
+
+const std::string *Header(const std::map<std::string, std::string> &headers, const char *name) {
+  auto it = headers.find(name);
+  if (it == headers.end())
+    return nullptr;
+  return &it->second;
+}
+
+}
+
+int CollectUserMeta(const std::map<std::string, std::string> &headers,
+                    std::map<std::string, std::string> &user) {
+  user.clear();
+  size_t bytes = 0;
+  for (const auto &kv : headers) {
+    if (kv.first.compare(0, 11, "x-amz-meta-") != 0)
+      continue;
+    std::string name = kv.first.substr(11);
+    std::string value = kv.second;
+    if (!MetaNameOk(name) || value.size() > 1024 || value.find('\r') != std::string::npos ||
+        value.find('\n') != std::string::npos)
+      return 1;
+    bytes += name.size() + value.size();
+    if (bytes > 2048 || user.size() >= 32)
+      return 2;
+    user[name] = value;
+  }
+  return 0;
+}
+
+std::string UserMetaHeaders(const std::map<std::string, std::string> &user) {
+  std::string out;
+  for (const auto &kv : user) {
+    if (!MetaNameOk(kv.first) || kv.second.find('\r') != std::string::npos ||
+        kv.second.find('\n') != std::string::npos)
+      continue;
+    out += "\r\nx-amz-meta-" + kv.first + ": " + kv.second;
+  }
+  return out;
+}
+
+ReadCond EvalReadCond(const std::map<std::string, std::string> &headers, const std::string &etag,
+                      time_t mtime, const char *ifMatch, const char *ifNone, const char *ifUnmod,
+                      const char *ifMod) {
+  const std::string *match = Header(headers, ifMatch);
+  const std::string *none = Header(headers, ifNone);
+  const std::string *unmod = Header(headers, ifUnmod);
+  const std::string *mod = Header(headers, ifMod);
+  if (match) {
+    bool any = false;
+    if (!EtagListed(*match, etag, any) && !any)
+      return ReadCond::Failed;
+  } else if (unmod) {
+    time_t when = 0;
+    if (ParseHttpDate(*unmod, when) && mtime > when)
+      return ReadCond::Failed;
+  }
+  if (none) {
+    bool any = false;
+    if (EtagListed(*none, etag, any) || any)
+      return ReadCond::NotModified;
+  } else if (mod) {
+    time_t when = 0;
+    if (ParseHttpDate(*mod, when) && mtime <= when)
+      return ReadCond::NotModified;
+  }
+  return ReadCond::Ok;
+}
+
+int EvalWriteCond(const std::map<std::string, std::string> &headers, bool exists,
+                  const std::string &etag) {
+  const std::string *none = Header(headers, "if-none-match");
+  const std::string *match = Header(headers, "if-match");
+  if (none) {
+    if (Trim(*none) != "*")
+      return 400;
+    if (exists)
+      return 412;
+  }
+  if (match) {
+    bool any = false;
+    if (!exists || (!EtagListed(*match, etag, any) && !any))
+      return 412;
+  }
+  return 0;
+}
+
+namespace {
+
 const char *kSubresources[] = {
     "acl", "cors", "lifecycle", "location", "logging", "notification", "policy",
     "requestPayment", "tagging", "uploads", "versioning", "website", nullptr};
@@ -515,6 +665,30 @@ int Ops::PutObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
     return owned;
   if (req.length < 0)
     return Fail(req, 411, "MissingContentLength", "Content-Length is required");
+  ObjectMeta meta;
+  int metaRc = CollectUserMeta(req.headers, meta.user);
+  if (metaRc == 1)
+    return Fail(req, 400, "InvalidArgument", "A user metadata name or value is not valid");
+  if (metaRc == 2)
+    return Fail(req, 400, "MetadataTooLarge", "User metadata is larger than 2048 bytes");
+  Identity id(key.user);
+  std::string path = ObjectFile(m_cfg, key.user, bucket, objKey);
+  struct stat st;
+  int err = 0;
+  bool exists = m_meta.Store().Stat(path, id.get(), st, err) == 0 && S_ISREG(st.st_mode);
+  if (!exists && err != 0 && err != ENOENT)
+    return Fail(req, 500, "InternalError", "Could not stat the object");
+  std::string oldEtag;
+  if (exists) {
+    ObjectMeta old;
+    if (m_meta.ReadObjectMeta(key.user, bucket, objKey, old) == 0)
+      oldEtag = old.etag;
+  }
+  int cond = EvalWriteCond(req.headers, exists, oldEtag);
+  if (cond == 400)
+    return Fail(req, 400, "InvalidArgument", "If-None-Match on PutObject must be *");
+  if (cond == 412)
+    return Fail(req, 412, "PreconditionFailed", "At least one of the preconditions you specified did not hold");
   const std::string *hash = Hdr(req, "x-amz-content-sha256");
   if (hash && hash->compare(0, 10, "STREAMING-") == 0 &&
       *hash != "STREAMING-AWS4-HMAC-SHA256-PAYLOAD")
@@ -525,18 +699,14 @@ int Ops::PutObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
       return -1;
   }
 
-  Identity id(key.user);
-  std::string path = ObjectFile(m_cfg, key.user, bucket, objKey);
   std::string etag;
   int wrote = WriteObjectBytes(req, key, path, id.get(), etag);
   if (wrote <= 0)
     return wrote;
 
-  ObjectMeta meta;
   meta.etag = etag;
   const std::string *ctype = Hdr(req, "content-type");
   meta.contentType = CleanType(ctype ? *ctype : "");
-  int err = 0;
   m_meta.WriteObjectMeta(key.user, bucket, objKey, meta, err);
 
   std::string hdr = "ETag: \"" + etag + "\"";
@@ -562,6 +732,17 @@ int Ops::GetObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
 
   ObjectMeta meta;
   m_meta.ReadObjectMeta(key.user, bucket, objKey, meta);
+  ReadCond cond = EvalReadCond(req.headers, meta.etag, st.st_mtime);
+  if (cond == ReadCond::Failed)
+    return Fail(req, 412, "PreconditionFailed",
+                "At least one of the preconditions you specified did not hold");
+  if (cond == ReadCond::NotModified) {
+    std::string hdr = "ETag: \"" + meta.etag + "\"\r\nLast-Modified: " + HttpDate(st.st_mtime) +
+                      UserMetaHeaders(meta.user);
+    if (req.SendSimpleResp(304, nullptr, hdr.c_str(), nullptr, 0) != 0)
+      return -1;
+    return 0;
+  }
   long long start = 0;
   long long end = st.st_size > 0 ? st.st_size - 1 : 0;
   bool partial = false;
@@ -583,6 +764,7 @@ int Ops::GetObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
                     "\r\nLast-Modified: " + HttpDate(st.st_mtime);
   if (!meta.etag.empty())
     hdr += "\r\nETag: \"" + meta.etag + "\"";
+  hdr += UserMetaHeaders(meta.user);
   if (partial)
     hdr += "\r\nContent-Range: bytes " + std::to_string(start) + "-" + std::to_string(end) + "/" +
            std::to_string(static_cast<long long>(st.st_size));

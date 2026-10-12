@@ -87,7 +87,8 @@ Adjust the names to the site's authdb. The plugin will not serve `.s3` or
 ## v1 operations
 
 ListBuckets, CreateBucket, DeleteBucket (empty only), HeadBucket, PutObject,
-GetObject (one byte range), HeadObject, DeleteObject, and ListObjectsV2
+GetObject (one byte range, `x-amz-meta-*`, and `If-Match` / `If-None-Match` /
+`If-Modified-Since` / `If-Unmodified-Since`), HeadObject, DeleteObject, and ListObjectsV2
 (`list-type=2`, `prefix`, `delimiter`, `max-keys`, `continuation-token`).
 A listing without `list-type`, or with `list-type=1`, is ListObjects v1
 (`marker`, `NextMarker`).
