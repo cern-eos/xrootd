@@ -164,6 +164,19 @@ class XrdOucEnv;
 extern "C" XrdHttpExtHandler *XrdHttpGetExtHandler(XrdHttpExtHandlerArgs);
 
 //------------------------------------------------------------------------------
+//! Optional claim hook. Export this from the same plug-in when MatchesPath
+//! cannot decide: it only receives the verb and the path.
+//!
+//! The server resolves "?XrdHttpExtClaim". A missing symbol is ignored and the
+//! handler is selected with MatchesPath, as before. Claim hooks are tried
+//! before MatchesPath. Return true only for requests this handler will fully
+//! process; a true result does not fall through.
+//!
+//! extern "C" bool XrdHttpExtClaim(XrdHttpExtHandler *self,
+//!                                 const XrdHttpReq *req);
+//------------------------------------------------------------------------------
+
+//------------------------------------------------------------------------------
 //! Declare compilation version.
 //!
 //! Additionally, you *should* declare the xrootd version you used to compile

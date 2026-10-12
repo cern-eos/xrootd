@@ -1,0 +1,8 @@
+{
+global:
+  XrdHttpGetExtHandler*;
+  XrdHttpExtClaim*;
+
+local:
+  *;
+};
