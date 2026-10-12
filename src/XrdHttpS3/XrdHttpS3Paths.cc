@@ -158,4 +158,19 @@ std::string ObjectRecord(const Config &cfg, const std::string &user,
   return JoinPath(JoinPath(JoinPath(UserMeta(cfg, user), "objmeta"), bucket), rel);
 }
 
+std::string UploadDir(const Config &cfg, const std::string &user,
+                      const std::string &uploadId) {
+  return JoinPath(JoinPath(UserMeta(cfg, user), "uploads"), uploadId);
+}
+
+std::string UploadMeta(const Config &cfg, const std::string &user,
+                       const std::string &uploadId) {
+  return JoinPath(UploadDir(cfg, user, uploadId), "meta");
+}
+
+std::string UploadPartFile(const Config &cfg, const std::string &user,
+                           const std::string &uploadId, const std::string &part) {
+  return JoinPath(JoinPath(UploadDir(cfg, user, uploadId), "parts"), part);
+}
+
 }

@@ -17,6 +17,9 @@ struct Config {
   int metacache{30};
   std::string metaentity;
   bool traceInfo{false};
+  // DNS suffix for virtual-hosted buckets, such as s3.example.com.
+  // Empty keeps path-style URLs only.
+  std::string vhost;
 };
 
 bool LoadConfig(const char *configfn, XrdSysError &log, Config &cfg);

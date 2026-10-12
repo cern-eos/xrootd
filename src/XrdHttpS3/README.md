@@ -4,7 +4,7 @@ S3 on the XrdHttp port. The plugin is an `http.exthandler`. It is loaded with
 the library line and stays idle until `s3.switch on`. Native HTTP, WebDAV, and
 TPC keep the same port. A request is S3 only when it carries
 `Authorization: AWS4-HMAC-SHA256` or the query parameter `X-Amz-Algorithm`.
-Presigned URLs are claimed and answered with `NotImplemented`.
+Presigned URLs are claimed and verified as SigV4 query authentication.
 
 ```cfg
 xrd.protocol XrdHttp libXrdHttp.so
@@ -90,10 +90,21 @@ ListBuckets, CreateBucket, DeleteBucket (empty only), HeadBucket, PutObject,
 GetObject (one byte range), HeadObject, DeleteObject, and ListObjectsV2
 (`list-type=2`, `prefix`, `delimiter`, `max-keys`, `continuation-token`).
 
-Header SigV4 accepts a payload hash and `UNSIGNED-PAYLOAD`. `aws-chunked`
-streaming signatures, presigned query auth, virtual-hosted buckets, multipart,
-and CopyObject are not implemented yet. Point the AWS CLI at a normal payload
-hash (`payload_signing_enabled` false, and no aws-chunked encoding) until
-streaming signatures exist.
+Header SigV4 accepts a payload hash, `UNSIGNED-PAYLOAD`, and
+`STREAMING-AWS4-HMAC-SHA256-PAYLOAD` (aws-chunked, one signature per chunk).
+Presigned query URLs are accepted for the same operations. Every `x-amz-*`
+header on a signed request has to be listed in `SignedHeaders`.
 
-Path-style URLs only: `http://host/<bucket>/<key>`.
+```cfg
+s3.vhost s3.example.com
+```
+
+With that suffix, `Host: bucket.s3.example.com` selects the bucket and the
+URL path is the object key. Path-style `Host` values that do not end in the
+suffix stay `/<bucket>/<key>`.
+
+Also implemented: `CopyObject` (`x-amz-copy-source`), `DeleteObjects`
+(`POST /bucket?delete`, `Content-MD5` required), and multipart upload
+(`POST ?uploads`, `PUT ?partNumber&uploadId`, `POST ?uploadId`,
+`DELETE ?uploadId`). The multipart ETag is the MD5 of the part MD5s plus the
+part count. Part files live under the user's `.s3/uploads/` tree.

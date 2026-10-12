@@ -8,8 +8,6 @@
 #include "XrdSfs/XrdSfsInterface.hh"
 #include "XrdSys/XrdSysError.hh"
 
-#include <openssl/evp.h>
-
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
@@ -84,38 +82,6 @@ std::string CleanType(const std::string &in) {
     out.resize(256);
   return out;
 }
-
-struct Digests {
-  EVP_MD_CTX *sha{nullptr};
-  EVP_MD_CTX *md5{nullptr};
-  Digests() {
-    sha = EVP_MD_CTX_new();
-    md5 = EVP_MD_CTX_new();
-    EVP_DigestInit_ex(sha, EVP_sha256(), nullptr);
-    EVP_DigestInit_ex(md5, EVP_md5(), nullptr);
-  }
-  ~Digests() {
-    EVP_MD_CTX_free(sha);
-    EVP_MD_CTX_free(md5);
-  }
-  void update(const void *p, size_t n) {
-    EVP_DigestUpdate(sha, p, n);
-    EVP_DigestUpdate(md5, p, n);
-  }
-  std::string finish(const EVP_MD *which, EVP_MD_CTX *ctx) {
-    unsigned char md[EVP_MAX_MD_SIZE];
-    unsigned int n = 0;
-    EVP_DigestFinal_ex(ctx, md, &n);
-    static const char *kHex = "0123456789abcdef";
-    std::string out(n * 2, '0');
-    for (unsigned int i = 0; i < n; i++) {
-      out[i * 2] = kHex[md[i] >> 4];
-      out[i * 2 + 1] = kHex[md[i] & 0x0f];
-    }
-    (void)which;
-    return out;
-  }
-};
 
 bool ParseRange(const std::string &h, long long size, long long &start, long long &end) {
   if (h.compare(0, 6, "bytes=") != 0 || h.find(',') != std::string::npos)
@@ -240,8 +206,46 @@ int Ops::LoadOwned(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
   return 1;
 }
 
+bool VhostTarget(const Config &cfg, const XrdHttpExtReq &req, const std::string &path,
+                 std::string &bucket, std::string &objKey, bool &onlyBucket) {
+  if (cfg.vhost.empty())
+    return false;
+  const std::string *hostHdr = Hdr(req, "host");
+  if (!hostHdr || hostHdr->empty() || (*hostHdr)[0] == '[')
+    return false;
+  std::string host = *hostHdr;
+  size_t colon = host.rfind(':');
+  if (colon != std::string::npos && colon + 1 < host.size()) {
+    bool digits = true;
+    for (size_t i = colon + 1; i < host.size(); i++) {
+      if (!std::isdigit(static_cast<unsigned char>(host[i])))
+        digits = false;
+    }
+    if (digits)
+      host.resize(colon);
+  }
+  for (char &c : host)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  std::string suffix = "." + cfg.vhost;
+  if (host.size() <= suffix.size() ||
+      host.compare(host.size() - suffix.size(), suffix.size(), suffix) != 0)
+    return false;
+  bucket = host.substr(0, host.size() - suffix.size());
+  if (path == "/") {
+    onlyBucket = true;
+    objKey.clear();
+    return true;
+  }
+  if (path.empty() || path[0] != '/')
+    return false;
+  objKey = path.substr(1);
+  onlyBucket = objKey.empty();
+  return true;
+}
+
 int Ops::Dispatch(XrdHttpExtReq &req, const KeyRecord &key) {
-  if (req.verb != "GET" && req.verb != "HEAD" && req.verb != "PUT" && req.verb != "DELETE")
+  if (req.verb != "GET" && req.verb != "HEAD" && req.verb != "PUT" && req.verb != "DELETE" &&
+      req.verb != "POST")
     return Fail(req, 501, "NotImplemented", "This S3 operation is not implemented");
 
   const std::string *te = Hdr(req, "transfer-encoding");
@@ -251,7 +255,17 @@ int Ops::Dispatch(XrdHttpExtReq &req, const KeyRecord &key) {
   std::string path = req.resource;
   if (path.empty())
     path = "/";
-  if (path == "/") {
+
+  std::string bucket;
+  std::string objKey;
+  bool onlyBucket = false;
+  bool virtualHost = VhostTarget(m_cfg, req, path, bucket, objKey, onlyBucket);
+  if (virtualHost) {
+    if (!ValidBucket(bucket))
+      return Fail(req, 400, "InvalidBucketName", "The bucket name is not valid");
+    if (!onlyBucket && !ValidObjectKey(objKey))
+      return Fail(req, 400, "InvalidArgument", "The object key is not valid");
+  } else if (path == "/") {
     if (req.verb == "GET")
       return ListBuckets(req, key);
     if (req.verb == "HEAD") {
@@ -261,19 +275,19 @@ int Ops::Dispatch(XrdHttpExtReq &req, const KeyRecord &key) {
     }
     return Fail(req, 405, "MethodNotAllowed", "This method is not valid on the service");
   }
-  if (path[0] != '/')
-    return Fail(req, 400, "InvalidArgument", "The request path is not absolute");
-
-  std::string rest = path.substr(1);
-  size_t slash = rest.find('/');
-  std::string bucket = slash == std::string::npos ? rest : rest.substr(0, slash);
-  bool onlyBucket = slash == std::string::npos || slash + 1 == rest.size();
-  std::string objKey = onlyBucket ? std::string() : rest.substr(slash + 1);
-
-  if (!ValidBucket(bucket))
-    return Fail(req, 400, "InvalidBucketName", "The bucket name is not valid");
-  if (!onlyBucket && !ValidObjectKey(objKey))
-    return Fail(req, 400, "InvalidArgument", "The object key is not valid");
+  if (!virtualHost) {
+    if (path[0] != '/')
+      return Fail(req, 400, "InvalidArgument", "The request path is not absolute");
+    std::string rest = path.substr(1);
+    size_t slash = rest.find('/');
+    bucket = slash == std::string::npos ? rest : rest.substr(0, slash);
+    onlyBucket = slash == std::string::npos || slash + 1 == rest.size();
+    objKey = onlyBucket ? std::string() : rest.substr(slash + 1);
+    if (!ValidBucket(bucket))
+      return Fail(req, 400, "InvalidBucketName", "The bucket name is not valid");
+    if (!onlyBucket && !ValidObjectKey(objKey))
+      return Fail(req, 400, "InvalidArgument", "The object key is not valid");
+  }
 
   auto query = ParseQuery(QueryOf(req));
   if (onlyBucket) {
@@ -281,9 +295,8 @@ int Ops::Dispatch(XrdHttpExtReq &req, const KeyRecord &key) {
       if (query.count(kSubresources[i]))
         return Fail(req, 501, "NotImplemented", "This bucket subresource is not implemented");
     }
-  }
-
-  if (onlyBucket) {
+    if (req.verb == "POST" && query.count("delete"))
+      return DeleteObjects(req, key, bucket);
     if (req.verb == "PUT")
       return CreateBucket(req, key, bucket);
     if (req.verb == "DELETE")
@@ -297,6 +310,20 @@ int Ops::Dispatch(XrdHttpExtReq &req, const KeyRecord &key) {
     }
   }
 
+  if (!onlyBucket && query.count("uploads") && req.verb == "POST")
+    return CreateMultipart(req, key, bucket, objKey);
+  if (!onlyBucket && query.count("uploadId")) {
+    if (query.count("partNumber") && req.verb == "PUT")
+      return UploadPart(req, key, bucket, objKey);
+    if (req.verb == "POST")
+      return CompleteMultipart(req, key, bucket, objKey);
+    if (req.verb == "DELETE")
+      return AbortMultipart(req, key, bucket, objKey);
+    return Fail(req, 501, "NotImplemented", "This multipart operation is not implemented");
+  }
+
+  if (req.verb == "PUT" && Hdr(req, "x-amz-copy-source"))
+    return CopyObject(req, key, bucket, objKey);
   if (req.verb == "PUT")
     return PutObject(req, key, bucket, objKey);
   if (req.verb == "GET")
@@ -474,8 +501,9 @@ int Ops::PutObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
   if (req.length < 0)
     return Fail(req, 411, "MissingContentLength", "Content-Length is required");
   const std::string *hash = Hdr(req, "x-amz-content-sha256");
-  if (hash && hash->compare(0, 10, "STREAMING-") == 0)
-    return Fail(req, 501, "NotImplemented", "aws-chunked payload signatures are not implemented");
+  if (hash && hash->compare(0, 10, "STREAMING-") == 0 &&
+      *hash != "STREAMING-AWS4-HMAC-SHA256-PAYLOAD")
+    return Fail(req, 501, "NotImplemented", "This streaming payload encoding is not implemented");
 
   if (WantsContinue(req)) {
     if (req.SendSimpleResp(100, nullptr, nullptr, nullptr, 0) != 0)
@@ -484,54 +512,16 @@ int Ops::PutObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
 
   Identity id(key.user);
   std::string path = ObjectFile(m_cfg, key.user, bucket, objKey);
-  OwnedFile file;
-  int err = 0;
-  int flags = SFS_O_CREAT | SFS_O_TRUNC | SFS_O_WRONLY | SFS_O_MKPTH;
-  if (m_meta.Store().Open(path, id.get(), flags, 0644, file, err) != 0)
-    return Fail(req, 500, "InternalError", "Could not create the object");
-
-  Digests dig;
-  long long left = req.length;
-  XrdSfsFileOffset off = 0;
-  while (left > 0) {
-    char *data = nullptr;
-    int want = static_cast<int>(std::min<long long>(left, 65536));
-    int n = req.BuffgetData(want, &data, true);
-    if (n <= 0) {
-      m_meta.Store().Unlink(path, id.get(), err);
-      Fail(req, 400, "IncompleteBody", "The request body ended early");
-      return -1;
-    }
-    int wrote = 0;
-    while (wrote < n) {
-      int w = file.fh->write(off, data + wrote, n - wrote);
-      if (w <= 0) {
-        m_meta.Store().Unlink(path, id.get(), err);
-        Fail(req, 500, "InternalError", "Could not write the object");
-        return -1;
-      }
-      wrote += w;
-      off += w;
-    }
-    dig.update(data, static_cast<size_t>(n));
-    left -= n;
-  }
-  file.fh->sync();
-  file.fh->close();
-  delete file.fh;
-  file.fh = nullptr;
-
-  std::string sha = dig.finish(EVP_sha256(), dig.sha);
-  std::string etag = dig.finish(EVP_md5(), dig.md5);
-  if (hash && *hash != "UNSIGNED-PAYLOAD" && *hash != sha) {
-    m_meta.Store().Unlink(path, id.get(), err);
-    return Fail(req, 400, "BadDigest", "The request body does not match x-amz-content-sha256");
-  }
+  std::string etag;
+  int wrote = WriteObjectBytes(req, key, path, id.get(), etag);
+  if (wrote <= 0)
+    return wrote;
 
   ObjectMeta meta;
   meta.etag = etag;
   const std::string *ctype = Hdr(req, "content-type");
   meta.contentType = CleanType(ctype ? *ctype : "");
+  int err = 0;
   m_meta.WriteObjectMeta(key.user, bucket, objKey, meta, err);
 
   std::string hdr = "ETag: \"" + etag + "\"";

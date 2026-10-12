@@ -5,6 +5,7 @@
 #include "XrdOuc/XrdOucStream.hh"
 #include "XrdSys/XrdSysError.hh"
 
+#include <cctype>
 #include <cstring>
 #include <fcntl.h>
 #include <strings.h>
@@ -135,6 +136,22 @@ bool LoadConfig(const char *configfn, XrdSysError &log, Config &cfg) {
         return false;
       }
       cfg.metaentity = val;
+    } else if (!strcmp(val, "s3.vhost")) {
+      val = config.GetWord();
+      if (!val || !val[0]) {
+        log.Emsg("Config", "s3.vhost value not specified");
+        config.Close();
+        return false;
+      }
+      cfg.vhost = val;
+      for (char &c : cfg.vhost)
+        c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+      if (cfg.vhost.find('/') != std::string::npos || cfg.vhost.front() == '.' ||
+          cfg.vhost.find("..") != std::string::npos) {
+        log.Emsg("Config", "s3.vhost must be a DNS suffix", cfg.vhost.c_str());
+        config.Close();
+        return false;
+      }
     } else if (!strcmp(val, "s3.trace")) {
       val = config.GetWord();
       if (!val || !val[0]) {

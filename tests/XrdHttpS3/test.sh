@@ -68,6 +68,7 @@ s3.userprefix /prefix
 s3.userhash first
 s3.skew 15m
 s3.metacache 0
+s3.vhost s3.test
 s3.trace info
 EOF
 }
@@ -253,6 +254,109 @@ code=$(call_s3 GET "$PORT_OFF" /mybucket/hello.txt UNSIGNED-PAYLOAD "")
 expect_code "$code" 404 "S3 GET while switched off"
 if grep -q hello-s3 "$ROOT/out"; then
   echo "switched-off server served the S3 object" >&2
+  exit 1
+fi
+
+q=$("$S3SIGN" presign "$SECRET" "$AKID" us-east-1 GET "127.0.0.1:${PORT_ON}" /mybucket/hello.txt 300)
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' --globoff \
+  "http://127.0.0.1:${PORT_ON}/mybucket/hello.txt?${q}")
+expect_code "$code" 200 "presigned GetObject"
+if [ "$(cat "$ROOT/out")" != "$(cat "$ROOT/body.txt")" ]; then
+  echo "presigned body mismatch" >&2
+  exit 1
+fi
+
+SIGNED=$("$S3SIGN" "$SECRET" "$AKID" us-east-1 PUT "127.0.0.1:${PORT_ON}" \
+  /mybucket/hello-copy.txt "" UNSIGNED-PAYLOAD x-amz-copy-source /mybucket/hello.txt)
+printf '%s\n' "$SIGNED" > "$ROOT/sig"
+load_sig
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' -X PUT \
+  -H "x-amz-date: $S3_DATE" -H "x-amz-content-sha256: $S3_HASH" \
+  -H "Authorization: $S3_AUTH" -H "x-amz-copy-source: /mybucket/hello.txt" \
+  "http://127.0.0.1:${PORT_ON}/mybucket/hello-copy.txt")
+expect_code "$code" 200 "CopyObject"
+if ! grep -q 'ETag' "$ROOT/out"; then
+  echo "CopyObject XML has no ETag" >&2
+  cat "$ROOT/out" >&2
+  exit 1
+fi
+
+code=$(call_s3 GET "$PORT_ON" /mybucket/hello-copy.txt UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetObject copy"
+if [ "$(cat "$ROOT/out")" != "$(cat "$ROOT/body.txt")" ]; then
+  echo "copied object mismatch" >&2
+  exit 1
+fi
+
+printf '%s' '<Delete><Object><Key>hello-copy.txt</Key></Object></Delete>' > "$ROOT/del.xml"
+delmd5=$(openssl dgst -md5 -binary "$ROOT/del.xml" | openssl base64 | tr -d '\n')
+sign POST /mybucket delete "@$ROOT/del.xml" "127.0.0.1:${PORT_ON}"
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' -X POST \
+  -H "x-amz-date: $S3_DATE" -H "x-amz-content-sha256: $S3_HASH" \
+  -H "Authorization: $S3_AUTH" -H "Content-MD5: $delmd5" \
+  --data-binary "@$ROOT/del.xml" \
+  "http://127.0.0.1:${PORT_ON}/mybucket?delete")
+expect_code "$code" 200 "DeleteObjects"
+if ! grep -q hello-copy.txt "$ROOT/out"; then
+  echo "DeleteObjects did not report the key" >&2
+  cat "$ROOT/out" >&2
+  exit 1
+fi
+
+code=$(call_s3 POST "$PORT_ON" '/mybucket/hello-mp?uploads' \
+  e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 "")
+expect_code "$code" 200 "CreateMultipartUpload"
+uid=$(sed -n 's/.*<UploadId>\([^<]*\)<\/UploadId>.*/\1/p' "$ROOT/out")
+printf 'aaa' > "$ROOT/p1"
+printf 'bbb' > "$ROOT/p2"
+code=$(call_s3 PUT "$PORT_ON" "/mybucket/hello-mp?partNumber=1&uploadId=${uid}" "@$ROOT/p1" "$ROOT/p1")
+expect_code "$code" 200 "UploadPart 1"
+etag1=$(awk 'BEGIN{IGNORECASE=1} /^[Ee][Tt][Aa][Gg]:/ {gsub(/[\r"]/,"",$2); print $2; exit}' "$ROOT/hdr")
+code=$(call_s3 PUT "$PORT_ON" "/mybucket/hello-mp?partNumber=2&uploadId=${uid}" "@$ROOT/p2" "$ROOT/p2")
+expect_code "$code" 200 "UploadPart 2"
+etag2=$(awk 'BEGIN{IGNORECASE=1} /^[Ee][Tt][Aa][Gg]:/ {gsub(/[\r"]/,"",$2); print $2; exit}' "$ROOT/hdr")
+printf '%s' "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>\"${etag1}\"</ETag></Part><Part><PartNumber>2</PartNumber><ETag>\"${etag2}\"</ETag></Part></CompleteMultipartUpload>" > "$ROOT/done.xml"
+code=$(call_s3 POST "$PORT_ON" "/mybucket/hello-mp?uploadId=${uid}" "@$ROOT/done.xml" "$ROOT/done.xml")
+expect_code "$code" 200 "CompleteMultipartUpload"
+code=$(call_s3 GET "$PORT_ON" /mybucket/hello-mp UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetObject multipart"
+if [ "$(cat "$ROOT/out")" != "aaabbb" ]; then
+  echo "multipart body mismatch [$(cat "$ROOT/out")]" >&2
+  exit 1
+fi
+
+sign GET /hello.txt "" UNSIGNED-PAYLOAD "mybucket.s3.test"
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' \
+  -H "x-amz-date: $S3_DATE" -H "x-amz-content-sha256: $S3_HASH" \
+  -H "Authorization: $S3_AUTH" -H "Host: mybucket.s3.test" \
+  "http://127.0.0.1:${PORT_ON}/hello.txt")
+expect_code "$code" 200 "virtual-hosted GetObject"
+if [ "$(cat "$ROOT/out")" != "$(cat "$ROOT/body.txt")" ]; then
+  echo "virtual-hosted body mismatch" >&2
+  exit 1
+fi
+
+printf 'hello' > "$ROOT/chunk-payload"
+: > "$ROOT/empty"
+SIGNED=$("$S3SIGN" "$SECRET" "$AKID" us-east-1 PUT "127.0.0.1:${PORT_ON}" \
+  /mybucket/chunked.txt "" STREAMING-AWS4-HMAC-SHA256-PAYLOAD \
+  x-amz-decoded-content-length 5)
+printf '%s\n' "$SIGNED" > "$ROOT/sig"
+load_sig
+SEED=${S3_AUTH##*Signature=}
+SIG1=$("$S3SIGN" chunk "$SECRET" us-east-1 "$S3_DATE" "$SEED" "$ROOT/chunk-payload")
+SIG0=$("$S3SIGN" chunk "$SECRET" us-east-1 "$S3_DATE" "$SIG1" "$ROOT/empty")
+printf '5;chunk-signature=%s\r\nhello\r\n0;chunk-signature=%s\r\n\r\n' "$SIG1" "$SIG0" > "$ROOT/framed"
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' -X PUT \
+  -H "x-amz-date: $S3_DATE" -H "x-amz-content-sha256: $S3_HASH" \
+  -H "Authorization: $S3_AUTH" -H "x-amz-decoded-content-length: 5" \
+  --data-binary "@$ROOT/framed" \
+  "http://127.0.0.1:${PORT_ON}/mybucket/chunked.txt")
+expect_code "$code" 200 "aws-chunked PutObject"
+code=$(call_s3 GET "$PORT_ON" /mybucket/chunked.txt UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetObject chunked"
+if [ "$(cat "$ROOT/out")" != "hello" ]; then
+  echo "chunked body mismatch [$(cat "$ROOT/out")]" >&2
   exit 1
 fi
 

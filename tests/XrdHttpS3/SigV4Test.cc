@@ -74,6 +74,41 @@ TEST(S3SigV4, AwsGetObjectExample) {
   EXPECT_EQ(VerifySigV4(vin, in.secret, detail), AuthFail::Ok);
 }
 
+TEST(S3SigV4, ChunkSignatureVector) {
+  EXPECT_EQ(ChunkSignature("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "20130524T000000Z",
+                           "us-east-1",
+                           "f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41",
+                           "hello"),
+            "b4816a35e1ca6cde896ef2fb98ea432d592c147832bfc1e9f7d3456f800ea44b");
+}
+
+TEST(S3SigV4, PresignRoundTrip) {
+  SignInput in;
+  in.method = "GET";
+  in.uri = "/mybucket/hello.txt";
+  in.host = "127.0.0.1:8080";
+  in.amzDate = "20130524T000000Z";
+  in.secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  in.accessKey = "AKIAIOSFODNN7EXAMPLE";
+  in.region = "us-east-1";
+  SignOutput signedReq = SignQuery(in, 60);
+  EXPECT_NE(signedReq.query.find("X-Amz-Signature="), std::string::npos);
+  EXPECT_NE(signedReq.query.find("X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F"),
+            std::string::npos);
+  VerifyInput vin;
+  vin.method = "GET";
+  vin.resource = "/mybucket/hello.txt";
+  vin.query = signedReq.query;
+  vin.region = "us-east-1";
+  vin.skew = 900;
+  vin.now = 1369353600;
+  vin.headers["host"] = in.host;
+  ParsedAuth auth;
+  std::string detail;
+  EXPECT_EQ(VerifyPresign(vin, in.secret, auth, detail), AuthFail::Ok) << detail;
+  EXPECT_EQ(auth.accessKey, in.accessKey);
+}
+
 TEST(S3SigV4, CanonicalQueryEncodesSlash) {
   EXPECT_EQ(CanonicalQuery("prefix=a/b&list-type=2"), "list-type=2&prefix=a%2Fb");
   EXPECT_EQ(CanonicalQuery("&list-type=2"), "list-type=2");

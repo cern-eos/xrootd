@@ -104,4 +104,48 @@ std::string ListObjectsXml(const std::string &bucket, const std::string &prefix,
   return xml;
 }
 
+std::string CopyObjectXml(const std::string &etag, time_t modified) {
+  return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+         "<CopyObjectResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+         "<LastModified>" + IsoDate(modified) + "</LastModified><ETag>&quot;" +
+         XmlEscape(etag) + "&quot;</ETag></CopyObjectResult>\n";
+}
+
+std::string DeleteObjectsXml(const std::vector<std::string> &deleted,
+                             const std::vector<std::string> &errors,
+                             const std::vector<std::string> &errorCodes,
+                             const std::vector<std::string> &errorMessages) {
+  std::string xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    "<DeleteResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">";
+  for (const auto &key : deleted)
+    xml += "<Deleted><Key>" + XmlEscape(key) + "</Key></Deleted>";
+  for (size_t i = 0; i < errors.size(); i++) {
+    xml += "<Error><Key>" + XmlEscape(errors[i]) + "</Key><Code>" +
+           XmlEscape(i < errorCodes.size() ? errorCodes[i] : "InternalError") +
+           "</Code><Message>" +
+           XmlEscape(i < errorMessages.size() ? errorMessages[i] : "") +
+           "</Message></Error>";
+  }
+  xml += "</DeleteResult>\n";
+  return xml;
+}
+
+std::string CreateMultipartXml(const std::string &bucket, const std::string &key,
+                               const std::string &uploadId) {
+  return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+         "<InitiateMultipartUploadResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+         "<Bucket>" + XmlEscape(bucket) + "</Bucket><Key>" + XmlEscape(key) +
+         "</Key><UploadId>" + XmlEscape(uploadId) + "</UploadId>"
+         "</InitiateMultipartUploadResult>\n";
+}
+
+std::string CompleteMultipartXml(const std::string &bucket, const std::string &key,
+                                 const std::string &etag) {
+  return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+         "<CompleteMultipartUploadResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+         "<Location>/" + XmlEscape(bucket) + "/" + XmlEscape(key) + "</Location><Bucket>" +
+         XmlEscape(bucket) + "</Bucket><Key>" + XmlEscape(key) + "</Key><ETag>&quot;" +
+         XmlEscape(etag) + "&quot;</ETag></CompleteMultipartUploadResult>\n";
+}
+
 }

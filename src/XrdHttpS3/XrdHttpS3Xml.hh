@@ -35,6 +35,16 @@ std::string ListObjectsXml(const std::string &bucket, const std::string &prefix,
                            const std::vector<ListedObject> &page, bool truncated,
                            const std::string &token);
 
+std::string CopyObjectXml(const std::string &etag, time_t modified);
+std::string DeleteObjectsXml(const std::vector<std::string> &deleted,
+                             const std::vector<std::string> &errors,
+                             const std::vector<std::string> &errorCodes,
+                             const std::vector<std::string> &errorMessages);
+std::string CreateMultipartXml(const std::string &bucket, const std::string &key,
+                               const std::string &uploadId);
+std::string CompleteMultipartXml(const std::string &bucket, const std::string &key,
+                                 const std::string &etag);
+
 }
 
 #endif

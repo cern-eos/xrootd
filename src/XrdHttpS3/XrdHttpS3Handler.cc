@@ -74,41 +74,59 @@ int Handler::ProcessReq(XrdHttpExtReq &req) {
     return m_ops->Fail(req, 403, "AccessDenied", "S3 is switched off");
 
   auto authIt = req.headers.find("authorization");
-  if (authIt == req.headers.end() ||
-      authIt->second.compare(0, 16, "AWS4-HMAC-SHA256") != 0)
-    return m_ops->Fail(req, 501, "NotImplemented", "Presigned URLs are not implemented");
-
-  const std::string *auth = &authIt->second;
-
-  ParsedAuth parsed = ParseAuthorization(*auth);
-  if (!parsed.ok)
-    return m_ops->Fail(req, 400, "AuthorizationHeaderMalformed",
-                       "Authorization header is not AWS SigV4");
-  if (!ValidAccessKey(parsed.accessKey))
-    return m_ops->Fail(req, 403, "InvalidAccessKeyId", "The access key is not valid");
-
-  KeyRecord key;
-  int err = 0;
-  if (m_meta->LoadKey(parsed.accessKey, key, err) != 0) {
-    if (err == ENOENT || err == EINVAL)
-      return m_ops->Fail(req, 403, "InvalidAccessKeyId", "The access key ID does not exist");
-    return m_ops->Fail(req, 500, "InternalError", "Could not read the access key");
-  }
-  if (key.status != "active")
-    return m_ops->Fail(req, 403, "InvalidAccessKeyId", "The access key is not active");
-  if (key.expires > 0 && static_cast<long long>(time(nullptr)) > key.expires)
-    return m_ops->Fail(req, 403, "InvalidAccessKeyId", "The access key has expired");
+  bool headerAuth = authIt != req.headers.end() &&
+                    authIt->second.compare(0, 16, "AWS4-HMAC-SHA256") == 0;
 
   VerifyInput vin;
   vin.method = req.verb;
   vin.resource = req.resource;
   vin.query = req.headers.count("xrd-http-query") ? req.headers["xrd-http-query"] : "";
   vin.headers = req.headers;
-  vin.authorization = *auth;
   vin.region = m_cfg.region;
   vin.skew = m_cfg.skew;
+
+  ParsedAuth parsed;
   std::string detail;
-  AuthFail why = VerifySigV4(vin, key.secret, detail);
+  AuthFail why = AuthFail::Ok;
+  if (headerAuth) {
+    vin.authorization = authIt->second;
+    parsed = ParseAuthorization(vin.authorization);
+    if (!parsed.ok) {
+      detail = "Authorization header is not AWS SigV4";
+      why = AuthFail::Malformed;
+    }
+  } else {
+    auto query = ParseQuery(vin.query);
+    auto cred = query.find("X-Amz-Credential");
+    size_t slash = cred == query.end() ? std::string::npos : cred->second.find('/');
+    if (cred == query.end() || slash == std::string::npos || slash == 0) {
+      why = AuthFail::Malformed;
+      detail = "presigned URL is missing a SigV4 query parameter";
+    } else {
+      parsed.ok = true;
+      parsed.accessKey = cred->second.substr(0, slash);
+    }
+  }
+
+  KeyRecord key;
+  if (why == AuthFail::Ok) {
+    if (!ValidAccessKey(parsed.accessKey))
+      return m_ops->Fail(req, 403, "InvalidAccessKeyId", "The access key is not valid");
+    int err = 0;
+    if (m_meta->LoadKey(parsed.accessKey, key, err) != 0) {
+      if (err == ENOENT || err == EINVAL)
+        return m_ops->Fail(req, 403, "InvalidAccessKeyId", "The access key ID does not exist");
+      return m_ops->Fail(req, 500, "InternalError", "Could not read the access key");
+    }
+    if (key.status != "active")
+      return m_ops->Fail(req, 403, "InvalidAccessKeyId", "The access key is not active");
+    if (key.expires > 0 && static_cast<long long>(time(nullptr)) > key.expires)
+      return m_ops->Fail(req, 403, "InvalidAccessKeyId", "The access key has expired");
+    if (headerAuth)
+      why = VerifySigV4(vin, key.secret, detail);
+    else
+      why = VerifyPresign(vin, key.secret, parsed, detail);
+  }
   if (why != AuthFail::Ok) {
     const char *code = "SignatureDoesNotMatch";
     int http = 403;
@@ -121,6 +139,9 @@ int Handler::ProcessReq(XrdHttpExtReq &req) {
     } else if (why == AuthFail::MissingHash) {
       code = "InvalidArgument";
       http = 400;
+    } else if (why == AuthFail::Expired) {
+      code = "AccessDenied";
+      http = 403;
     }
     if (m_cfg.traceInfo)
       m_log.Emsg("S3", detail.c_str());

@@ -27,6 +27,12 @@ std::string ObjectRecord(const Config &cfg, const std::string &user,
                          const std::string &bucket, const std::string &key);
 std::string BucketData(const Config &cfg, const std::string &user,
                        const std::string &bucket);
+std::string UploadDir(const Config &cfg, const std::string &user,
+                      const std::string &uploadId);
+std::string UploadMeta(const Config &cfg, const std::string &user,
+                       const std::string &uploadId);
+std::string UploadPartFile(const Config &cfg, const std::string &user,
+                           const std::string &uploadId, const std::string &part);
 
 }
 
