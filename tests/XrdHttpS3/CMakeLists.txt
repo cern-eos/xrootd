@@ -5,8 +5,10 @@ endif()
 add_executable(xrdhttp-s3-unit
   SigV4Test.cc
   OwnerTest.cc
+  GlacierTest.cc
   ${PROJECT_SOURCE_DIR}/src/XrdHttpS3/XrdHttpS3SigV4.cc
   ${PROJECT_SOURCE_DIR}/src/XrdHttpS3/XrdHttpS3Paths.cc
+  ${PROJECT_SOURCE_DIR}/src/XrdHttpS3/XrdHttpS3Glacier.cc
 )
 target_include_directories(xrdhttp-s3-unit PRIVATE
   ${PROJECT_SOURCE_DIR}/src

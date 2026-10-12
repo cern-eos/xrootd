@@ -43,6 +43,8 @@ public:
                const std::string &value, int &err);
   int GetXattr(const std::string &path, const XrdSecEntity *who, const std::string &name,
                std::string &value, int &err);
+  int DelXattr(const std::string &path, const XrdSecEntity *who, const std::string &name, int &err);
+  int Prepare(const std::string &path, const XrdSecEntity *who, int opts, int &err);
 
 private:
   XrdSfsFileSystem &m_sfs;

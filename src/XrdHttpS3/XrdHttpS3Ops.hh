@@ -1,6 +1,7 @@
 #ifndef XRDHTTPS3_OPS_HH
 #define XRDHTTPS3_OPS_HH
 
+#include "XrdHttpS3Glacier.hh"
 #include "XrdHttpS3Meta.hh"
 
 #include <ctime>
@@ -81,6 +82,10 @@ private:
                     const std::string &objKey);
   int HeadPart(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,
                const std::string &objKey);
+  int RestoreObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,
+                    const std::string &objKey);
+  Archive LoadArchive(const std::string &path, const XrdSecEntity *who, bool offline);
+  void ClearRestore(const std::string &path, const XrdSecEntity *who);
   int BucketVersioning(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket);
   int ListObjectVersions(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket);
   int ReadVersion(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,

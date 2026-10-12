@@ -271,6 +271,7 @@ struct FileInfo {
   std::string key;
   long long size{0};
   time_t mtime{0};
+  bool offline{false};
 };
 
 void Walk(Fs &fs, const XrdSecEntity *who, const std::string &dir, const std::string &rel,
@@ -317,6 +318,7 @@ void Walk(Fs &fs, const XrdSecEntity *who, const std::string &dir, const std::st
       info.key = rel + name;
       info.size = st.st_size;
       info.mtime = st.st_mtime;
+      info.offline = FileOffline(st);
       out.push_back(info);
     }
     if (err && err != ENOENT)
@@ -595,8 +597,13 @@ int Ops::Dispatch(XrdHttpExtReq &req, const KeyRecord &key) {
   if (!onlyBucket && query.count("tagging"))
     return ObjectTagging(req, key, bucket, objKey);
   {
-    const char *blocked[] = {"torrent", "restore", "select", "legal-hold", "retention",
-                             "attributes", nullptr};
+    if (!onlyBucket && query.count("restore")) {
+      if (req.verb == "POST")
+        return RestoreObject(req, key, bucket, objKey);
+      return Fail(req, 405, "MethodNotAllowed", "This method is not valid for restore");
+    }
+    const char *blocked[] = {"torrent", "select", "legal-hold", "retention", "attributes",
+                             nullptr};
     for (int i = 0; blocked[i]; i++) {
       if (query.count(blocked[i]))
         return Fail(req, 501, "NotImplemented", "This object subresource is not implemented");
@@ -758,6 +765,10 @@ int Ops::ListObjects(XrdHttpExtReq &req, const KeyRecord &key, const std::string
     ObjectMeta meta;
     if (m_meta.ReadObjectMeta(key.user, bucket, file.key, meta) == 0)
       item.etag = meta.etag;
+    Archive arc = LoadArchive(ObjectFile(m_cfg, key.user, bucket, file.key), id.get(),
+                              file.offline);
+    if (arc.kind != ArchiveKind::Standard)
+      item.storageClass = "GLACIER";
     merged.push_back(item);
   }
   std::sort(merged.begin(), merged.end(),
@@ -842,6 +853,7 @@ int Ops::PutObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
   meta.contentType = CleanType(ctype ? *ctype : "");
   CollectAcl(req, meta.acl, meta.grants);
   m_meta.WriteObjectMeta(key.user, bucket, objKey, meta, err);
+  ClearRestore(path, id.get());
   std::string vid;
   if (RecordVersion(key.user, bucket, objKey, meta, path, vid) != 0)
     return Fail(req, 500, "InternalError", "Could not record the object version");
@@ -871,6 +883,18 @@ int Ops::GetObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
   int err = 0;
   if (m_meta.Store().Stat(path, id.get(), st, err) != 0 || !S_ISREG(st.st_mode))
     return Fail(req, 404, "NoSuchKey", "The specified key does not exist");
+  Archive arc = LoadArchive(path, id.get(), FileOffline(st));
+  std::string glacierHdr = GlacierHeaders(arc);
+  if (!head && !ArchiveReadable(arc.kind)) {
+    std::string body = ErrorXml("InvalidObjectState",
+                                "The operation is not valid for the object's storage class",
+                                req.resource);
+    std::string hdr = "Content-Type: application/xml" + glacierHdr;
+    if (Reply(req, 403, nullptr, hdr.c_str(), body.data(),
+              static_cast<long long>(body.size())) != 0)
+      return -1;
+    return 0;
+  }
 
   ObjectMeta meta;
   m_meta.ReadObjectMeta(key.user, bucket, objKey, meta);
@@ -887,7 +911,7 @@ int Ops::GetObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
   }
   if (cond == ReadCond::NotModified) {
     std::string hdr = "ETag: \"" + meta.etag + "\"\r\nLast-Modified: " + HttpDate(st.st_mtime) +
-                      versionHdr + UserMetaHeaders(meta.user);
+                      versionHdr + glacierHdr + UserMetaHeaders(meta.user);
     if (Reply(req, 304, nullptr, hdr.c_str(), nullptr, 0) != 0)
       return -1;
     return 0;
@@ -935,6 +959,7 @@ int Ops::GetObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
   if (!meta.etag.empty())
     hdr += "\r\nETag: \"" + meta.etag + "\"";
   hdr += versionHdr;
+  hdr += glacierHdr;
   hdr += UserMetaHeaders(meta.user);
   if (partial)
     hdr += "\r\nContent-Range: bytes " + std::to_string(start) + "-" + std::to_string(end) + "/" +

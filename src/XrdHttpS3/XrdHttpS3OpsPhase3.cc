@@ -918,6 +918,7 @@ int Ops::PostObject(XrdHttpExtReq &req) {
   if (meta.contentType.size() > 256)
     meta.contentType.resize(256);
   m_meta.WriteObjectMeta(key.user, bucket, keyField->body, meta, err);
+  ClearRestore(path, id.get());
   std::string vid;
   if (RecordVersion(key.user, bucket, keyField->body, meta, path, vid) != 0)
     return Fail(req, 500, "InternalError", "Could not record the object version");

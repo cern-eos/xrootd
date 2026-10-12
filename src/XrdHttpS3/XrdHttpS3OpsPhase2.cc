@@ -576,6 +576,10 @@ int Ops::CopyObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string 
   } else if (m_meta.Store().Stat(srcPath, srcWho, st, err) != 0 || !S_ISREG(st.st_mode)) {
     return Fail(req, 404, "NoSuchKey", "The source key does not exist");
   } else {
+    Archive arc = LoadArchive(srcPath, srcWho, FileOffline(st));
+    if (!ArchiveReadable(arc.kind))
+      return Fail(req, 403, "InvalidObjectState",
+                  "The operation is not valid for the object's storage class");
     m_meta.ReadObjectMeta(key.user, srcBucket, srcKey, srcMeta);
   }
   if (EvalReadCond(req.headers, srcMeta.etag, st.st_mtime, "x-amz-copy-source-if-match",
@@ -649,6 +653,7 @@ int Ops::CopyObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string 
   }
   meta.etag = etag;
   m_meta.WriteObjectMeta(key.user, bucket, objKey, meta, err);
+  ClearRestore(dstPath, id.get());
   std::string vid;
   if (RecordVersion(key.user, bucket, objKey, meta, dstPath, vid) != 0)
     return Fail(req, 500, "InternalError", "Could not record the object version");
@@ -891,6 +896,10 @@ int Ops::UploadPartCopy(XrdHttpExtReq &req, const KeyRecord &key, const std::str
   } else if (m_meta.Store().Stat(srcPath, srcWho, st, err) != 0 || !S_ISREG(st.st_mode)) {
     return Fail(req, 404, "NoSuchKey", "The source key does not exist");
   } else {
+    Archive arc = LoadArchive(srcPath, srcWho, FileOffline(st));
+    if (!ArchiveReadable(arc.kind))
+      return Fail(req, 403, "InvalidObjectState",
+                  "The operation is not valid for the object's storage class");
     m_meta.ReadObjectMeta(key.user, srcBucket, srcKey, srcMeta);
   }
   if (EvalReadCond(req.headers, srcMeta.etag, st.st_mtime, "x-amz-copy-source-if-match",
@@ -1115,6 +1124,7 @@ int Ops::CompleteMultipart(XrdHttpExtReq &req, const KeyRecord &key, const std::
       meta.user[kv.first.substr(5)] = kv.second;
   }
   m_meta.WriteObjectMeta(key.user, bucket, objKey, meta, err);
+  ClearRestore(dst, id.get());
   std::string vid;
   if (RecordVersion(key.user, bucket, objKey, meta, dst, vid) != 0)
     return Fail(req, 500, "InternalError", "Could not record the object version");

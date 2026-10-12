@@ -711,6 +711,18 @@ int Ops::ListObjectVersions(XrdHttpExtReq &req, const KeyRecord &key, const std:
       row.size = item.size;
       row.mtime = item.mtime;
       row.etag = item.etag;
+      if (!item.marker && item.id == item.latest) {
+        struct stat liveSt;
+        int liveErr = 0;
+        std::string livePath = ObjectFile(m_cfg, key.user, bucket, item.key);
+        Client owner(key.user);
+        if (m_meta.Store().Stat(livePath, owner.get(), liveSt, liveErr) == 0 &&
+            S_ISREG(liveSt.st_mode)) {
+          Archive arc = LoadArchive(livePath, owner.get(), FileOffline(liveSt));
+          if (arc.kind != ArchiveKind::Standard)
+            row.storageClass = "GLACIER";
+        }
+      }
     }
     page.push_back(row);
     nextKey = shown;
@@ -779,6 +791,9 @@ int Ops::Website(XrdHttpExtReq &req) {
     std::string path = ObjectFile(m_cfg, rec.owner, bucket, objKey);
     struct stat st;
     if (m_meta.Store().Stat(path, owner.get(), st, err) != 0 || !S_ISREG(st.st_mode))
+      return 0;
+    Archive arc = LoadArchive(path, owner.get(), FileOffline(st));
+    if (!ArchiveReadable(arc.kind))
       return 0;
     ObjectMeta meta;
     m_meta.ReadObjectMeta(rec.owner, bucket, objKey, meta);

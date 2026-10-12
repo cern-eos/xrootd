@@ -13,6 +13,8 @@ add_library(${XrdHttpS3} MODULE
   XrdHttpS3OpsPhase2.cc
   XrdHttpS3OpsPhase3.cc
   XrdHttpS3OpsVersion.cc
+  XrdHttpS3OpsGlacier.cc
+  XrdHttpS3Glacier.cc   XrdHttpS3Glacier.hh
   XrdHttpS3Paths.cc    XrdHttpS3Paths.hh
   XrdHttpS3SigV4.cc    XrdHttpS3SigV4.hh
   XrdHttpS3Xml.cc      XrdHttpS3Xml.hh

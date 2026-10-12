@@ -151,7 +151,8 @@ std::string ListObjectsXml(const std::string &bucket, const std::string &prefix,
       body += "<Contents><Key>" + XmlEscape(item.key) + "</Key><LastModified>" +
               IsoDate(item.mtime) + "</LastModified><ETag>&quot;" + XmlEscape(item.etag) +
               "&quot;</ETag><Size>" + std::to_string(item.size) +
-              "</Size><StorageClass>STANDARD</StorageClass></Contents>";
+              "</Size><StorageClass>" + XmlEscape(item.storageClass) +
+              "</StorageClass></Contents>";
     }
   }
   std::string xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -183,7 +184,8 @@ std::string ListObjectsV1Xml(const std::string &bucket, const std::string &prefi
       body += "<Contents><Key>" + XmlEscape(item.key) + "</Key><LastModified>" +
               IsoDate(item.mtime) + "</LastModified><ETag>&quot;" + XmlEscape(item.etag) +
               "&quot;</ETag><Size>" + std::to_string(item.size) +
-              "</Size><StorageClass>STANDARD</StorageClass></Contents>";
+              "</Size><StorageClass>" + XmlEscape(item.storageClass) +
+              "</StorageClass></Contents>";
     }
   }
   std::string xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -331,7 +333,7 @@ std::string ListVersionsXml(const std::string &bucket, const std::string &prefix
            "</VersionId><IsLatest>" + (item.latest ? "true" : "false") + "</IsLatest><LastModified>" +
            IsoDate(item.mtime) + "</LastModified><ETag>&quot;" + XmlEscape(item.etag) +
            "&quot;</ETag><Size>" + std::to_string(item.size) +
-           "</Size><StorageClass>STANDARD</StorageClass></Version>";
+           "</Size><StorageClass>" + XmlEscape(item.storageClass) + "</StorageClass></Version>";
   }
   xml += "</ListVersionsResult>\n";
   return xml;

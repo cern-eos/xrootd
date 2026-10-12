@@ -153,7 +153,35 @@ delete without a version id writes a delete marker and removes the live file.
 `PUT` and `GET` of `?website` store the index document, error document, and
 routing rules. `s3.website` is a DNS suffix: `Host: bucket.<suffix>` is an
 anonymous read of that bucket. A key that is a directory redirects to the
-index suffix, and a missing key returns the error document.
+index suffix, and a missing key returns the error document. An archived object
+is skipped, so the error document is used instead of reading it off tape.
+
+An object is `GLACIER` when `stat` reports it offline (`XRDSFS_OFFLINE` in
+`st_rdev`, or `st_dev` and `st_ino` both zero). `HEAD` still returns its size
+and `ETag`, with `x-amz-storage-class: GLACIER`. `GET`, `CopyObject`, and
+`UploadPartCopy` of that object return **403 InvalidObjectState** until it
+has been restored. `POST ?restore` with a `RestoreRequest` (`Days`, and an
+optional `Tier` of `Expedited`, `Standard`, or `Bulk`) records the recall on
+the live file and asks the filesystem to stage it:
+
+* `user.s3.restore-ongoing` is `true` while the offline bit is still set, and
+  `false` once the file is readable again
+* `user.s3.restore-expiry` is the HTTP date `Days` after the request
+
+The response is **202** after `prepare` is called with `Prep_STAGE`. `Bulk`
+uses `Prep_PRTY0`, `Standard` uses `Prep_PRTY1`, and `Expedited` uses
+`Prep_PRTY3`. A second restore while the recall is still running returns
+**409 RestoreAlreadyInProgress**. Once `stat` shows the file online, `GET`
+returns the bytes and `x-amz-restore` carries `ongoing-request="false"` with
+the stored expiry. Extending that period overwrites the expiry attribute and
+returns **200**. After the expiry, `GET` is refused and `prepare` is called
+with `Prep_EVICT`. The two attributes stay until a later `stat` shows the
+file offline again, so the object does not flip back to `STANDARD` while the
+disk copy is still present. A `PUT`, copy, multipart complete, or form `POST`
+that replaces the object removes both attributes. `ListObjects` reports
+`GLACIER` for an offline or restored object. Version copies under
+`.s3/versions` are ordinary files; the tape state applies to the live object.
+A `RestoreRequest` that selects part of an object is not implemented.
 
 Lifecycle, logging, and replication are not implemented. Completing a multipart
 upload still copies part bytes into the object.

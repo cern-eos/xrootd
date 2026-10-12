@@ -31,6 +31,7 @@ struct ListedObject {
   long long size{0};
   time_t mtime{0};
   std::string etag;
+  std::string storageClass{"STANDARD"};
 };
 
 std::string ListObjectsXml(const std::string &bucket, const std::string &prefix,
@@ -84,6 +85,7 @@ struct ListedVersion {
   long long size{0};
   time_t mtime{0};
   std::string etag;
+  std::string storageClass{"STANDARD"};
 };
 
 std::string VersioningXml(const std::string &status);

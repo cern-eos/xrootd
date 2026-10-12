@@ -886,4 +886,23 @@ if ! grep -q 'Location: /new/a' "$ROOT/hdr"; then
   exit 1
 fi
 
+printf 'tape\n' > "$ROOT/glacier.txt"
+code=$(call_s3 PUT "$PORT_ON" /mybucket/glacier.txt "@$ROOT/glacier.txt" "$ROOT/glacier.txt")
+expect_code "$code" 200 "PutObject glacier"
+code=$(call_s3 GET "$PORT_ON" /mybucket/glacier.txt "UNSIGNED-PAYLOAD" "")
+expect_code "$code" 200 "GetObject glacier online"
+if grep -q 'x-amz-storage-class:' "$ROOT/hdr"; then
+  echo "online object reported a storage class" >&2
+  cat "$ROOT/hdr" >&2
+  exit 1
+fi
+printf '%s' '<RestoreRequest xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Days>1</Days><GlacierJobParameters><Tier>Standard</Tier></GlacierJobParameters></RestoreRequest>' > "$ROOT/restore.xml"
+code=$(call_s3 POST "$PORT_ON" '/mybucket/glacier.txt?restore' "@$ROOT/restore.xml" "$ROOT/restore.xml")
+expect_code "$code" 403 "RestoreObject online"
+if ! grep -q 'InvalidObjectState' "$ROOT/out"; then
+  echo "RestoreObject body missing InvalidObjectState" >&2
+  cat "$ROOT/out" >&2
+  exit 1
+fi
+
 echo "XrdHttpS3 integration test passed"

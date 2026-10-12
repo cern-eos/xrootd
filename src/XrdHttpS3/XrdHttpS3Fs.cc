@@ -1,6 +1,7 @@
 #include "XrdHttpS3Fs.hh"
 
 #include "XrdOuc/XrdOucErrInfo.hh"
+#include "XrdOuc/XrdOucTList.hh"
 #include "XrdSec/XrdSecEntity.hh"
 #include "XrdSfs/XrdSfsFAttr.hh"
 #include "XrdSfs/XrdSfsInterface.hh"
@@ -347,6 +348,63 @@ int Fs::GetXattr(const std::string &path, const XrdSecEntity *who, const std::st
   }
   value.assign(ctl.info[0].Value, static_cast<size_t>(ctl.info[0].VLen));
   err = 0;
+  return 0;
+}
+
+int Fs::DelXattr(const std::string &path, const XrdSecEntity *who, const std::string &name,
+                 int &err) {
+  XrdOucErrInfo ei(WhoName(who));
+  XrdSfsFACtl ctl(path.c_str(), nullptr, 1);
+  ctl.rqst = XrdSfsFACtl::faDel;
+  ctl.info = new XrdSfsFAInfo[1];
+  std::string nbuf = name;
+  ctl.info[0].Name = &nbuf[0];
+  ctl.info[0].NLen = static_cast<short>(nbuf.size());
+  int rc = m_sfs.FAttr(&ctl, ei, who);
+  if (rc != SFS_OK) {
+    err = ErrnoOf(ei, rc);
+    return -1;
+  }
+  if (ctl.info && ctl.info[0].faRC != 0) {
+    int fa = ctl.info[0].faRC;
+    if (fa < 0)
+      fa = -fa;
+    if (fa == ENOENT
+#ifdef ENODATA
+        || fa == ENODATA
+#endif
+#ifdef ENOATTR
+        || fa == ENOATTR
+#endif
+    ) {
+      err = 0;
+      return 0;
+    }
+    err = fa;
+    return -1;
+  }
+  err = 0;
+  return 0;
+}
+
+int Fs::Prepare(const std::string &path, const XrdSecEntity *who, int opts, int &err) {
+  err = 0;
+  XrdOucErrInfo ei(WhoName(who));
+  XrdOucTList paths(path.c_str(), 0);
+  XrdSfsPrep pargs;
+  std::memset(&pargs, 0, sizeof(pargs));
+  pargs.opts = opts;
+  pargs.paths = &paths;
+  char reqid[] = "s3restore";
+  pargs.reqid = reqid;
+  int rc = m_sfs.prepare(pargs, ei, who);
+  rc = Wait(ei, rc);
+  if (rc == SFS_STALL)
+    rc = m_sfs.prepare(pargs, ei, who);
+  if (rc != SFS_OK) {
+    err = ErrnoOf(ei, rc);
+    return -1;
+  }
   return 0;
 }
 
