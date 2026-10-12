@@ -168,8 +168,9 @@ int Fs::WriteAll(const std::string &path, const XrdSecEntity *who, const std::st
   }
   int useFlags = 0;
   mode_t useMode = 0;
-  SplitMkpath(SFS_O_CREAT | SFS_O_TRUNC | SFS_O_WRONLY | SFS_O_MKPTH, mode,
-              useFlags, useMode);
+  // SFS_O_CREAT is an exclusive create. SFS_O_TRUNC creates a missing file
+  // and replaces one that already exists.
+  SplitMkpath(SFS_O_TRUNC | SFS_O_WRONLY | SFS_O_MKPTH, mode, useFlags, useMode);
   int rc = fh->open(path.c_str(), useFlags, useMode, who, nullptr);
   rc = Wait(fh->error, rc);
   if (rc == SFS_STALL)

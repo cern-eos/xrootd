@@ -32,6 +32,8 @@ struct BucketRecord {
   long long created{0};
   std::string acl{"private"};
   std::string region;
+  // Empty, Enabled, or Suspended.
+  std::string versioning;
   std::map<std::string, std::string> grants;
 };
 

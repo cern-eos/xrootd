@@ -173,7 +173,7 @@ int EvalWriteCond(const std::map<std::string, std::string> &headers, bool exists
 namespace {
 
 const char *kSubresources[] = {
-    "acl", "lifecycle", "location", "logging", "uploads", "versioning", "website", nullptr};
+    "acl", "lifecycle", "location", "logging", "uploads", nullptr};
 
 const std::string *Hdr(const XrdHttpExtReq &req, const char *name) {
   auto it = req.headers.find(name);
@@ -536,6 +536,12 @@ int Ops::Dispatch(XrdHttpExtReq &req, const KeyRecord &key) {
     return BucketDocOp(req, key, bucket, "notification");
   if (onlyBucket && query.count("requestPayment"))
     return BucketDocOp(req, key, bucket, "requestPayment");
+  if (onlyBucket && query.count("versioning"))
+    return BucketVersioning(req, key, bucket);
+  if (onlyBucket && query.count("website"))
+    return BucketDocOp(req, key, bucket, "website");
+  if (onlyBucket && req.verb == "GET" && query.count("versions"))
+    return ListObjectVersions(req, key, bucket);
   if (onlyBucket && req.verb == "GET" && query.count("location"))
     return GetBucketLocation(req, key, bucket);
   if (onlyBucket && req.verb == "GET" && query.count("uploads"))
@@ -836,8 +842,13 @@ int Ops::PutObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
   meta.contentType = CleanType(ctype ? *ctype : "");
   CollectAcl(req, meta.acl, meta.grants);
   m_meta.WriteObjectMeta(key.user, bucket, objKey, meta, err);
+  std::string vid;
+  if (RecordVersion(key.user, bucket, objKey, meta, path, vid) != 0)
+    return Fail(req, 500, "InternalError", "Could not record the object version");
 
   std::string hdr = "ETag: \"" + etag + "\"";
+  if (!vid.empty())
+    hdr += "\r\nx-amz-version-id: " + vid;
   if (Reply(req, 200, nullptr, hdr.c_str(), nullptr, 0) != 0)
     return -1;
   if (m_cfg.traceInfo)
@@ -851,6 +862,9 @@ int Ops::GetObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
   int owned = LoadOwned(req, key, bucket, rec);
   if (owned <= 0)
     return owned;
+  auto query = ParseQuery(QueryOf(req));
+  if (query.count("versionId"))
+    return ReadVersion(req, key, bucket, objKey, query["versionId"], head);
   Client id(key.user);
   std::string path = ObjectFile(m_cfg, key.user, bucket, objKey);
   struct stat st;
@@ -864,9 +878,16 @@ int Ops::GetObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
   if (cond == ReadCond::Failed)
     return Fail(req, 412, "PreconditionFailed",
                 "At least one of the preconditions you specified did not hold");
+  std::string versionHdr;
+  if (rec.versioning == "Enabled" || rec.versioning == "Suspended") {
+    std::string vid = CurrentVersion(key.user, bucket, objKey);
+    if (vid.empty())
+      vid = "null";
+    versionHdr = "\r\nx-amz-version-id: " + vid;
+  }
   if (cond == ReadCond::NotModified) {
     std::string hdr = "ETag: \"" + meta.etag + "\"\r\nLast-Modified: " + HttpDate(st.st_mtime) +
-                      UserMetaHeaders(meta.user);
+                      versionHdr + UserMetaHeaders(meta.user);
     if (Reply(req, 304, nullptr, hdr.c_str(), nullptr, 0) != 0)
       return -1;
     return 0;
@@ -888,7 +909,6 @@ int Ops::GetObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
     partial = true;
   }
   long long send = partial ? (end - start + 1) : static_cast<long long>(st.st_size);
-  auto query = ParseQuery(QueryOf(req));
   std::string contentType = meta.contentType;
   std::string extra;
   const char *overrides[][2] = {
@@ -914,6 +934,7 @@ int Ops::GetObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string &
                     "\r\nLast-Modified: " + HttpDate(st.st_mtime) + extra;
   if (!meta.etag.empty())
     hdr += "\r\nETag: \"" + meta.etag + "\"";
+  hdr += versionHdr;
   hdr += UserMetaHeaders(meta.user);
   if (partial)
     hdr += "\r\nContent-Range: bytes " + std::to_string(start) + "-" + std::to_string(end) + "/" +
@@ -955,6 +976,16 @@ int Ops::DeleteObject(XrdHttpExtReq &req, const KeyRecord &key, const std::strin
   int owned = LoadOwned(req, key, bucket, rec);
   if (owned <= 0)
     return owned;
+  auto query = ParseQuery(QueryOf(req));
+  if (query.count("versionId"))
+    return DeleteOneVersion(req, key, bucket, objKey, query["versionId"]);
+  if (rec.versioning == "Enabled" || rec.versioning == "Suspended") {
+    std::string vid;
+    if (MakeDeleteMarker(key.user, bucket, objKey, rec.versioning, vid) != 0)
+      return Fail(req, 500, "InternalError", "Could not record the delete marker");
+    std::string hdr = "x-amz-version-id: " + vid + "\r\nx-amz-delete-marker: true";
+    return Reply(req, 204, nullptr, hdr.c_str(), nullptr, 0);
+  }
   Client id(key.user);
   int err = 0;
   int rc = m_meta.Store().Unlink(ObjectFile(m_cfg, key.user, bucket, objKey), id.get(), err);

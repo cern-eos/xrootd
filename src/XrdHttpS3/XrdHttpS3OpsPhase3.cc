@@ -682,6 +682,8 @@ int Ops::BucketDocOp(XrdHttpExtReq &req, const KeyRecord &key, const std::string
         return Fail(req, 404, "NoSuchTagSet", "The bucket has no tags");
       } else if (kind == "policy") {
         return Fail(req, 404, "NoSuchBucketPolicy", "The bucket has no policy");
+      } else if (kind == "website") {
+        return Fail(req, 404, "NoSuchWebsiteConfiguration", "The bucket has no website configuration");
       } else {
         return Fail(req, 404, "NoSuchCORSConfiguration", "The bucket has no CORS configuration");
       }
@@ -706,6 +708,8 @@ int Ops::BucketDocOp(XrdHttpExtReq &req, const KeyRecord &key, const std::string
   const std::string *md5 = Hdr(req, "content-md5");
   if (!md5 || *md5 != ContentMd5(body))
     return Fail(req, 400, "InvalidDigest", "Content-MD5 is missing or does not match");
+  if (kind == "website" && body.find("WebsiteConfiguration") == std::string::npos)
+    return Fail(req, 400, "MalformedXML", "The website document is not well formed");
   if (kind == "tagging") {
     auto keys = TagTexts(body, "Key");
     auto values = TagTexts(body, "Value");
@@ -914,6 +918,9 @@ int Ops::PostObject(XrdHttpExtReq &req) {
   if (meta.contentType.size() > 256)
     meta.contentType.resize(256);
   m_meta.WriteObjectMeta(key.user, bucket, keyField->body, meta, err);
+  std::string vid;
+  if (RecordVersion(key.user, bucket, keyField->body, meta, path, vid) != 0)
+    return Fail(req, 500, "InternalError", "Could not record the object version");
   int status = 204;
   const FormPart *want = Field(parts, "success_action_status");
   if (want && (want->body == "200" || want->body == "201"))

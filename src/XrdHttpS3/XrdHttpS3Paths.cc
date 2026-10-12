@@ -184,4 +184,43 @@ std::string ObjectTags(const Config &cfg, const std::string &user, const std::st
   return ObjectRecord(cfg, user, bucket, key) + ".tags";
 }
 
+std::string VersionRoot(const Config &cfg, const std::string &user, const std::string &bucket) {
+  return JoinPath(JoinPath(UserMeta(cfg, user), "versions"), bucket);
+}
+
+std::string VersionKeyDir(const Config &cfg, const std::string &user, const std::string &bucket,
+                          const std::string &key) {
+  std::string rel = key;
+  if (!rel.empty() && rel.back() == '/') {
+    rel.pop_back();
+    rel += ".s3dir";
+  }
+  return JoinPath(VersionRoot(cfg, user, bucket), rel);
+}
+
+bool HostLabel(const std::string &hostHeader, const std::string &suffix, std::string &label) {
+  label.clear();
+  if (suffix.empty() || hostHeader.empty() || hostHeader[0] == '[')
+    return false;
+  std::string host = hostHeader;
+  size_t colon = host.rfind(':');
+  if (colon != std::string::npos && colon + 1 < host.size()) {
+    bool digits = true;
+    for (size_t i = colon + 1; i < host.size(); i++) {
+      if (!std::isdigit(static_cast<unsigned char>(host[i])))
+        digits = false;
+    }
+    if (digits)
+      host.resize(colon);
+  }
+  for (char &c : host)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  std::string dot = "." + suffix;
+  if (host.size() <= dot.size() ||
+      host.compare(host.size() - dot.size(), dot.size(), dot) != 0)
+    return false;
+  label = host.substr(0, host.size() - dot.size());
+  return !label.empty();
+}
+
 }

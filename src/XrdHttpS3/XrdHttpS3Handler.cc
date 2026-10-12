@@ -79,6 +79,10 @@ bool FormPost(const XrdHttpReq &req) {
 bool Handler::Claim(const XrdHttpReq &req) const {
   if (!m_cfg.enabled)
     return false;
+  std::string site;
+  const std::string *host = HeaderOf(req, "host");
+  if (host && HostLabel(*host, m_cfg.website, site))
+    return true;
   if (req.requestverb == "OPTIONS") {
     const std::string *origin = HeaderOf(req, "origin");
     return origin && !origin->empty();
@@ -91,6 +95,11 @@ bool Handler::Claim(const XrdHttpReq &req) const {
 int Handler::ProcessReq(XrdHttpExtReq &req) {
   if (!m_cfg.enabled)
     return m_ops->Fail(req, 403, "AccessDenied", "S3 is switched off");
+
+  std::string site;
+  auto hostIt = req.headers.find("host");
+  if (hostIt != req.headers.end() && HostLabel(hostIt->second, m_cfg.website, site))
+    return m_ops->Website(req);
 
   if (req.verb == "OPTIONS")
     return m_ops->Options(req);

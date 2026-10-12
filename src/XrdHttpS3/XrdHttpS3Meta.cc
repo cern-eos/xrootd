@@ -154,6 +154,7 @@ int Meta::LoadBucket(const std::string &name, BucketRecord &out, int &err) {
   out.created = props.count("created") ? std::atoll(props["created"].c_str()) : 0;
   out.acl = props.count("acl") && !props["acl"].empty() ? props["acl"] : "private";
   out.region = props.count("region") && !props["region"].empty() ? props["region"] : m_cfg.region;
+  out.versioning = props.count("versioning") ? props["versioning"] : "";
   for (const auto &kv : props) {
     if (kv.first.compare(0, 6, "grant-") == 0 && kv.first.size() > 6)
       out.grants[kv.first.substr(6)] = kv.second;
@@ -177,6 +178,8 @@ int Meta::StoreBucket(const BucketRecord &rec, int &err) {
   props["created"] = std::to_string(rec.created);
   props["acl"] = rec.acl.empty() ? "private" : rec.acl;
   props["region"] = rec.region.empty() ? m_cfg.region : rec.region;
+  if (rec.versioning == "Enabled" || rec.versioning == "Suspended")
+    props["versioning"] = rec.versioning;
   for (const auto &kv : rec.grants) {
     if (kv.second.find('\n') == std::string::npos && kv.second.find('\r') == std::string::npos)
       props["grant-" + kv.first] = kv.second;

@@ -152,6 +152,22 @@ bool LoadConfig(const char *configfn, XrdSysError &log, Config &cfg) {
         config.Close();
         return false;
       }
+    } else if (!strcmp(val, "s3.website")) {
+      val = config.GetWord();
+      if (!val || !val[0]) {
+        log.Emsg("Config", "s3.website value not specified");
+        config.Close();
+        return false;
+      }
+      cfg.website = val;
+      for (char &c : cfg.website)
+        c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+      if (cfg.website.find('/') != std::string::npos || cfg.website.front() == '.' ||
+          cfg.website.find("..") != std::string::npos) {
+        log.Emsg("Config", "s3.website must be a DNS suffix", cfg.website.c_str());
+        config.Close();
+        return false;
+      }
     } else if (!strcmp(val, "s3.trace")) {
       val = config.GetWord();
       if (!val || !val[0]) {

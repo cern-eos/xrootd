@@ -20,6 +20,8 @@ struct Config {
   // DNS suffix for virtual-hosted buckets, such as s3.example.com.
   // Empty keeps path-style URLs only.
   std::string vhost;
+  // DNS suffix for the anonymous website endpoint, such as s3-website.example.com.
+  std::string website;
 };
 
 bool LoadConfig(const char *configfn, XrdSysError &log, Config &cfg);

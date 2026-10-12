@@ -75,6 +75,23 @@ std::string ListUploadsXml(const std::string &bucket, const std::string &prefix,
 
 std::string LocationXml(const std::string &region);
 
+struct ListedVersion {
+  std::string key;
+  std::string id;
+  bool latest{false};
+  bool marker{false};
+  bool common{false};
+  long long size{0};
+  time_t mtime{0};
+  std::string etag;
+};
+
+std::string VersioningXml(const std::string &status);
+std::string ListVersionsXml(const std::string &bucket, const std::string &prefix,
+                            const std::string &keyMarker, const std::string &versionMarker,
+                            int maxKeys, const std::vector<ListedVersion> &page, bool truncated,
+                            const std::string &nextKey, const std::string &nextVersion);
+
 }
 
 #endif

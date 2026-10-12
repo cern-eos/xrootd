@@ -143,6 +143,17 @@ signature, expiration, bucket, and key conditions match. `OPTIONS` with an
 `Access-Control-Allow-Origin` headers are added to later responses that match
 a rule.
 
-Versioning, lifecycle, logging, website, and replication are not implemented.
-`CopyObject` with `versionId` is not implemented. Completing a multipart
+`PUT` and `GET` of `?versioning` turn versioning on or suspend it. While it is
+enabled, each `PUT` keeps the new bytes at the object path and stores that
+generation under `.s3/versions/`. `GET` and `DELETE` accept `versionId`. A
+delete without a version id writes a delete marker and removes the live file.
+`GET ?versions` lists the generations. `CopyObject` accepts `versionId` on
+`x-amz-copy-source`.
+
+`PUT` and `GET` of `?website` store the index document, error document, and
+routing rules. `s3.website` is a DNS suffix: `Host: bucket.<suffix>` is an
+anonymous read of that bucket. A key that is a directory redirects to the
+index suffix, and a missing key returns the error document.
+
+Lifecycle, logging, and replication are not implemented. Completing a multipart
 upload still copies part bytes into the object.

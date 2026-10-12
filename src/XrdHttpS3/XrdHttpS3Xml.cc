@@ -292,4 +292,49 @@ std::string LocationXml(const std::string &region) {
          body + "</LocationConstraint>\n";
 }
 
+std::string VersioningXml(const std::string &status) {
+  std::string inner;
+  if (status == "Enabled" || status == "Suspended")
+    inner = "<Status>" + status + "</Status>";
+  return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+         "<VersioningConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">" +
+         inner + "</VersioningConfiguration>\n";
+}
+
+std::string ListVersionsXml(const std::string &bucket, const std::string &prefix,
+                            const std::string &keyMarker, const std::string &versionMarker,
+                            int maxKeys, const std::vector<ListedVersion> &page, bool truncated,
+                            const std::string &nextKey, const std::string &nextVersion) {
+  std::string xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    "<ListVersionsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                    "<Name>" + XmlEscape(bucket) + "</Name><Prefix>" + XmlEscape(prefix) +
+                    "</Prefix><KeyMarker>" + XmlEscape(keyMarker) + "</KeyMarker><VersionIdMarker>" +
+                    XmlEscape(versionMarker) + "</VersionIdMarker><MaxKeys>" +
+                    std::to_string(maxKeys) + "</MaxKeys><IsTruncated>" +
+                    (truncated ? "true" : "false") + "</IsTruncated>";
+  if (truncated) {
+    xml += "<NextKeyMarker>" + XmlEscape(nextKey) + "</NextKeyMarker><NextVersionIdMarker>" +
+           XmlEscape(nextVersion) + "</NextVersionIdMarker>";
+  }
+  for (const auto &item : page) {
+    if (item.common) {
+      xml += "<CommonPrefixes><Prefix>" + XmlEscape(item.key) + "</Prefix></CommonPrefixes>";
+      continue;
+    }
+    if (item.marker) {
+      xml += "<DeleteMarker><Key>" + XmlEscape(item.key) + "</Key><VersionId>" +
+             XmlEscape(item.id) + "</VersionId><IsLatest>" + (item.latest ? "true" : "false") +
+             "</IsLatest><LastModified>" + IsoDate(item.mtime) + "</LastModified></DeleteMarker>";
+      continue;
+    }
+    xml += "<Version><Key>" + XmlEscape(item.key) + "</Key><VersionId>" + XmlEscape(item.id) +
+           "</VersionId><IsLatest>" + (item.latest ? "true" : "false") + "</IsLatest><LastModified>" +
+           IsoDate(item.mtime) + "</LastModified><ETag>&quot;" + XmlEscape(item.etag) +
+           "&quot;</ETag><Size>" + std::to_string(item.size) +
+           "</Size><StorageClass>STANDARD</StorageClass></Version>";
+  }
+  xml += "</ListVersionsResult>\n";
+  return xml;
+}
+
 }

@@ -292,7 +292,7 @@ int Ops::WriteObjectBytes(XrdHttpExtReq &req, const KeyRecord &key, const std::s
     httpChunked = te->find("chunked") != std::string::npos;
   OwnedFile file;
   int err = 0;
-  int flags = SFS_O_CREAT | SFS_O_TRUNC | SFS_O_WRONLY | SFS_O_MKPTH;
+  int flags = SFS_O_TRUNC | SFS_O_WRONLY | SFS_O_MKPTH;
   if (m_meta.Store().Open(path, who, flags, 0644, file, err) != 0)
     return Fail(req, 500, "InternalError", "Could not create the object");
 
@@ -521,10 +521,12 @@ int Ops::CopyObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string 
   if (!srcHdr)
     return Fail(req, 400, "InvalidArgument", "x-amz-copy-source is required");
   std::string src = PercentDecode(*srcHdr);
+  std::string srcVersion;
   size_t q = src.find('?');
   if (q != std::string::npos) {
-    if (src.find("versionId=") != std::string::npos)
-      return Fail(req, 501, "NotImplemented", "CopyObject version id is not implemented");
+    auto sq = ParseQuery(src.substr(q + 1));
+    if (sq.count("versionId"))
+      srcVersion = sq["versionId"];
     src.resize(q);
   }
   if (!src.empty() && src[0] == '/')
@@ -546,12 +548,36 @@ int Ops::CopyObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string 
 
   Client id(key.user);
   std::string srcPath = ObjectFile(m_cfg, key.user, srcBucket, srcKey);
+  const XrdSecEntity *srcWho = id.get();
   struct stat st;
   int err = 0;
-  if (m_meta.Store().Stat(srcPath, id.get(), st, err) != 0 || !S_ISREG(st.st_mode))
-    return Fail(req, 404, "NoSuchKey", "The source key does not exist");
   ObjectMeta srcMeta;
-  m_meta.ReadObjectMeta(key.user, srcBucket, srcKey, srcMeta);
+  if (!srcVersion.empty()) {
+    std::string propsBody;
+    srcPath = JoinPath(VersionKeyDir(m_cfg, key.user, srcBucket, srcKey), srcVersion);
+    if (m_meta.Store().ReadAll(srcPath + ".props", m_meta.MetaWho(), propsBody, err) != 0)
+      return Fail(req, 404, "NoSuchVersion", "The specified version does not exist");
+    auto props = ParseProps(propsBody);
+    if (props["delete-marker"] == "1")
+      return Fail(req, 405, "MethodNotAllowed", "The source version is a delete marker");
+    srcWho = m_meta.MetaWho();
+    srcMeta.etag = props["etag"];
+    srcMeta.contentType = props["content-type"].empty() ? "application/octet-stream"
+                                                         : props["content-type"];
+    srcMeta.acl = props["acl"].empty() ? "private" : props["acl"];
+    for (const auto &kv : props) {
+      if (kv.first.compare(0, 5, "user.") == 0 && kv.first.size() > 5)
+        srcMeta.user[kv.first.substr(5)] = kv.second;
+      if (kv.first.compare(0, 6, "grant-") == 0 && kv.first.size() > 6)
+        srcMeta.grants[kv.first.substr(6)] = kv.second;
+    }
+    if (m_meta.Store().Stat(srcPath, srcWho, st, err) != 0 || !S_ISREG(st.st_mode))
+      return Fail(req, 404, "NoSuchVersion", "The specified version does not exist");
+  } else if (m_meta.Store().Stat(srcPath, srcWho, st, err) != 0 || !S_ISREG(st.st_mode)) {
+    return Fail(req, 404, "NoSuchKey", "The source key does not exist");
+  } else {
+    m_meta.ReadObjectMeta(key.user, srcBucket, srcKey, srcMeta);
+  }
   if (EvalReadCond(req.headers, srcMeta.etag, st.st_mtime, "x-amz-copy-source-if-match",
                    "x-amz-copy-source-if-none-match", "x-amz-copy-source-if-unmodified-since",
                    "x-amz-copy-source-if-modified-since") != ReadCond::Ok)
@@ -569,10 +595,10 @@ int Ops::CopyObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string 
 
   OwnedFile in;
   OwnedFile out;
-  if (m_meta.Store().Open(srcPath, id.get(), SFS_O_RDONLY, 0, in, err) != 0)
+  if (m_meta.Store().Open(srcPath, srcWho, SFS_O_RDONLY, 0, in, err) != 0)
     return Fail(req, 500, "InternalError", "Could not open the source object");
   std::string dstPath = ObjectFile(m_cfg, key.user, bucket, objKey);
-  int flags = SFS_O_CREAT | SFS_O_TRUNC | SFS_O_WRONLY | SFS_O_MKPTH;
+  int flags = SFS_O_TRUNC | SFS_O_WRONLY | SFS_O_MKPTH;
   if (m_meta.Store().Open(dstPath, id.get(), flags, 0644, out, err) != 0)
     return Fail(req, 500, "InternalError", "Could not create the destination object");
 
@@ -623,8 +649,15 @@ int Ops::CopyObject(XrdHttpExtReq &req, const KeyRecord &key, const std::string 
   }
   meta.etag = etag;
   m_meta.WriteObjectMeta(key.user, bucket, objKey, meta, err);
+  std::string vid;
+  if (RecordVersion(key.user, bucket, objKey, meta, dstPath, vid) != 0)
+    return Fail(req, 500, "InternalError", "Could not record the object version");
   std::string body = CopyObjectXml(etag, time(nullptr));
   std::string hdr = "Content-Type: application/xml";
+  if (!srcVersion.empty())
+    hdr += "\r\nx-amz-copy-source-version-id: " + srcVersion;
+  if (!vid.empty())
+    hdr += "\r\nx-amz-version-id: " + vid;
   if (Reply(req, 200, nullptr, hdr.c_str(), body.data(),
                          static_cast<long long>(body.size())) != 0)
     return -1;
@@ -671,14 +704,24 @@ int Ops::DeleteObjects(XrdHttpExtReq &req, const KeyRecord &key, const std::stri
       continue;
     }
     int err = 0;
-    int rc = m_meta.Store().Unlink(ObjectFile(m_cfg, key.user, bucket, objKey), id.get(), err);
-    if (rc != 0 && err != ENOENT) {
-      errors.push_back(objKey);
-      codes.push_back("InternalError");
-      messages.push_back("Could not delete the object");
-      continue;
+    if (rec.versioning == "Enabled" || rec.versioning == "Suspended") {
+      std::string vid;
+      if (MakeDeleteMarker(key.user, bucket, objKey, rec.versioning, vid) != 0) {
+        errors.push_back(objKey);
+        codes.push_back("InternalError");
+        messages.push_back("Could not record the delete marker");
+        continue;
+      }
+    } else {
+      int rc = m_meta.Store().Unlink(ObjectFile(m_cfg, key.user, bucket, objKey), id.get(), err);
+      if (rc != 0 && err != ENOENT) {
+        errors.push_back(objKey);
+        codes.push_back("InternalError");
+        messages.push_back("Could not delete the object");
+        continue;
+      }
+      m_meta.RemoveObjectMeta(key.user, bucket, objKey);
     }
-    m_meta.RemoveObjectMeta(key.user, bucket, objKey);
     if (!quiet)
       deleted.push_back(objKey);
   }
@@ -804,9 +847,14 @@ int Ops::UploadPartCopy(XrdHttpExtReq &req, const KeyRecord &key, const std::str
   if (!srcHdr)
     return Fail(req, 400, "InvalidArgument", "x-amz-copy-source is required");
   std::string src = PercentDecode(*srcHdr);
+  std::string srcVersion;
   size_t qpos = src.find('?');
-  if (qpos != std::string::npos)
+  if (qpos != std::string::npos) {
+    auto sq = ParseQuery(src.substr(qpos + 1));
+    if (sq.count("versionId"))
+      srcVersion = sq["versionId"];
     src.resize(qpos);
+  }
   if (!src.empty() && src[0] == '/')
     src.erase(src.begin());
   size_t slash = src.find('/');
@@ -825,11 +873,26 @@ int Ops::UploadPartCopy(XrdHttpExtReq &req, const KeyRecord &key, const std::str
 
   Client id(key.user);
   std::string srcPath = ObjectFile(m_cfg, key.user, srcBucket, srcKey);
+  const XrdSecEntity *srcWho = id.get();
   struct stat st;
-  if (m_meta.Store().Stat(srcPath, id.get(), st, err) != 0 || !S_ISREG(st.st_mode))
-    return Fail(req, 404, "NoSuchKey", "The source key does not exist");
   ObjectMeta srcMeta;
-  m_meta.ReadObjectMeta(key.user, srcBucket, srcKey, srcMeta);
+  if (!srcVersion.empty()) {
+    std::string propsBody;
+    srcPath = JoinPath(VersionKeyDir(m_cfg, key.user, srcBucket, srcKey), srcVersion);
+    if (m_meta.Store().ReadAll(srcPath + ".props", m_meta.MetaWho(), propsBody, err) != 0)
+      return Fail(req, 404, "NoSuchVersion", "The specified version does not exist");
+    auto vprops = ParseProps(propsBody);
+    if (vprops["delete-marker"] == "1")
+      return Fail(req, 405, "MethodNotAllowed", "The source version is a delete marker");
+    srcWho = m_meta.MetaWho();
+    srcMeta.etag = vprops["etag"];
+    if (m_meta.Store().Stat(srcPath, srcWho, st, err) != 0 || !S_ISREG(st.st_mode))
+      return Fail(req, 404, "NoSuchVersion", "The specified version does not exist");
+  } else if (m_meta.Store().Stat(srcPath, srcWho, st, err) != 0 || !S_ISREG(st.st_mode)) {
+    return Fail(req, 404, "NoSuchKey", "The source key does not exist");
+  } else {
+    m_meta.ReadObjectMeta(key.user, srcBucket, srcKey, srcMeta);
+  }
   if (EvalReadCond(req.headers, srcMeta.etag, st.st_mtime, "x-amz-copy-source-if-match",
                    "x-amz-copy-source-if-none-match", "x-amz-copy-source-if-unmodified-since",
                    "x-amz-copy-source-if-modified-since") != ReadCond::Ok)
@@ -857,11 +920,11 @@ int Ops::UploadPartCopy(XrdHttpExtReq &req, const KeyRecord &key, const std::str
     return Fail(req, 400, "InvalidArgument", "The source object is empty");
 
   OwnedFile in;
-  if (m_meta.Store().Open(srcPath, id.get(), SFS_O_RDONLY, 0, in, err) != 0)
+  if (m_meta.Store().Open(srcPath, srcWho, SFS_O_RDONLY, 0, in, err) != 0)
     return Fail(req, 500, "InternalError", "Could not open the source object");
   std::string path = UploadPartFile(m_cfg, key.user, upload, std::to_string(part));
   OwnedFile out;
-  int flags = SFS_O_CREAT | SFS_O_TRUNC | SFS_O_WRONLY | SFS_O_MKPTH;
+  int flags = SFS_O_TRUNC | SFS_O_WRONLY | SFS_O_MKPTH;
   if (m_meta.Store().Open(path, m_meta.MetaWho(), flags, 0644, out, err) != 0)
     return Fail(req, 500, "InternalError", "Could not create the part");
 
@@ -954,7 +1017,7 @@ int Ops::CompleteMultipart(XrdHttpExtReq &req, const KeyRecord &key, const std::
   Client id(key.user);
   std::string dst = ObjectFile(m_cfg, key.user, bucket, objKey);
   OwnedFile out;
-  int flags = SFS_O_CREAT | SFS_O_TRUNC | SFS_O_WRONLY | SFS_O_MKPTH;
+  int flags = SFS_O_TRUNC | SFS_O_WRONLY | SFS_O_MKPTH;
   if (m_meta.Store().Open(dst, id.get(), flags, 0644, out, err) != 0)
     return Fail(req, 500, "InternalError", "Could not create the object");
 
@@ -1052,9 +1115,14 @@ int Ops::CompleteMultipart(XrdHttpExtReq &req, const KeyRecord &key, const std::
       meta.user[kv.first.substr(5)] = kv.second;
   }
   m_meta.WriteObjectMeta(key.user, bucket, objKey, meta, err);
+  std::string vid;
+  if (RecordVersion(key.user, bucket, objKey, meta, dst, vid) != 0)
+    return Fail(req, 500, "InternalError", "Could not record the object version");
   AbortMultipart(req, key, bucket, objKey);
   std::string body = CompleteMultipartXml(bucket, objKey, etag);
   std::string hdr = "Content-Type: application/xml";
+  if (!vid.empty())
+    hdr += "\r\nx-amz-version-id: " + vid;
   if (Reply(req, 200, nullptr, hdr.c_str(), body.data(),
                          static_cast<long long>(body.size())) != 0)
     return -1;

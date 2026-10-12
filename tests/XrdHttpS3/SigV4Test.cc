@@ -27,6 +27,16 @@ TEST(S3Paths, UserHashAndObjectLayout) {
   EXPECT_TRUE(ValidAccessKey("AKIAIOSFODNN7EXAMPLE"));
 }
 
+TEST(S3Paths, WebsiteHostLabel) {
+  std::string label;
+  EXPECT_TRUE(HostLabel("mybucket.s3-website.test", "s3-website.test", label));
+  EXPECT_EQ(label, "mybucket");
+  EXPECT_TRUE(HostLabel("MyBucket.s3-website.test:80", "s3-website.test", label));
+  EXPECT_EQ(label, "mybucket");
+  EXPECT_FALSE(HostLabel("127.0.0.1:8080", "s3-website.test", label));
+  EXPECT_FALSE(HostLabel("mybucket.s3.test", "s3-website.test", label));
+}
+
 TEST(S3SigV4, AwsGetObjectExample) {
   std::vector<std::pair<std::string, std::string>> headers = {
       {"host", "examplebucket.s3.amazonaws.com"},

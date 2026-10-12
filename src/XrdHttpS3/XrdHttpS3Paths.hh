@@ -37,6 +37,12 @@ std::string BucketDoc(const Config &cfg, const std::string &user, const std::str
                       const std::string &kind);
 std::string ObjectTags(const Config &cfg, const std::string &user, const std::string &bucket,
                        const std::string &key);
+std::string VersionKeyDir(const Config &cfg, const std::string &user, const std::string &bucket,
+                          const std::string &key);
+std::string VersionRoot(const Config &cfg, const std::string &user, const std::string &bucket);
+
+// label is the host part before "." + suffix, with a trailing :port removed.
+bool HostLabel(const std::string &hostHeader, const std::string &suffix, std::string &label);
 
 }
 

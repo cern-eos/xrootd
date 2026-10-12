@@ -69,6 +69,7 @@ s3.userhash first
 s3.skew 15m
 s3.metacache 0
 s3.vhost s3.test
+s3.website s3-website.test
 s3.trace info
 EOF
 }
@@ -729,6 +730,159 @@ expect_code "$code" 404 "GetObject after delete"
 if ! grep -q NoSuchKey "$ROOT/out"; then
   echo "expected NoSuchKey" >&2
   cat "$ROOT/out" >&2
+  exit 1
+fi
+
+printf '%s' '<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status></VersioningConfiguration>' > "$ROOT/ver.xml"
+vermd5=$(openssl dgst -md5 -binary "$ROOT/ver.xml" | openssl base64 | tr -d '\n')
+sign PUT /mybucket versioning "@$ROOT/ver.xml" "127.0.0.1:${PORT_ON}"
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' -X PUT \
+  -H "x-amz-date: $S3_DATE" -H "x-amz-content-sha256: $S3_HASH" \
+  -H "Authorization: $S3_AUTH" -H "Content-MD5: $vermd5" \
+  --data-binary "@$ROOT/ver.xml" \
+  "http://127.0.0.1:${PORT_ON}/mybucket?versioning")
+expect_code "$code" 200 "PutBucketVersioning"
+code=$(call_s3 GET "$PORT_ON" '/mybucket?versioning' UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetBucketVersioning"
+if ! grep -q '>Enabled<' "$ROOT/out"; then
+  echo "versioning status missing" >&2
+  cat "$ROOT/out" >&2
+  exit 1
+fi
+printf 'one' > "$ROOT/v1body"
+code=$(call_s3 PUT "$PORT_ON" /mybucket/ver.txt "@$ROOT/v1body" "$ROOT/v1body")
+expect_code "$code" 200 "PutObject version 1"
+vid1=$(awk 'BEGIN{IGNORECASE=1} /^x-amz-version-id:/ {gsub(/\r/,"",$2); print $2; exit}' "$ROOT/hdr")
+if [ -z "$vid1" ]; then
+  echo "missing version id on first put" >&2
+  cat "$ROOT/hdr" >&2
+  exit 1
+fi
+printf 'two' > "$ROOT/v2body"
+code=$(call_s3 PUT "$PORT_ON" /mybucket/ver.txt "@$ROOT/v2body" "$ROOT/v2body")
+expect_code "$code" 200 "PutObject version 2"
+vid2=$(awk 'BEGIN{IGNORECASE=1} /^x-amz-version-id:/ {gsub(/\r/,"",$2); print $2; exit}' "$ROOT/hdr")
+code=$(call_s3 GET "$PORT_ON" /mybucket/ver.txt UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetObject current version"
+if [ "$(cat "$ROOT/out")" != "two" ]; then
+  echo "current version body mismatch [$(cat "$ROOT/out")]" >&2
+  exit 1
+fi
+if ! grep -q "$vid2" "$ROOT/hdr"; then
+  echo "current get missing latest version id" >&2
+  cat "$ROOT/hdr" >&2
+  exit 1
+fi
+code=$(call_s3 GET "$PORT_ON" "/mybucket/ver.txt?versionId=${vid1}" UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetObject old version"
+if [ "$(cat "$ROOT/out")" != "one" ]; then
+  echo "old version body mismatch [$(cat "$ROOT/out")]" >&2
+  exit 1
+fi
+code=$(call_s3 GET "$PORT_ON" '/mybucket?versions' UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "ListObjectVersions"
+if ! grep -q "$vid1" "$ROOT/out" || ! grep -q "$vid2" "$ROOT/out" || ! grep -q '>true<' "$ROOT/out"; then
+  echo "version list missing generations" >&2
+  cat "$ROOT/out" >&2
+  exit 1
+fi
+code=$(call_s3 DELETE "$PORT_ON" /mybucket/ver.txt UNSIGNED-PAYLOAD "")
+expect_code "$code" 204 "DeleteObject delete marker"
+if ! grep -qi 'x-amz-delete-marker: true' "$ROOT/hdr"; then
+  echo "delete marker header missing" >&2
+  cat "$ROOT/hdr" >&2
+  exit 1
+fi
+marker=$(awk 'BEGIN{IGNORECASE=1} /^x-amz-version-id:/ {gsub(/\r/,"",$2); print $2; exit}' "$ROOT/hdr")
+code=$(call_s3 GET "$PORT_ON" /mybucket/ver.txt UNSIGNED-PAYLOAD "")
+expect_code "$code" 404 "GetObject after delete marker"
+code=$(call_s3 GET "$PORT_ON" "/mybucket/ver.txt?versionId=${vid2}" UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetObject version behind marker"
+if [ "$(cat "$ROOT/out")" != "two" ]; then
+  echo "version behind marker mismatch" >&2
+  exit 1
+fi
+code=$(call_s3 DELETE "$PORT_ON" "/mybucket/ver.txt?versionId=${marker}" UNSIGNED-PAYLOAD "")
+expect_code "$code" 204 "DeleteObject delete marker version"
+code=$(call_s3 GET "$PORT_ON" /mybucket/ver.txt UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetObject restored version"
+if [ "$(cat "$ROOT/out")" != "two" ]; then
+  echo "restored version mismatch [$(cat "$ROOT/out")]" >&2
+  exit 1
+fi
+printf '%s' '<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Suspended</Status></VersioningConfiguration>' > "$ROOT/ver.xml"
+vermd5=$(openssl dgst -md5 -binary "$ROOT/ver.xml" | openssl base64 | tr -d '\n')
+sign PUT /mybucket versioning "@$ROOT/ver.xml" "127.0.0.1:${PORT_ON}"
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' -X PUT \
+  -H "x-amz-date: $S3_DATE" -H "x-amz-content-sha256: $S3_HASH" \
+  -H "Authorization: $S3_AUTH" -H "Content-MD5: $vermd5" \
+  --data-binary "@$ROOT/ver.xml" \
+  "http://127.0.0.1:${PORT_ON}/mybucket?versioning")
+expect_code "$code" 200 "Suspend versioning"
+printf 'three' > "$ROOT/v3body"
+code=$(call_s3 PUT "$PORT_ON" /mybucket/ver.txt "@$ROOT/v3body" "$ROOT/v3body")
+expect_code "$code" 200 "PutObject null version"
+code=$(call_s3 GET "$PORT_ON" '/mybucket/ver.txt?versionId=null' UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetObject null version"
+if [ "$(cat "$ROOT/out")" != "three" ]; then
+  echo "null version mismatch [$(cat "$ROOT/out")]" >&2
+  exit 1
+fi
+SIGNED=$("$S3SIGN" "$SECRET" "$AKID" us-east-1 PUT "127.0.0.1:${PORT_ON}" \
+  /mybucket/ver-copy.txt "" UNSIGNED-PAYLOAD x-amz-copy-source "/mybucket/ver.txt?versionId=${vid1}")
+printf '%s\n' "$SIGNED" > "$ROOT/sig"
+load_sig
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' -X PUT \
+  -H "x-amz-date: $S3_DATE" -H "x-amz-content-sha256: $S3_HASH" \
+  -H "Authorization: $S3_AUTH" \
+  -H "x-amz-copy-source: /mybucket/ver.txt?versionId=${vid1}" \
+  "http://127.0.0.1:${PORT_ON}/mybucket/ver-copy.txt")
+expect_code "$code" 200 "CopyObject version"
+code=$(call_s3 GET "$PORT_ON" /mybucket/ver-copy.txt UNSIGNED-PAYLOAD "")
+expect_code "$code" 200 "GetObject copied version"
+if [ "$(cat "$ROOT/out")" != "one" ]; then
+  echo "copied version mismatch [$(cat "$ROOT/out")]" >&2
+  exit 1
+fi
+
+printf 'home' > "$ROOT/index.html"
+printf 'missing-page' > "$ROOT/error.html"
+code=$(call_s3 PUT "$PORT_ON" /mybucket/index.html "@$ROOT/index.html" "$ROOT/index.html")
+expect_code "$code" 200 "PutObject index"
+code=$(call_s3 PUT "$PORT_ON" /mybucket/error.html "@$ROOT/error.html" "$ROOT/error.html")
+expect_code "$code" 200 "PutObject error page"
+printf '%s' '<WebsiteConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IndexDocument><Suffix>index.html</Suffix></IndexDocument><ErrorDocument><Key>error.html</Key></ErrorDocument><RoutingRules><RoutingRule><Condition><KeyPrefixEquals>old/</KeyPrefixEquals></Condition><Redirect><ReplaceKeyPrefixWith>new/</ReplaceKeyPrefixWith></Redirect></RoutingRule></RoutingRules></WebsiteConfiguration>' > "$ROOT/site.xml"
+sitemd5=$(openssl dgst -md5 -binary "$ROOT/site.xml" | openssl base64 | tr -d '\n')
+sign PUT /mybucket website "@$ROOT/site.xml" "127.0.0.1:${PORT_ON}"
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' -X PUT \
+  -H "x-amz-date: $S3_DATE" -H "x-amz-content-sha256: $S3_HASH" \
+  -H "Authorization: $S3_AUTH" -H "Content-MD5: $sitemd5" \
+  --data-binary "@$ROOT/site.xml" \
+  "http://127.0.0.1:${PORT_ON}/mybucket?website")
+expect_code "$code" 200 "PutBucketWebsite"
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' \
+  -H "Host: mybucket.s3-website.test" \
+  "http://127.0.0.1:${PORT_ON}/")
+expect_code "$code" 200 "Website index"
+if [ "$(cat "$ROOT/out")" != "home" ]; then
+  echo "website index mismatch [$(cat "$ROOT/out")]" >&2
+  exit 1
+fi
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' \
+  -H "Host: mybucket.s3-website.test" \
+  "http://127.0.0.1:${PORT_ON}/no-such")
+expect_code "$code" 404 "Website error document"
+if [ "$(cat "$ROOT/out")" != "missing-page" ]; then
+  echo "website error body mismatch [$(cat "$ROOT/out")]" >&2
+  exit 1
+fi
+code=$(curl -sS -D "$ROOT/hdr" -o "$ROOT/out" -w '%{http_code}' \
+  -H "Host: mybucket.s3-website.test" \
+  "http://127.0.0.1:${PORT_ON}/old/a")
+expect_code "$code" 301 "Website redirect"
+if ! grep -q 'Location: /new/a' "$ROOT/hdr"; then
+  echo "website redirect location missing" >&2
+  cat "$ROOT/hdr" >&2
   exit 1
 fi
 

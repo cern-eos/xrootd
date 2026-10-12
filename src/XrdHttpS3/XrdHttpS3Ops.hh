@@ -36,6 +36,7 @@ public:
   int Dispatch(XrdHttpExtReq &req, const KeyRecord &key);
   int Options(XrdHttpExtReq &req);
   int PostObject(XrdHttpExtReq &req);
+  int Website(XrdHttpExtReq &req);
 
 private:
   int ListBuckets(XrdHttpExtReq &req, const KeyRecord &key);
@@ -80,6 +81,19 @@ private:
                     const std::string &objKey);
   int HeadPart(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,
                const std::string &objKey);
+  int BucketVersioning(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket);
+  int ListObjectVersions(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket);
+  int ReadVersion(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,
+                  const std::string &objKey, const std::string &versionId, bool head);
+  int DeleteOneVersion(XrdHttpExtReq &req, const KeyRecord &key, const std::string &bucket,
+                       const std::string &objKey, const std::string &versionId);
+  // 0 when recorded or versioning is off. versionId is empty when versioning is off.
+  int RecordVersion(const std::string &user, const std::string &bucket, const std::string &objKey,
+                    const ObjectMeta &meta, const std::string &livePath, std::string &versionId);
+  int MakeDeleteMarker(const std::string &user, const std::string &bucket,
+                       const std::string &objKey, const std::string &mode, std::string &versionId);
+  std::string CurrentVersion(const std::string &user, const std::string &bucket,
+                             const std::string &objKey);
   std::string WithCors(const XrdHttpExtReq &req, const std::string &hdr);
   int Reply(XrdHttpExtReq &req, int code, const char *text, const char *hdr, const char *body,
             long long len);
