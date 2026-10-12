@@ -410,9 +410,12 @@ echo > "$BINARY_DIR/tests/$TEST_NAME/cache.log"
 # aborted OpenSSL 3.0 (Ubuntu) and 3.5 (Fedora) during HTTP init / SSL_accept.
 # </dev/null not 0<&-: a closed stdin lets the next open() reuse fd 0, and
 # Ubuntu OpenSSL 3 then dies after HTTPS init (connection reset / "crashed").
+# Do not use -l here: with -n origin, xrootd rewrites the path to
+# .../origin/origin.log, so the waiter grepping origin.log never sees
+# "initialization completed" and every Linux job fails this fixture.
 ORIGIN_LOG="$BINARY_DIR/tests/$TEST_NAME/origin.log"
-"$BINDIR/xrootd" -n origin -c "$ORIGIN_CONFIG" -l "$ORIGIN_LOG" \
-  </dev/null >/dev/null 2>&1 &
+"$BINDIR/xrootd" -n origin -c "$ORIGIN_CONFIG" \
+  </dev/null >"$ORIGIN_LOG" 2>&1 &
 ORIGIN_PID=$!
 echo "Origin PID: $ORIGIN_PID"
 
@@ -494,8 +497,8 @@ fi
 
 echo > "$BINARY_DIR/tests/$TEST_NAME/cache.log"
 CACHE_LOG="$BINARY_DIR/tests/$TEST_NAME/cache.log"
-"$BINDIR/xrootd" -n cache -c "$CACHE_CONFIG" -l "$CACHE_LOG" \
-  </dev/null >/dev/null 2>&1 &
+"$BINDIR/xrootd" -n cache -c "$CACHE_CONFIG" \
+  </dev/null >"$CACHE_LOG" 2>&1 &
 CACHE_PID=$!
 echo "Cache PID: $CACHE_PID"
 
