@@ -4056,7 +4056,11 @@ int XrdHttpProtocol::LoadExtHandler(XrdSysError *myeDest, const char *libName,
     // Handler has been loaded, it's the last one in the list
     strncpy( exthandler[exthandlercnt].name,  instName, 16 );
     exthandler[exthandlercnt].name[15] = '\0';
-    exthandler[exthandlercnt++].ptr = newhandler;
+    exthandler[exthandlercnt].ptr = newhandler;
+    // Optional. A missing symbol is the historical MatchesPath-only behaviour.
+    exthandler[exthandlercnt].claim =
+        (XrdHttpExtClaim_t)myLib.Resolve("?XrdHttpExtClaim");
+    exthandlercnt++;
     
     return 0;
   }
@@ -4090,7 +4094,16 @@ bool XrdHttpProtocol::ExtHandlerLoaded(const char *handlername) {
 // Locates a matching external handler for a given request, if available. Try to
 // privilege speed, as this func is invoked for every incoming request
 XrdHttpExtHandler * XrdHttpProtocol::FindMatchingExtHandler(const XrdHttpReq &req) {
-  
+
+  // Claim hooks see the whole request (headers and query). They are consulted
+  // before MatchesPath so a specific claim, such as SigV4, is not hidden by a
+  // handler that matches every POST or every path.
+  for (int i = 0; i < exthandlercnt; i++) {
+    if (exthandler[i].claim &&
+        exthandler[i].claim(exthandler[i].ptr, &req))
+      return exthandler[i].ptr;
+  }
+
   for (int i = 0; i < exthandlercnt; i++) {
     if (exthandler[i].ptr->MatchesPath(req.requestverb.c_str(), req.resource.c_str())) {
       return exthandler[i].ptr;

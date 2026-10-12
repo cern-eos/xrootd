@@ -103,6 +103,7 @@
         XrdVERSIONPLUGIN_Rule(Required,  6,  0, XrdgetProtocolPort            )\
         XrdVERSIONPLUGIN_Rule(Required,  6,  0, XrdHttpGetSecXtractor         )\
         XrdVERSIONPLUGIN_Rule(Required,  6,  0, XrdHttpGetExtHandler          )\
+        XrdVERSIONPLUGIN_Rule(Optional,  6,  0, XrdHttpExtClaim               )\
         XrdVERSIONPLUGIN_Rule(Required,  6,  0, XrdSysLogPInit                )\
         XrdVERSIONPLUGIN_Rule(Required,  6,  0, XrdOfsAddPrepare              )\
         XrdVERSIONPLUGIN_Rule(Required,  6,  0, XrdOfsFSctl                   )\

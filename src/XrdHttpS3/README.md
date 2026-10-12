@@ -1,0 +1,99 @@
+# XrdHttpS3
+
+S3 on the XrdHttp port. The plugin is an `http.exthandler`. It is loaded with
+the library line and stays idle until `s3.switch on`. Native HTTP, WebDAV, and
+TPC keep the same port. A request is S3 only when it carries
+`Authorization: AWS4-HMAC-SHA256` or the query parameter `X-Amz-Algorithm`.
+Presigned URLs are claimed and answered with `NotImplemented`.
+
+```cfg
+xrd.protocol XrdHttp libXrdHttp.so
+
+http.exthandler xrds3 +notls libXrdHttpS3.so
+
+s3.switch on
+s3.region us-east-1
+s3.sysmeta /s3meta
+s3.userprefix /prefix
+s3.userhash first
+s3.skew 15m
+s3.metacache 30s
+s3.metaentity s3meta
+s3.trace info
+```
+
+`s3.switch` defaults to off. `+notls` lets the handler load on a plain HTTP
+port. SigV4 does not encrypt the secret, so production should use HTTPS.
+There are four external-handler slots; S3 uses one.
+
+## Namespace
+
+User `foo` with `s3.userhash first`:
+
+```text
+/prefix/f/foo/.s3/keys/<access-key-id>
+/prefix/f/foo/.s3/buckets/<bucket>
+/prefix/f/foo/<bucket>/<object-key>
+```
+
+`s3.userhash none` drops the one-character directory. A key that ends in `/`
+is stored as `.s3folder` inside that directory. `.s3` is never listed as an
+object.
+
+The system index avoids scanning every user on each request:
+
+```text
+/s3meta/keys/<access-key-id>
+/s3meta/buckets/<bucket>
+```
+
+Access key file:
+
+```text
+secret=<hmac secret>
+user=foo
+status=active
+expires=0
+```
+
+`expires` is a unix time, or `0` for no expiry. The same secret is stored
+under the user's `.s3/keys/` tree. v1 keys are provisioned by writing these
+files. Bucket file:
+
+```text
+owner=foo
+created=<unix time>
+acl=private
+region=us-east-1
+```
+
+`CreateBucket` writes both bucket records and the data directory. Object
+ETags are the MD5 of the bytes, kept in `.s3/objmeta/` and, when the
+filesystem allows it, as `user.s3.etag` / `user.s3.content-type`.
+
+Data-plane calls run as the bucket owner, so `acc.authdb` still applies to
+object paths. Meta reads and writes run as `s3.metaentity` (the daemon, when
+that directive is empty). Hide the control plane from ordinary HTTP clients:
+
+```text
+u s3meta /s3meta a
+u * /s3meta -n
+u * /*/.s3 n
+```
+
+Adjust the names to the site's authdb. The plugin will not serve `.s3` or
+`/s3meta` as objects, but native HTTP on the same port still can.
+
+## v1 operations
+
+ListBuckets, CreateBucket, DeleteBucket (empty only), HeadBucket, PutObject,
+GetObject (one byte range), HeadObject, DeleteObject, and ListObjectsV2
+(`list-type=2`, `prefix`, `delimiter`, `max-keys`, `continuation-token`).
+
+Header SigV4 accepts a payload hash and `UNSIGNED-PAYLOAD`. `aws-chunked`
+streaming signatures, presigned query auth, virtual-hosted buckets, multipart,
+and CopyObject are not implemented yet. Point the AWS CLI at a normal payload
+hash (`payload_signing_enabled` false, and no aws-chunked encoding) until
+streaming signatures exist.
+
+Path-style URLs only: `http://host/<bucket>/<key>`.

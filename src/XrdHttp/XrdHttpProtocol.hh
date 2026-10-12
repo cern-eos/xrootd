@@ -314,11 +314,16 @@ private:
   static int LoadSecXtractor(XrdSysError *eDest, const char *libName,
                       const char *libParms);
   
+  // Optional plugin export. Resolved with "?XrdHttpExtClaim" so handlers
+  // that do not provide it keep working. A true result wins over MatchesPath.
+  typedef bool (*XrdHttpExtClaim_t)(XrdHttpExtHandler *, const XrdHttpReq *);
+
   // An oldstyle struct array to hold exthandlers
   #define MAX_XRDHTTPEXTHANDLERS 4
   static struct XrdHttpExtHandlerInfo {
     char name[16];
     XrdHttpExtHandler *ptr;
+    XrdHttpExtClaim_t claim;
   } exthandler[MAX_XRDHTTPEXTHANDLERS];
   static int exthandlercnt;
 
