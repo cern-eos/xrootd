@@ -443,6 +443,16 @@ int Http2Session::connect(const Url &url, const Options &opt, std::string &err)
             nghttp2_session_get_stream_user_data(sess, stream_id));
         if (!st || !st->resp)
           return 0;
+        if (st->on_chunk) {
+          int rc = st->on_chunk(data, len);
+          if (rc < 0) {
+            if (st->err && st->err->empty())
+              *st->err = "Stream callback aborted";
+            st->rc = rc;
+            return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
+          }
+          return 0;
+        }
         if (st->resp->body.size() + len > self->opt_.max_body) {
           if (st->err)
             *st->err = "HTTP/2 response exceeded max_body";
@@ -635,6 +645,7 @@ int Http2Session::request(const HttpRequest &req, HttpResponse &resp,
   st.err = &err;
   st.body = req.body;
   st.deadline = Clock::now() + std::chrono::milliseconds(opt_.timeout_ms);
+  st.on_chunk = req.on_chunk;
 
   std::unique_lock<std::mutex> lock(mu_);
   if (fd_ < 0 || !session_ || !io_.joinable() || stop_) {

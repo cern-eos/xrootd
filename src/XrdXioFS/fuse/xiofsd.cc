@@ -186,14 +186,10 @@ int xiofs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 {
   filler(buf, ".", nullptr, 0);
   filler(buf, "..", nullptr, 0);
-  std::vector<XioFS::DavEntry> ents;
   std::string err;
-  int rc = g_client.readdir(path, ents, err);
-  if (rc)
-    return rc;
-  for (const auto &e : ents) {
+  int rc = g_client.readdir(path, [&](XioFS::DavEntry &&e) {
     if (e.name.empty() || e.name == "." || e.name == "..")
-      continue;
+      return;
     struct stat st {};
     XioFS::Attr a;
     a.size = e.size;
@@ -209,9 +205,10 @@ int xiofs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     a.is_blk = e.is_blk;
     a.rdev = e.rdev;
     fillStat(a, &st);
-    if (filler(buf, e.name.c_str(), &st, 0) != 0)
-      break;
-  }
+    filler(buf, e.name.c_str(), &st, 0);
+  }, err);
+  if (rc)
+    return rc;
   return 0;
 }
 

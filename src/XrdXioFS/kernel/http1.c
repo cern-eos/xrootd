@@ -268,6 +268,13 @@ static int xiofs_transact_once(struct xiofs_conn *c, const char *req,
 		if (kstrtoll(clbuf, 10, &clen))
 			clen = -1;
 
+	char tebuf[32] = {};
+	bool is_chunked = false;
+	if (!xiofs_header_value(hdrbuf, "Transfer-Encoding", tebuf, sizeof(tebuf))) {
+		if (strstr(tebuf, "chunked"))
+			is_chunked = true;
+	}
+
 	reported = clen;
 	extra = sep + 4;
 	extra_len = filled - (extra - hdrbuf);
@@ -277,6 +284,113 @@ static int xiofs_transact_once(struct xiofs_conn *c, const char *req,
 	 * HEAD is the resource size, not a body to drain. */
 	if (status == 204 || status == 304 || !strncmp(req, "HEAD ", 5))
 		clen = 0;
+
+	if (is_chunked && status != 204 && status != 304 && strncmp(req, "HEAD ", 5)) {
+		/* Chunked transfer encoding decoder */
+		size_t extra_off = 0;
+		for (;;) {
+			char line[64] = {};
+			size_t lidx = 0;
+			unsigned long chunk_sz = 0;
+
+			/* Read chunk size line */
+			while (lidx < sizeof(line) - 1) {
+				char ch;
+				if (extra_off < extra_len) {
+					ch = extra[extra_off++];
+				} else {
+					err = xiofs_sock_recv(c->sock, &ch, 1);
+					if (err < 0)
+						goto out_hdr;
+				}
+				line[lidx++] = ch;
+				if (lidx >= 2 && line[lidx - 2] == '\r' && line[lidx - 1] == '\n')
+					break;
+			}
+			line[lidx] = 0;
+			if (sscanf(line, "%lx", &chunk_sz) != 1) {
+				err = -EPROTO;
+				goto out_hdr;
+			}
+			if (chunk_sz == 0) {
+				/* Terminating chunk: consume trailing \r\n */
+				char crlf[2] = {};
+				size_t cidx = 0;
+				while (cidx < 2) {
+					if (extra_off < extra_len)
+						crlf[cidx++] = extra[extra_off++];
+					else {
+						err = xiofs_sock_recv(c->sock, &crlf[cidx++], 1);
+						if (err < 0)
+							goto out_hdr;
+					}
+				}
+				break;
+			}
+
+			/* Ensure meta->body has room for chunk_sz */
+			if (!out && alloc_max) {
+				err = xiofs_resp_body_grow(meta, meta->body_len + chunk_sz + 1);
+				if (err)
+					goto out_hdr;
+				out = meta->body;
+				outcap = meta->body_cap;
+			}
+
+			/* Read chunk data */
+			size_t chunk_got = 0;
+			while (chunk_got < chunk_sz) {
+				size_t chunk_left = chunk_sz - chunk_got;
+				if (extra_off < extra_len) {
+					size_t take = min(chunk_left, extra_len - extra_off);
+					if (out && (meta->body_len + take <= outcap)) {
+						memcpy((char *)out + meta->body_len, extra + extra_off, take);
+						meta->body_len += take;
+					}
+					extra_off += take;
+					chunk_got += take;
+				} else {
+					size_t to_read = chunk_left;
+					if (out && (meta->body_len + to_read <= outcap)) {
+						err = xiofs_sock_recv(c->sock, (char *)out + meta->body_len, to_read);
+						if (err < 0)
+							goto out_hdr;
+						meta->body_len += err;
+						chunk_got += err;
+					} else {
+						err = xiofs_drain(c->sock, to_read);
+						if (err < 0)
+							goto out_hdr;
+						chunk_got += to_read;
+					}
+				}
+			}
+
+			/* Consume trailing CRLF of the chunk */
+			size_t cidx = 0;
+			while (cidx < 2) {
+				char ch;
+				if (extra_off < extra_len)
+					ch = extra[extra_off++];
+				else {
+					err = xiofs_sock_recv(c->sock, &ch, 1);
+					if (err < 0)
+						goto out_hdr;
+				}
+				cidx++;
+			}
+		}
+
+		if (out && meta->body)
+			meta->body[meta->body_len] = 0;
+		if (outlen)
+			*outlen = meta->body_len;
+		meta->content_length = meta->body_len;
+		meta->status = status;
+		strscpy(meta->etag, etag, sizeof(meta->etag));
+		err = 0;
+		goto out_hdr;
+	}
 
 	if (!out && alloc_max && clen > 0) {
 		/* Growable body for listings. */
@@ -805,6 +919,10 @@ static int xiofs_do_propfind(struct xiofs_sb_info *sbi, struct xiofs_rq *rq,
 {
 	xiofs_rq_start(rq, sbi, "PROPFIND", path);
 	xiofs_rq_add(rq, "Depth: %d\r\n", depth);
+	if (depth == 1) {
+		xiofs_rq_add(rq, "Xrd-Stream: 1\r\n");
+		xiofs_rq_add(rq, "X-XIOFS-Stream: 1\r\n");
+	}
 	xiofs_rq_match(rq, "If-None-Match", if_none_match);
 	return xiofs_rq_run(sbi, rq, NULL, 0, out, cap, len, meta);
 }

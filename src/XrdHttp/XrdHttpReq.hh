@@ -433,6 +433,11 @@ public:
   /// If we want to give a string as a response, we compose it here
   std::string stringresp;
 
+  /// PROPFIND streaming
+  bool m_propfind_stream{false};
+  bool m_propfind_stream_started{false};
+  bool isStreamRequested() const;
+
   /// State machine to talk to the bridge
   int reqstate;
 

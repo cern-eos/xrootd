@@ -44,6 +44,9 @@ public:
   void close();
 
   int getattr(const std::string &relpath, Attr &out, std::string &err);
+  int readdir(const std::string &relpath,
+              const std::function<void(DavEntry &&)> &on_entry,
+              std::string &err);
   int readdir(const std::string &relpath, std::vector<DavEntry> &out,
               std::string &err);
   int read(const std::string &relpath, uint64_t offset, uint64_t length,

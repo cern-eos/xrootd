@@ -157,3 +157,82 @@ TEST(XioDav, HttpDate)
   ASSERT_TRUE(parseHttpDate("Tue, 01 May 2012 02:42:13 GMT", t));
   EXPECT_EQ(1335840133, static_cast<long>(t));
 }
+
+TEST(XioDav, StreamParserChunkedFeeds)
+{
+  const std::string xml =
+      "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+      "<D:multistatus xmlns:D=\"DAV:\">\n"
+      "<D:response>\n"
+      "<D:href>/dir/file1.dat</D:href>\n"
+      "<D:propstat><D:prop>\n"
+      "<D:getcontentlength>1024</D:getcontentlength>\n"
+      "<D:resourcetype/>\n"
+      "</D:prop></D:propstat></D:response>\n"
+      "<D:response>\n"
+      "<D:href>/dir/subdir/</D:href>\n"
+      "<D:propstat><D:prop>\n"
+      "<D:getcontentlength>0</D:getcontentlength>\n"
+      "<D:resourcetype><D:collection/></D:resourcetype>\n"
+      "</D:prop></D:propstat></D:response>\n"
+      "</D:multistatus>\n";
+
+  std::vector<DavEntry> streamed;
+  DavStreamParser parser([&](DavEntry &&e) {
+    streamed.push_back(std::move(e));
+  });
+
+  std::string err;
+  // Feed in deliberately tiny 7-byte chunks to stress boundary conditions
+  const size_t chunk_size = 7;
+  for (size_t i = 0; i < xml.size(); i += chunk_size) {
+    size_t len = std::min(chunk_size, xml.size() - i);
+    ASSERT_TRUE(parser.feed(xml.data() + i, len, err)) << err;
+  }
+  ASSERT_TRUE(parser.finish(err)) << err;
+
+  ASSERT_EQ(2u, streamed.size());
+  EXPECT_EQ("file1.dat", streamed[0].name);
+  EXPECT_EQ(1024, streamed[0].size);
+  EXPECT_FALSE(streamed[0].is_dir);
+
+  EXPECT_EQ("subdir", streamed[1].name);
+  EXPECT_TRUE(streamed[1].is_dir);
+}
+
+TEST(XioDav, StreamParserLargeDirectorySimulation)
+{
+  std::vector<DavEntry> streamed;
+  DavStreamParser parser([&](DavEntry &&e) {
+    streamed.push_back(std::move(e));
+  });
+
+  std::string err;
+  const std::string header = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<D:multistatus xmlns:D=\"DAV:\">\n";
+  ASSERT_TRUE(parser.feed(header.data(), header.size(), err)) << err;
+
+  const int total_entries = 5000;
+  std::string batch;
+  for (int i = 0; i < total_entries; ++i) {
+    batch += "<D:response><D:href>/large/item_" + std::to_string(i) + ".bin</D:href>";
+    batch += "<D:propstat><D:prop><D:getcontentlength>" + std::to_string(i * 100) + "</D:getcontentlength>";
+    batch += "</D:prop></D:propstat></D:response>\n";
+    if (batch.size() >= 32768) {
+      ASSERT_TRUE(parser.feed(batch.data(), batch.size(), err)) << err;
+      batch.clear();
+    }
+  }
+  if (!batch.empty()) {
+    ASSERT_TRUE(parser.feed(batch.data(), batch.size(), err)) << err;
+  }
+
+  const std::string footer = "</D:multistatus>\n";
+  ASSERT_TRUE(parser.feed(footer.data(), footer.size(), err)) << err;
+  ASSERT_TRUE(parser.finish(err)) << err;
+
+  ASSERT_EQ(static_cast<size_t>(total_entries), streamed.size());
+  EXPECT_EQ("item_0.bin", streamed[0].name);
+  EXPECT_EQ(0, streamed[0].size);
+  EXPECT_EQ("item_4999.bin", streamed[4999].name);
+  EXPECT_EQ(4999 * 100, streamed[4999].size);
+}

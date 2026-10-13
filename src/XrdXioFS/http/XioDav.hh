@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <ctime>
+#include <functional>
 #include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -30,6 +31,26 @@ struct DavEntry {
   uid_t       uid{static_cast<uid_t>(-1)};
   gid_t       gid{static_cast<gid_t>(-1)};
   dev_t       rdev{0};
+};
+
+// Parse a single DAV:response XML block.
+bool parseResponseBlock(const std::string &block, DavEntry &e);
+
+// Streaming multistatus parser for chunked responses.
+class DavStreamParser {
+public:
+  using EntryCallback = std::function<void(DavEntry &&)>;
+
+  explicit DavStreamParser(EntryCallback cb);
+
+  bool feed(const char *data, size_t len, std::string &err);
+  bool finish(std::string &err);
+  size_t count() const { return count_; }
+
+private:
+  EntryCallback cb_;
+  std::string buf_;
+  size_t count_{0};
 };
 
 // Parse a DAV:multistatus document produced by XrdHttp (207 Multi-Status).

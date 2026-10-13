@@ -212,40 +212,87 @@ int Client::getattr(const std::string &relpath, Attr &out, std::string &err)
   return 0;
 }
 
-int Client::readdir(const std::string &relpath, std::vector<DavEntry> &out,
+int Client::readdir(const std::string &relpath,
+                    const std::function<void(DavEntry &&)> &on_entry,
                     std::string &err)
 {
+  std::string self = hrefBasename(absPath(relpath));
+  std::string reqPath = absPath(relpath);
+  while (!reqPath.empty() && reqPath.back() == '/')
+    reqPath.pop_back();
+
+  bool first = true;
+  DavStreamParser parser([&](DavEntry &&e) {
+    if (e.href.empty()) {
+      if (on_entry)
+        on_entry(std::move(e));
+      return;
+    }
+    std::string h = e.href;
+    while (!h.empty() && h.back() == '/')
+      h.pop_back();
+    if (h == reqPath || (first && e.is_dir && e.name == self)) {
+      first = false;
+      return;
+    }
+    first = false;
+    if (on_entry)
+      on_entry(std::move(e));
+  });
+
+  std::vector<std::pair<std::string, std::string>> hdrs{
+      {"depth", "1"},
+      {"xrd-stream", "1"},
+      {"x-xiofs-stream", "1"}};
+
+  HttpRequest req;
+  req.method = "PROPFIND";
+  req.path = absPath(relpath);
+  req.headers = hdrs;
+  req.on_chunk = [&](const uint8_t *data, size_t len) -> int {
+    if (!parser.feed(reinterpret_cast<const char *>(data), len, err))
+      return -EIO;
+    return 0;
+  };
+
   HttpResponse resp;
-  int rc = doReq("PROPFIND", relpath, {{"depth", "1"}}, {}, resp, err);
-  if (rc)
-    return rc;
+  int rc = 0;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    rc = ensure(err);
+    if (rc)
+      return rc;
+  }
+  rc = sess_.request(req, resp, err);
+  if (rc) {
+    std::lock_guard<std::mutex> lock(mu_);
+    sess_.close();
+    int rc2 = sess_.connect(base_, opt_, err);
+    if (rc2)
+      return rc2;
+    rc = sess_.request(req, resp, err);
+    if (rc)
+      return rc;
+  }
+
   if (resp.status != 207 && resp.status != 200) {
     err = "PROPFIND status " + std::to_string(resp.status);
     return -httpToErrno(resp.status);
   }
-  if (!parseMultistatus(resp.body, out, err))
+
+  if (!parser.finish(err))
     return -EIO;
 
-  // Drop the collection itself (first href matching the request path).
-  std::string self = hrefBasename(absPath(relpath));
-  auto it = out.begin();
-  while (it != out.end()) {
-    if (it->href.empty()) {
-      ++it;
-      continue;
-    }
-    std::string h = it->href;
-    while (!h.empty() && h.back() == '/')
-      h.pop_back();
-    std::string req = absPath(relpath);
-    while (!req.empty() && req.back() == '/')
-      req.pop_back();
-    if (h == req || (it == out.begin() && it->is_dir && it->name == self))
-      it = out.erase(it);
-    else
-      ++it;
-  }
   return 0;
+}
+
+int Client::readdir(const std::string &relpath, std::vector<DavEntry> &out,
+                    std::string &err)
+{
+  out.clear();
+  return readdir(relpath, [&](DavEntry &&e) {
+    out.push_back(std::move(e));
+  }, err);
 }
 
 int Client::read(const std::string &relpath, uint64_t offset, uint64_t length,

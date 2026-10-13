@@ -16,6 +16,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -30,6 +31,7 @@ struct HttpRequest {
   std::string path{"/"};
   std::vector<std::pair<std::string, std::string>> headers;
   std::string body;
+  std::function<int(const uint8_t *data, size_t len)> on_chunk;
 };
 
 struct HttpResponse {
@@ -79,6 +81,7 @@ private:
     std::string body;
     size_t body_off{0};
     Clock::time_point deadline{};
+    std::function<int(const uint8_t *data, size_t len)> on_chunk;
   };
 
   Url url_;

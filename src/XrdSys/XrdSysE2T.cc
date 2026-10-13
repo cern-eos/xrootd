@@ -44,7 +44,11 @@ namespace
 {
 static const int           errSlots = 144;
 XrdSysMutex                e2sMutex;
-std::map<int, std::string> e2sMap;
+std::map<int, std::string> &getE2sMap()
+{
+   static std::map<int, std::string> m;
+   return m;
+}
        const char*         Errno2String[errSlots] = {0};
 
 int initErrTable()
@@ -119,6 +123,7 @@ const char *XrdSysE2T(int errcode)
 // registered and if not, register it.
 //
    e2sMutex.Lock();
+   std::map<int, std::string> &e2sMap = getE2sMap();
    std::string &eTxt = e2sMap[errcode];
    if (!eTxt.size())
       {snprintf(eBuff, sizeof(eBuff), "unknown error %d", errcode);

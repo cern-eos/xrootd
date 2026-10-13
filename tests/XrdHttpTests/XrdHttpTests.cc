@@ -913,3 +913,30 @@ TEST(XrdHttpTests, parseIfMatch) {
   ASSERT_EQ(-1, XrdHttpHeaderUtils::parseIfMatch("", tags, star));
   ASSERT_EQ(-1, XrdHttpHeaderUtils::parseIfMatch("\"unclosed", tags, star));
 }
+
+TEST(XrdHttpTests, propfindStreamRequested) {
+  XrdHttpReadRangeHandler::Configuration rcfg;
+  XrdHttpReq req(nullptr, rcfg);
+
+  // Default: no streaming
+  EXPECT_FALSE(req.isStreamRequested());
+
+  // Xrd-Stream: 1
+  char h1[] = "Xrd-Stream: 1\r\n";
+  req.parseLine(h1, strlen(h1));
+  EXPECT_TRUE(req.isStreamRequested());
+
+  // Reset clears stream request
+  req.reset();
+  EXPECT_FALSE(req.isStreamRequested());
+
+  // X-XIOFS-Stream: true
+  char h2[] = "X-XIOFS-Stream: true\r\n";
+  req.parseLine(h2, strlen(h2));
+  EXPECT_TRUE(req.isStreamRequested());
+
+  // Explicitly disabled: Xrd-Stream: 0
+  char h3[] = "Xrd-Stream: 0\r\n";
+  req.parseLine(h3, strlen(h3));
+  EXPECT_FALSE(req.isStreamRequested());
+}

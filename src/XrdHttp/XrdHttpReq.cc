@@ -3783,6 +3783,10 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
     {
 
       if (xrdresp == kXR_error) {
+        if (m_propfind_stream_started) {
+          prot->ChunkResp("", 0);
+          return -1;
+        }
         prot->SendSimpleResp(httpStatusCode, NULL, NULL,
                              httpErrorBody.c_str(), httpErrorBody.length(), false);
         return -1;
@@ -3851,6 +3855,9 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
             return keepalive ? 1 : -1;
           }
 
+          // Depth > 0 directory listing: check if streaming is requested
+          m_propfind_stream = isStreamRequested();
+
           break;
         }
         default: // response to dirlist()
@@ -3885,6 +3892,23 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
                 if (*p.rbegin() != '/') p += "/";
                 p += e.path;
                 davAppendEntry(stringresp, p, e);
+
+                // Stream out in batches if threshold reached
+                if (m_propfind_stream && stringresp.size() >= 64 * 1024) {
+                  if (!m_propfind_stream_started) {
+                    std::string hdr = "Content-Type: text/xml; charset=\"utf-8\"\r\n";
+                    addETagHeader(hdr);
+                    hdr += "\r\n";
+                    addLastModifiedHeader(hdr);
+                    hdr += "\r\nXrd-Stream: 1";
+                    prot->StartChunkedResp(207, (char *) "Multi-Status",
+                                           (char *) hdr.c_str(), -1, keepalive);
+                    m_propfind_stream_started = true;
+                    stringresp.insert(0, kDavMultistatusOpen);
+                  }
+                  prot->ChunkResp(stringresp.c_str(), stringresp.length());
+                  stringresp.clear();
+                }
               }
 
 
@@ -3898,7 +3922,31 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
             }
           }
 
-
+          // If streaming was requested
+          if (m_propfind_stream) {
+            if (final_) {
+              if (!m_propfind_stream_started) {
+                std::string hdr = "Content-Type: text/xml; charset=\"utf-8\"\r\n";
+                addETagHeader(hdr);
+                hdr += "\r\n";
+                addLastModifiedHeader(hdr);
+                hdr += "\r\nXrd-Stream: 1";
+                prot->StartChunkedResp(207, (char *) "Multi-Status",
+                                       (char *) hdr.c_str(), -1, keepalive);
+                m_propfind_stream_started = true;
+                stringresp.insert(0, kDavMultistatusOpen);
+              }
+              stringresp += "</D:multistatus>\n";
+              prot->ChunkResp(stringresp.c_str(), stringresp.length());
+              prot->ChunkResp("", 0);
+              stringresp.clear();
+              return keepalive ? 1 : -1;
+            } else if (m_propfind_stream_started && stringresp.size() >= 16384) {
+              prot->ChunkResp(stringresp.c_str(), stringresp.length());
+              stringresp.clear();
+            }
+            break;
+          }
 
           // If this was the last bunch of entries, send the buffer and empty it immediately
           if (final_) {
@@ -4250,6 +4298,35 @@ int XrdHttpReq::evaluatePreconditions(bool exists, bool safeMethod)
   return 0;
 }
 
+bool XrdHttpReq::isStreamRequested() const
+{
+  auto sit = allheaders.find("xrd-stream");
+  if (sit == allheaders.end())
+    sit = allheaders.find("x-xiofs-stream");
+  if (sit == allheaders.end())
+    sit = allheaders.find("x-stream-directory");
+  if (sit != allheaders.end()) {
+    const std::string &v = sit->second;
+    if (v == "0" || v == "false" || v == "no")
+      return false;
+    return true;
+  }
+  if (opaque) {
+    const char *val = opaque->Get("xrd.stream");
+    if (!val)
+      val = opaque->Get("xiofs.stream");
+    if (val) {
+      if (!strcmp(val, "0") || !strcasecmp(val, "false") || !strcasecmp(val, "no"))
+        return false;
+      return true;
+    }
+  }
+  const char *env = getenv("XRD_HTTP_STREAM_PROPFIND");
+  if (env && (!strcmp(env, "1") || !strcasecmp(env, "true") || !strcasecmp(env, "yes")))
+    return true;
+  return false;
+}
+
 void XrdHttpReq::reset() {
 
   TRACE(REQ, " XrdHttpReq request ended.");
@@ -4312,6 +4389,9 @@ void XrdHttpReq::reset() {
 
   m_trailer_headers = false;
   m_status_trailer = false;
+
+  m_propfind_stream = false;
+  m_propfind_stream_started = false;
 
   /// State machine to talk to the bridge
   reqstate = 0;
