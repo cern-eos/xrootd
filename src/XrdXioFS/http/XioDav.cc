@@ -77,42 +77,6 @@ bool extractLocal(const std::string &xml, const char *local, std::string &inner)
   return false;
 }
 
-std::vector<std::string> splitResponses(const std::string &xml)
-{
-  std::vector<std::string> out;
-  const std::string hay = toLower(xml);
-  std::string::size_type pos = 0;
-  while (pos < hay.size()) {
-    auto lt = hay.find('<', pos);
-    if (lt == std::string::npos)
-      break;
-    auto gt = hay.find('>', lt);
-    if (gt == std::string::npos)
-      break;
-    std::string tag = hay.substr(lt + 1, gt - lt - 1);
-    if (localName(tag) != "response" || (!tag.empty() && tag[0] == '/')) {
-      pos = gt + 1;
-      continue;
-    }
-    auto close = hay.find("</", gt + 1);
-    while (close != std::string::npos) {
-      auto cgt = hay.find('>', close);
-      if (cgt == std::string::npos)
-        break;
-      std::string ctag = hay.substr(close + 2, cgt - close - 2);
-      if (localName(ctag) == "response") {
-        out.push_back(xml.substr(lt, cgt + 1 - lt));
-        pos = cgt + 1;
-        break;
-      }
-      close = hay.find("</", cgt + 1);
-    }
-    if (close == std::string::npos)
-      break;
-  }
-  return out;
-}
-
 std::string decodeXml(const std::string &href)
 {
   std::string decoded;
