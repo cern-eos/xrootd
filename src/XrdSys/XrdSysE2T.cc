@@ -79,7 +79,7 @@ int initErrTable()
          lastGood = EBADE - ERRNOBASE;
    }
    else {
-      e2sMap[EBADE] = "authentication failed - possible invalid exchange";
+      getE2sMap()[EBADE] = "authentication failed - possible invalid exchange";
    }
 #endif
 
