@@ -53,6 +53,8 @@ target_link_libraries(frm_purged
   ${SOCKET_LIBRARY}
 )
 
+# frm_xfragent and frm_xfrd are the same program; persona comes from argv[0].
+# One binary plus a symlink keeps their GNU build-ids distinct for rpmbuild.
 add_executable(frm_xfrd XrdFrmXfrMain.cc)
 
 target_link_libraries(frm_xfrd
@@ -64,23 +66,23 @@ target_link_libraries(frm_xfrd
   ${SOCKET_LIBRARY}
 )
 
-add_executable(frm_xfragent XrdFrmXfrMain.cc)
-
-target_link_libraries(frm_xfragent
-  XrdFrm
-  XrdServer
-  XrdUtils
-  ${CMAKE_THREAD_LIBS_INIT}
-  ${EXTRA_LIBS}
-  ${SOCKET_LIBRARY}
+add_custom_command(TARGET frm_xfrd POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E create_symlink frm_xfrd frm_xfragent
+  WORKING_DIRECTORY $<TARGET_FILE_DIR:frm_xfrd>
+  COMMENT "Symlink frm_xfragent -> frm_xfrd"
 )
 
 install(
   TARGETS
     frm_admin
     frm_purged
-    frm_xfragent
     frm_xfrd
   RUNTIME
     DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+
+install(CODE "
+  execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink
+    frm_xfrd
+    \"\$ENV{DESTDIR}${CMAKE_INSTALL_FULL_BINDIR}/frm_xfragent\")
+")

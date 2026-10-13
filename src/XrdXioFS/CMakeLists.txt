@@ -59,8 +59,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   install(TARGETS xiofsagent RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
   add_executable(xiofs-server server/xiofs-server.cc)
   install(TARGETS xiofs-server RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  # Prefix /usr with a relative SYSCONFDIR installs under /usr/etc. The
+  # unit and the RPM look for this file in /etc/xrootd.
+  if(CMAKE_INSTALL_PREFIX STREQUAL "/usr" OR CMAKE_INSTALL_PREFIX STREQUAL "/usr/")
+    set(XIOFS_SERVER_CONF_DIR "/etc/xrootd")
+  else()
+    set(XIOFS_SERVER_CONF_DIR "${CMAKE_INSTALL_SYSCONFDIR}/xrootd")
+  endif()
   install(FILES ${CMAKE_SOURCE_DIR}/config/xiofs-server.conf
-          DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/xrootd)
+          DESTINATION ${XIOFS_SERVER_CONF_DIR})
   # util-linux looks up mount.<type> in sbindir.
   install(CODE "
     file(MAKE_DIRECTORY \"\$ENV{DESTDIR}${CMAKE_INSTALL_FULL_SBINDIR}\")

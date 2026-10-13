@@ -438,6 +438,13 @@ install -m 644 -p config/%{name}-filecache-standalone.cfg \
 	%{buildroot}%{_sysconfdir}/%{name}/%{name}-filecache-standalone.cfg
 install -m 644 -p config/%{name}-http.cfg \
 	%{buildroot}%{_sysconfdir}/%{name}/%{name}-http.cfg
+install -m 644 -p config/xiofs-server.conf \
+	%{buildroot}%{_sysconfdir}/%{name}/xiofs-server.conf
+# CMake may also have written this under %{_prefix}/etc when SYSCONFDIR
+# is relative. The packaged path is %{_sysconfdir}.
+rm -f %{buildroot}%{_prefix}/etc/%{name}/xiofs-server.conf
+rmdir %{buildroot}%{_prefix}/etc/%{name} 2>/dev/null || :
+rmdir %{buildroot}%{_prefix}/etc 2>/dev/null || :
 
 # Client config
 mkdir -p %{buildroot}%{_sysconfdir}/%{name}/client.plugins.d
@@ -753,7 +760,6 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 %{_bindir}/xiofsagent
 %{_sbindir}/mount.xiofs
 %doc src/XrdXioFS/README.md
-%doc src/XrdXioFS/kernel/README.md
 
 %files xiofs-server
 %{_bindir}/xiofs-server
