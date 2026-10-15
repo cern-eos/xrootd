@@ -2633,8 +2633,9 @@ bool XrdHttpProtocol::fileCacheBeginClose()
   if (!fileCache_.valid || !Bridge)
     return false;
   if (lockHoldHas(fileCache_.key)) {
+    // The handle stays cached. Forgetting it without kXR_close leaks the
+    // writer, and the next LOCK/FLOCK is then "already opened".
     TRACE(REQ, "Leaving lock-held open " << fileCache_.key.c_str());
-    fileCacheForget();
     return false;
   }
 

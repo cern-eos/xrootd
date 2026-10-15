@@ -3971,15 +3971,21 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
           if (m_propfind_stream) {
             if (final_) {
               if (!m_propfind_stream_started) {
+                // A listing that fits in one buffer must go out as a normal
+                // 207. Unknown-length HTTP/2 chunking delivered the headers
+                // and then an empty body, so the client saw no names.
+                std::string s = kDavMultistatusOpen;
+                stringresp.insert(0, s);
+                stringresp += "</D:multistatus>\n";
                 std::string hdr = "Content-Type: text/xml; charset=\"utf-8\"\r\n";
                 addETagHeader(hdr);
                 hdr += "\r\n";
                 addLastModifiedHeader(hdr);
-                hdr += "\r\nXrd-Stream: 1";
-                prot->StartChunkedResp(207, (char *) "Multi-Status",
-                                       (char *) hdr.c_str(), -1, keepalive);
-                m_propfind_stream_started = true;
-                stringresp.insert(0, kDavMultistatusOpen);
+                prot->SendSimpleResp(207, (char *) "Multi-Status",
+                        (char *) hdr.c_str(), (char *) stringresp.c_str(),
+                        stringresp.length(), keepalive);
+                stringresp.clear();
+                return keepalive ? 1 : -1;
               }
               stringresp += "</D:multistatus>\n";
               prot->ChunkResp(stringresp.c_str(), stringresp.length());
@@ -4114,6 +4120,9 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
       }
       if (ntohs(xrdreq.header.requestid) == kXR_open) {
         getfhandle();
+        // fileCacheStore ignores a handle that was never marked open, which
+        // leaves the writer in OFS and the next flock is denied.
+        fopened = true;
         prot->lockHoldPut(prot->fileCacheKey(*this), fhandle);
         prot->fileCacheStore(*this, true);
         return 0;
@@ -4139,9 +4148,15 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
         return -1;
       }
       std::string body;
-      if (iovN > 0 && iovP && iovP[0].iov_base && iovP[0].iov_len)
-        body.assign(static_cast<const char *>(iovP[0].iov_base),
-                    static_cast<size_t>(iovP[0].iov_len));
+      // kXR_fattr answers are several iovecs (rc, name, length, value).
+      // The value is not in the first one.
+      if (iovN > 0 && iovP) {
+        for (int i = 0; i < iovN; i++) {
+          if (iovP[i].iov_base && iovP[i].iov_len)
+            body.append(static_cast<const char *>(iovP[i].iov_base),
+                        static_cast<size_t>(iovP[i].iov_len));
+        }
+      }
       if (fattrSubcode == kXR_fattrGet && body.size() >= 8) {
         size_t i = 4;
         while (i < body.size() && body[i])

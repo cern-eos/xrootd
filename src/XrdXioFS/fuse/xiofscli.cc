@@ -248,7 +248,7 @@ static int runTest(Client &c, std::string prefix)
       if (value == "testval")
         std::cout << "ok getxattr value\n";
       else {
-        std::cerr << "xiofscli test: FAIL getxattr value\n";
+        std::cerr << "xiofscli test: FAIL getxattr value: [" << value << "]\n";
         failed++;
       }
     }
