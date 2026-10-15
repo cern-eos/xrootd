@@ -109,6 +109,7 @@ xiofscli --cacert ca.pem https://localhost:7097/path/link readlink
 xiofscli --cacert ca.pem https://localhost:7097/path/pipe mknod 010644
 xiofscli --cacert ca.pem https://localhost:7097/path/file.txt setxattr user.foo bar
 xiofscli --cacert ca.pem https://localhost:7097/path/file.txt lock SETLK WRLCK 0 0
+xiofscli http://localhost:1094/ test /xiofscli-test
 ```
 
 XrdHttp's `xrd.tls` context did not advertise ALPN `h2`, and TLS 1.3

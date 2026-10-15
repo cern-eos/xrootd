@@ -546,6 +546,28 @@ TEST_F(FsOssPosixTest, InitInvalidFsuidFails)
    EXPECT_NE(0, other.Init(log, cfgp.c_str()));
 }
 
+TEST_F(FsOssPosixTest, InitFsuidNomap)
+{
+   XrdFsOss other;
+   const std::string cfgp = P("nomap.cfg");
+   {
+      std::ofstream cfg(cfgp.c_str());
+      cfg << "oss.fsuid off nomap\n";
+   }
+   ASSERT_EQ(0, other.Init(log, cfgp.c_str()));
+   EXPECT_EQ(XrdFsOssUid::Off, other.fsuidMode);
+   EXPECT_FALSE(other.fsuidMapNobody);
+
+   XrdFsOss mapped;
+   const std::string cfg2 = P("map.cfg");
+   {
+      std::ofstream cfg(cfg2.c_str());
+      cfg << "oss.fsuid off\n";
+   }
+   ASSERT_EQ(0, mapped.Init(log, cfg2.c_str()));
+   EXPECT_TRUE(mapped.fsuidMapNobody);
+}
+
 TEST_F(FsOssPosixTest, InitIgnoresCacheStageSpace)
 {
    XrdFsOss other;

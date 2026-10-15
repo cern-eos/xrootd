@@ -23,7 +23,8 @@ class  XrdSfsAio;
 //! POSIX disk storage system: local syscalls under setfsuid/setfsgid.
 //!
 //! Load with: ofs.osslib libXrdFsOss.so
-//! Optional:  oss.localroot, oss.namelib, oss.fsuid {on|off|require}
+//! Optional:  oss.localroot, oss.namelib,
+//!            oss.fsuid {on|off|require} [nomap]
 //!            ofs.posix
 //------------------------------------------------------------------------------
 
@@ -141,6 +142,7 @@ public:
    XrdSysError &Eroute() {return eDest;}
 
    XrdFsOssUid::Mode fsuidMode;
+   bool              fsuidMapNobody;
 
              XrdFsOss();
             ~XrdFsOss();

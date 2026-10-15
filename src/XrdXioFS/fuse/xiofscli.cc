@@ -7,12 +7,14 @@
 // Commands: stat | ls | cat | read OFFSET LENGTH | put LOCALFILE
 //           | write OFFSET [LOCALFILE] | rm | mkdir | chmod MODE | ln DESTPATH
 //           | chown UID GID | symlink TARGET | readlink | utime ATIME MTIME
+//           | test [PREFIX]
 //
 // Copyright (c) 2026 by the XRootD Collaboration
 //------------------------------------------------------------------------------
 #include "XioClient.hh"
 #include "XioBearer.hh"
 
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -61,7 +63,282 @@ static void usage(const char *argv0)
       << "    rmxattr NAME\n"
       << "    lock [SETLK|SETLKW|GETLK] [RDLCK|WRLCK] START LEN\n"
       << "    unlock\n"
-      << "    flock [SH|EX|UN]\n";
+      << "    flock [SH|EX|UN]\n"
+      << "    test [PREFIX]\n"
+      << "\n"
+      << "  test creates objects under PREFIX (default /xiofscli-test),\n"
+      << "  checks each operation, then removes them. PREFIX is relative\n"
+      << "  to URL.\n";
+}
+
+static std::string childPath(const std::string &dir, const std::string &name)
+{
+  std::string d = dir.empty() ? "/" : dir;
+  while (d.size() > 1 && d.back() == '/')
+    d.pop_back();
+  if (d.empty() || d == "/")
+    return "/" + name;
+  return d + "/" + name;
+}
+
+static bool dirHas(const std::vector<XioFS::DavEntry> &ents, const std::string &name)
+{
+  for (const auto &e : ents)
+    if (e.name == name)
+      return true;
+  return false;
+}
+
+static int runTest(Client &c, std::string prefix)
+{
+  if (prefix.empty())
+    prefix = "/xiofscli-test";
+  if (prefix.front() != '/')
+    prefix.insert(prefix.begin(), '/');
+  while (prefix.size() > 1 && prefix.back() == '/')
+    prefix.pop_back();
+
+  const std::string file = childPath(prefix, "file.bin");
+  const std::string renamed = childPath(prefix, "file2.bin");
+  const std::string hard = childPath(prefix, "hard.bin");
+  const std::string link = childPath(prefix, "link");
+  const std::string sub = childPath(prefix, "sub");
+  const std::string fifo = childPath(prefix, "fifo");
+  const std::string payload = "hello-xiofs\n";
+  const std::string patched = "hello-XIOFS\n";
+  int failed = 0;
+
+  auto check = [&](const char *step, int rc, const std::string &err) -> bool {
+    if (rc) {
+      std::cerr << "xiofscli test: FAIL " << step << ": " << err << "\n";
+      failed++;
+      return false;
+    }
+    std::cout << "ok " << step << "\n";
+    return true;
+  };
+
+  auto cleanup = [&]() {
+    std::string e;
+    c.unlock(file, e);
+    c.unlock(renamed, e);
+    c.flock(file, "UN", e);
+    c.flock(renamed, "UN", e);
+    c.unlink(file, e);
+    c.unlink(renamed, e);
+    c.unlink(hard, e);
+    c.unlink(link, e);
+    c.unlink(fifo, e);
+    c.unlink(sub, e);
+    c.unlink(prefix, e);
+  };
+
+  std::cout << "xiofscli test: prefix " << prefix << "\n";
+  cleanup();
+
+  std::string err;
+  int rc = c.mkdir(prefix, err);
+  if (rc == -EEXIST)
+    rc = 0;
+  if (!check("mkdir", rc, err)) {
+    cleanup();
+    return 1;
+  }
+
+  if (!check("put", c.put(file, payload, err), err)) {
+    cleanup();
+    return 1;
+  }
+
+  XioFS::Attr a;
+  if (!check("stat", c.getattr(file, a, err), err)) {
+    cleanup();
+    return 1;
+  }
+  if (!a.is_dir && !a.is_lnk && a.size == static_cast<int64_t>(payload.size()))
+    std::cout << "ok stat size\n";
+  else {
+    std::cerr << "xiofscli test: FAIL stat size: got " << a.size
+              << " want " << payload.size() << "\n";
+    failed++;
+  }
+
+  std::string buf;
+  if (check("read", c.read(file, 0, payload.size(), buf, err), err)) {
+    if (buf == payload)
+      std::cout << "ok read bytes\n";
+    else {
+      std::cerr << "xiofscli test: FAIL read bytes\n";
+      failed++;
+    }
+  }
+
+  buf.clear();
+  if (check("read range", c.read(file, 6, 5, buf, err), err)) {
+    if (buf == "xiofs")
+      std::cout << "ok read range bytes\n";
+    else {
+      std::cerr << "xiofscli test: FAIL read range bytes\n";
+      failed++;
+    }
+  }
+
+  if (check("write", c.write(file, 6, "XIOFS", err), err)) {
+    buf.clear();
+    if (check("read after write", c.read(file, 0, patched.size(), buf, err), err)) {
+      if (buf == patched)
+        std::cout << "ok write bytes\n";
+      else {
+        std::cerr << "xiofscli test: FAIL write bytes\n";
+        failed++;
+      }
+    }
+  }
+
+  if (check("chmod", c.chmod(file, 0640, err), err)) {
+    if (check("stat after chmod", c.getattr(file, a, err), err) &&
+        (a.mode & 07777) != 0640) {
+      std::cerr << "xiofscli test: FAIL chmod mode: got "
+                << std::oct << (a.mode & 07777) << std::dec << "\n";
+      failed++;
+    } else if ((a.mode & 07777) == 0640) {
+      std::cout << "ok chmod mode\n";
+    }
+  }
+
+  if (check("stat before utime", c.getattr(file, a, err), err)) {
+    struct timespec tv[2] = {};
+    tv[0].tv_sec = 1700000000;
+    tv[1].tv_sec = 1700000001;
+    if (check("utime", c.utimens(file, tv, err), err)) {
+      XioFS::Attr b;
+      if (check("stat after utime", c.getattr(file, b, err), err)) {
+        if (b.mtime == tv[1].tv_sec)
+          std::cout << "ok utime mtime\n";
+        else {
+          std::cerr << "xiofscli test: FAIL utime mtime: got " << b.mtime << "\n";
+          failed++;
+        }
+      }
+    }
+  }
+
+  if (a.uid != static_cast<uid_t>(-1) && a.gid != static_cast<gid_t>(-1)) {
+    if (check("chown", c.chown(file, a.uid, a.gid, err), err)) {
+      XioFS::Attr b;
+      if (check("stat after chown", c.getattr(file, b, err), err)) {
+        if (b.uid == a.uid && b.gid == a.gid)
+          std::cout << "ok chown ids\n";
+        else {
+          std::cerr << "xiofscli test: FAIL chown ids\n";
+          failed++;
+        }
+      }
+    }
+  } else {
+    std::cout << "skip chown (server did not return uid/gid)\n";
+  }
+
+  if (check("setxattr", c.setxattr(file, "user.xiofs", "testval", err), err)) {
+    std::string value;
+    if (check("getxattr", c.getxattr(file, "user.xiofs", value, err), err)) {
+      if (value == "testval")
+        std::cout << "ok getxattr value\n";
+      else {
+        std::cerr << "xiofscli test: FAIL getxattr value\n";
+        failed++;
+      }
+    }
+    std::string names;
+    if (check("listxattr", c.listxattr(file, names, err), err)) {
+      if (names.find("user.xiofs") != std::string::npos)
+        std::cout << "ok listxattr\n";
+      else {
+        std::cerr << "xiofscli test: FAIL listxattr missing user.xiofs\n";
+        failed++;
+      }
+    }
+    check("rmxattr", c.removexattr(file, "user.xiofs", err), err);
+  }
+
+  check("mkdir sub", c.mkdir(sub, err), err);
+
+  std::vector<XioFS::DavEntry> ents;
+  if (check("ls", c.readdir(prefix, ents, err), err)) {
+    if (dirHas(ents, "file.bin") && dirHas(ents, "sub"))
+      std::cout << "ok ls entries\n";
+    else {
+      std::cerr << "xiofscli test: FAIL ls entries\n";
+      failed++;
+    }
+  }
+
+  if (check("symlink", c.symlink(link, "file.bin", err), err)) {
+    std::string target;
+    if (check("readlink", c.readlink(link, target, err), err)) {
+      if (target == "file.bin")
+        std::cout << "ok readlink target\n";
+      else {
+        std::cerr << "xiofscli test: FAIL readlink target: " << target << "\n";
+        failed++;
+      }
+    }
+  }
+
+  if (check("ln", c.link(file, hard, err), err)) {
+    buf.clear();
+    if (check("read hardlink", c.read(hard, 0, patched.size(), buf, err), err)) {
+      if (buf == patched)
+        std::cout << "ok hardlink bytes\n";
+      else {
+        std::cerr << "xiofscli test: FAIL hardlink bytes\n";
+        failed++;
+      }
+    }
+  }
+
+  check("mknod", c.mknod(fifo, static_cast<mode_t>(S_IFIFO | 0644), 0, err), err);
+
+  if (check("lock", c.lock(file, "SETLK", "WRLCK", "SET", 0, 0, err), err))
+    check("unlock", c.unlock(file, err), err);
+  if (check("flock", c.flock(file, "EX", err), err))
+    check("flock unlock", c.flock(file, "UN", err), err);
+
+  if (check("rename", c.rename(file, renamed, err), err)) {
+    XioFS::Attr gone;
+    int grc = c.getattr(file, gone, err);
+    if (grc)
+      std::cout << "ok rename removed source\n";
+    else {
+      std::cerr << "xiofscli test: FAIL rename source still exists\n";
+      failed++;
+    }
+    if (check("stat renamed", c.getattr(renamed, a, err), err)) {
+      if (a.size == static_cast<int64_t>(patched.size()))
+        std::cout << "ok rename size\n";
+      else {
+        std::cerr << "xiofscli test: FAIL rename size\n";
+        failed++;
+      }
+    }
+  }
+
+  cleanup();
+  XioFS::Attr left;
+  rc = c.getattr(prefix, left, err);
+  if (rc)
+    std::cout << "ok cleanup\n";
+  else {
+    std::cerr << "xiofscli test: FAIL cleanup: prefix still exists\n";
+    failed++;
+  }
+
+  if (failed) {
+    std::cerr << "xiofscli test: " << failed << " check(s) failed\n";
+    return 1;
+  }
+  std::cout << "xiofscli test: passed\n";
+  return 0;
 }
 
 static int fail(const std::string &msg, int rc)
@@ -390,6 +667,11 @@ int main(int argc, char **argv)
     if (rc)
       return fail(err, 1);
     return 0;
+  }
+
+  if (cmd == "test") {
+    std::string prefix = args.size() > 2 ? args[2] : "/xiofscli-test";
+    return runTest(c, prefix);
   }
 
   return fail("unknown command " + cmd, 2);

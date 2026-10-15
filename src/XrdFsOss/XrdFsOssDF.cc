@@ -32,7 +32,7 @@
 int XrdFsOssDir::Opendir(const char *path, XrdOucEnv &env)
 {
    if (dirP) return -EBADF;
-   XrdFsOssUid uid(ossP->fsuidMode, &env, &ossP->Eroute());
+   XrdFsOssUid uid(ossP->fsuidMode, ossP->fsuidMapNobody, &env, &ossP->Eroute());
    if (!uid.Ok()) return uid.RC();
 
    char pb[MAXPATHLEN]; const char *pfn;
@@ -85,7 +85,7 @@ int XrdFsOssDir::Close(long long *retsz)
 int XrdFsOssFile::Open(const char *path, int oflag, mode_t mode, XrdOucEnv &env)
 {
    if (fd >= 0) return -EBADF;
-   XrdFsOssUid uid(ossP->fsuidMode, &env, &ossP->Eroute());
+   XrdFsOssUid uid(ossP->fsuidMode, ossP->fsuidMapNobody, &env, &ossP->Eroute());
    if (!uid.Ok()) return uid.RC();
 
    char pb[MAXPATHLEN]; const char *pfn;

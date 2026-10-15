@@ -26,6 +26,9 @@
 //! Only uid and primary gid are applied. Supplementary groups are not set
 //! (setgroups is process-wide). Metadata syscalls must run while this object
 //! is alive. I/O on an already open fd does not need it.
+//!
+//! An entity with uid 0 and no name is the unauthenticated client. Unless
+//! mapNobody is false, that identity is the unix nobody account.
 //------------------------------------------------------------------------------
 
 class XrdFsOssUid
@@ -33,7 +36,7 @@ class XrdFsOssUid
 public:
    enum Mode { Off = 0, On = 1, Require = 2 };
 
-   XrdFsOssUid(Mode mode, XrdOucEnv *envP, XrdSysError *eDest)
+   XrdFsOssUid(Mode mode, bool mapNobody, XrdOucEnv *envP, XrdSysError *eDest)
       : prevUid(-1), prevGid(-1), rc(0), ok(true)
    {
       if (mode == Off || !envP) return;
@@ -41,7 +44,7 @@ public:
       const XrdSecEntity *se = envP->secEnv();
       uid_t uid = 0;
       gid_t gid = 0;
-      if (!Resolve(se, mode, uid, gid, rc, eDest))
+      if (!Resolve(se, mode, mapNobody, uid, gid, rc, eDest))
          {ok = (rc == 0); return;}
 
 #ifdef __linux__
@@ -75,21 +78,29 @@ public:
    XrdFsOssUid &operator=(const XrdFsOssUid&) = delete;
 
 private:
-   static bool Resolve(const XrdSecEntity *se, Mode mode,
+   static bool Resolve(const XrdSecEntity *se, Mode mode, bool mapNobody,
                        uid_t &uid, gid_t &gid, int &rc,
                        XrdSysError *eDest)
    {
       rc = 0;
-      if (!se) return false;
+      if (se)
+         {uid = se->uid;
+          gid = se->gid;
+          if (uid != 0) return true;
+         }
+      else
+         {uid = 0;
+          gid = 0;
+         }
 
-      uid = se->uid;
-      gid = se->gid;
-      if (uid != 0) return true;
-
-      const char *name = se->name;
-      if (!name || !*name)
-         {if (mode == Require) {rc = -EACCES; return false;}
-          return false;
+      const char *name = se ? se->name : 0;
+      bool anon = !name || !*name;
+      if (anon)
+         {if (!mapNobody)
+             {if (mode == Require) {rc = -EACCES; return false;}
+              return false;
+             }
+          name = "nobody";
          }
 
       char user[256];
@@ -98,7 +109,7 @@ private:
          {user[n] = name[n]; n++;}
       user[n] = '\0';
       if (!user[0])
-         {if (mode == Require) {rc = -EACCES; return false;}
+         {if (mode == Require || anon) {rc = -EACCES; return false;}
           return false;
          }
 
@@ -106,7 +117,7 @@ private:
       char pbuf[4096];
       int prc = getpwnam_r(user, &pw, pbuf, sizeof(pbuf), &pwp);
       if (prc || !pwp)
-         {if (mode == Require)
+         {if (mode == Require || anon)
              {rc = -EACCES;
               if (eDest)
                  eDest->Emsg("FsOss", "cannot map identity", user,

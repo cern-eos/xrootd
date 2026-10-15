@@ -63,6 +63,7 @@ XrdOss *XrdOssGetStorageSystem2(XrdOss       *native_oss,
 
 XrdFsOss::XrdFsOss()
    : fsuidMode(XrdFsOssUid::On),
+     fsuidMapNobody(true),
      eDest(0, "fsoss_"),
      n2n(0),
      myVersion(&XrdVERSIONINFOVAR(XrdOssGetStorageSystem2)),
@@ -143,6 +144,7 @@ int XrdFsOss::Configure(const char *cfn, XrdOucEnv *envP)
    if (fsuidMode == XrdFsOssUid::On)      uidmsg = "on";
    else if (fsuidMode == XrdFsOssUid::Require) uidmsg = "require";
    eDest.Say("Config FsOss fsuid=", uidmsg,
+             fsuidMapNobody ? "" : " nomap",
              LocalRoot ? " localroot=" : "",
              LocalRoot ? LocalRoot : "");
    return 0;
@@ -209,6 +211,18 @@ int XrdFsOss::xfsuid(XrdOucStream &Config)
    else if (!strcmp(val, "off")) fsuidMode = XrdFsOssUid::Off;
    else if (!strcmp(val, "require")) fsuidMode = XrdFsOssUid::Require;
    else {eDest.Emsg("Config", "invalid fsuid value -", val); return 1;}
+
+   // Default: uid 0 and an empty name become the nobody account.
+   // "nomap" keeps the previous behaviour (require denies, on stays put).
+   fsuidMapNobody = true;
+   char *opt = Config.GetWord();
+   if (opt && *opt)
+      {if (!strcmp(opt, "nomap")) fsuidMapNobody = false;
+       else {eDest.Emsg("Config", "invalid fsuid option -", opt); return 1;}
+       opt = Config.GetWord();
+       if (opt && *opt)
+          {eDest.Emsg("Config", "unexpected fsuid token -", opt); return 1;}
+      }
    return 0;
 }
 
@@ -290,7 +304,7 @@ int XrdFsOss::Mkpath(const char *path, mode_t mode)
 
 int XrdFsOss::Chmod(const char *path, mode_t mode, XrdOucEnv *envP)
 {
-   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   XrdFsOssUid uid(fsuidMode, fsuidMapNobody, envP, &eDest);
    if (!uid.Ok()) return uid.RC();
    char pb[MAXPATHLEN]; const char *pfn;
    int rc = Pfn(path, pb, sizeof(pb), pfn);
@@ -300,7 +314,7 @@ int XrdFsOss::Chmod(const char *path, mode_t mode, XrdOucEnv *envP)
 
 int XrdFsOss::Chown(const char *path, uid_t u, gid_t g, XrdOucEnv *envP)
 {
-   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   XrdFsOssUid uid(fsuidMode, fsuidMapNobody, envP, &eDest);
    if (!uid.Ok()) return uid.RC();
    char pb[MAXPATHLEN]; const char *pfn;
    int rc = Pfn(path, pb, sizeof(pb), pfn);
@@ -312,7 +326,7 @@ int XrdFsOss::Create(const char *tid, const char *path, mode_t mode,
                      XrdOucEnv &env, int opts)
 {
    (void)tid;
-   XrdFsOssUid uid(fsuidMode, &env, &eDest);
+   XrdFsOssUid uid(fsuidMode, fsuidMapNobody, &env, &eDest);
    if (!uid.Ok()) return uid.RC();
 
    char pb[MAXPATHLEN]; const char *pfn;
@@ -343,7 +357,7 @@ int XrdFsOss::Create(const char *tid, const char *path, mode_t mode,
 
 int XrdFsOss::Link(const char *old_path, const char *new_path, XrdOucEnv *envP)
 {
-   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   XrdFsOssUid uid(fsuidMode, fsuidMapNobody, envP, &eDest);
    if (!uid.Ok()) return uid.RC();
    char ob[MAXPATHLEN], nb[MAXPATHLEN];
    const char *opfn, *npfn;
@@ -356,7 +370,7 @@ int XrdFsOss::Link(const char *old_path, const char *new_path, XrdOucEnv *envP)
 
 int XrdFsOss::Mkdir(const char *path, mode_t mode, int mkpath, XrdOucEnv *envP)
 {
-   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   XrdFsOssUid uid(fsuidMode, fsuidMapNobody, envP, &eDest);
    if (!uid.Ok()) return uid.RC();
    char pb[MAXPATHLEN]; const char *pfn;
    int rc = Pfn(path, pb, sizeof(pb), pfn);
@@ -371,7 +385,7 @@ int XrdFsOss::Mkdir(const char *path, mode_t mode, int mkpath, XrdOucEnv *envP)
 
 int XrdFsOss::Remdir(const char *path, int opts, XrdOucEnv *envP)
 {
-   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   XrdFsOssUid uid(fsuidMode, fsuidMapNobody, envP, &eDest);
    if (!uid.Ok()) return uid.RC();
    char pb[MAXPATHLEN]; const char *pfn;
    int rc = Pfn(path, pb, sizeof(pb), pfn, opts);
@@ -383,7 +397,7 @@ int XrdFsOss::Remdir(const char *path, int opts, XrdOucEnv *envP)
 int XrdFsOss::Rename(const char *oPath, const char *nPath,
                      XrdOucEnv *oEnvP, XrdOucEnv *nEnvP)
 {
-   XrdFsOssUid uid(fsuidMode, oEnvP ? oEnvP : nEnvP, &eDest);
+   XrdFsOssUid uid(fsuidMode, fsuidMapNobody, oEnvP ? oEnvP : nEnvP, &eDest);
    if (!uid.Ok()) return uid.RC();
    char ob[MAXPATHLEN], nb[MAXPATHLEN];
    const char *opfn, *npfn;
@@ -396,7 +410,7 @@ int XrdFsOss::Rename(const char *oPath, const char *nPath,
 
 int XrdFsOss::Stat(const char *path, struct stat *buff, int opts, XrdOucEnv *envP)
 {
-   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   XrdFsOssUid uid(fsuidMode, fsuidMapNobody, envP, &eDest);
    if (!uid.Ok()) return uid.RC();
    char pb[MAXPATHLEN]; const char *pfn;
    int rc = Pfn(path, pb, sizeof(pb), pfn);
@@ -413,7 +427,7 @@ int XrdFsOss::Stat(const char *path, struct stat *buff, int opts, XrdOucEnv *env
 
 int XrdFsOss::StatFS(const char *path, char *buff, int &blen, XrdOucEnv *envP)
 {
-   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   XrdFsOssUid uid(fsuidMode, fsuidMapNobody, envP, &eDest);
    if (!uid.Ok()) return uid.RC();
    char pb[MAXPATHLEN]; const char *pfn;
    int rc = Pfn(path && *path ? path : spacePath, pb, sizeof(pb), pfn);
@@ -431,7 +445,7 @@ int XrdFsOss::StatFS(const char *path, char *buff, int &blen, XrdOucEnv *envP)
 
 int XrdFsOss::StatLS(XrdOucEnv &env, const char *path, char *buff, int &blen)
 {
-   XrdFsOssUid uid(fsuidMode, &env, &eDest);
+   XrdFsOssUid uid(fsuidMode, fsuidMapNobody, &env, &eDest);
    if (!uid.Ok()) return uid.RC();
    char pb[MAXPATHLEN]; const char *pfn;
    int rc = Pfn(path && *path ? path : spacePath, pb, sizeof(pb), pfn);
@@ -484,7 +498,7 @@ int XrdFsOss::StatVS(XrdOssVSInfo *sP, const char *sname, int updt)
 
 int XrdFsOss::Symlink(const char *target, const char *path, XrdOucEnv *envP)
 {
-   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   XrdFsOssUid uid(fsuidMode, fsuidMapNobody, envP, &eDest);
    if (!uid.Ok()) return uid.RC();
    char pb[MAXPATHLEN]; const char *pfn;
    int rc = Pfn(path, pb, sizeof(pb), pfn);
@@ -495,7 +509,7 @@ int XrdFsOss::Symlink(const char *target, const char *path, XrdOucEnv *envP)
 int XrdFsOss::Truncate(const char *path, unsigned long long fsize,
                        XrdOucEnv *envP)
 {
-   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   XrdFsOssUid uid(fsuidMode, fsuidMapNobody, envP, &eDest);
    if (!uid.Ok()) return uid.RC();
    char pb[MAXPATHLEN]; const char *pfn;
    int rc = Pfn(path, pb, sizeof(pb), pfn);
@@ -505,7 +519,7 @@ int XrdFsOss::Truncate(const char *path, unsigned long long fsize,
 
 int XrdFsOss::Unlink(const char *path, int opts, XrdOucEnv *envP)
 {
-   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   XrdFsOssUid uid(fsuidMode, fsuidMapNobody, envP, &eDest);
    if (!uid.Ok()) return uid.RC();
    char pb[MAXPATHLEN]; const char *pfn;
    int rc = Pfn(path, pb, sizeof(pb), pfn, opts);
@@ -517,7 +531,7 @@ int XrdFsOss::Unlink(const char *path, int opts, XrdOucEnv *envP)
 int XrdFsOss::Utimes(const char *path, const struct timespec ts[2],
                      XrdOucEnv *envP)
 {
-   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   XrdFsOssUid uid(fsuidMode, fsuidMapNobody, envP, &eDest);
    if (!uid.Ok()) return uid.RC();
    char pb[MAXPATHLEN]; const char *pfn;
    int rc = Pfn(path, pb, sizeof(pb), pfn);
@@ -527,7 +541,7 @@ int XrdFsOss::Utimes(const char *path, const struct timespec ts[2],
 
 int XrdFsOss::Readlink(const char *path, char *buff, int blen, XrdOucEnv *envP)
 {
-   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   XrdFsOssUid uid(fsuidMode, fsuidMapNobody, envP, &eDest);
    if (!uid.Ok()) return uid.RC();
    char pb[MAXPATHLEN]; const char *pfn;
    int rc = Pfn(path, pb, sizeof(pb), pfn);
@@ -541,7 +555,7 @@ int XrdFsOss::Readlink(const char *path, char *buff, int blen, XrdOucEnv *envP)
 
 int XrdFsOss::Access(const char *path, int amode, XrdOucEnv *envP)
 {
-   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   XrdFsOssUid uid(fsuidMode, fsuidMapNobody, envP, &eDest);
    if (!uid.Ok()) return uid.RC();
    char pb[MAXPATHLEN]; const char *pfn;
    int rc = Pfn(path, pb, sizeof(pb), pfn);
@@ -583,7 +597,7 @@ int XrdFsOss::Access(const char *path, int amode, XrdOucEnv *envP)
 
 int XrdFsOss::Mknod(const char *path, mode_t mode, dev_t dev, XrdOucEnv *envP)
 {
-   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   XrdFsOssUid uid(fsuidMode, fsuidMapNobody, envP, &eDest);
    if (!uid.Ok()) return uid.RC();
    char pb[MAXPATHLEN]; const char *pfn;
    int rc = Pfn(path, pb, sizeof(pb), pfn);
@@ -594,7 +608,7 @@ int XrdFsOss::Mknod(const char *path, mode_t mode, dev_t dev, XrdOucEnv *envP)
 int XrdFsOss::DelXattr(const char *Aname, const char *path,
                        XrdOucEnv *envP, int fd)
 {
-   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   XrdFsOssUid uid(fsuidMode, fsuidMapNobody, envP, &eDest);
    if (!uid.Ok()) return uid.RC();
    const char *use = path;
    char pb[MAXPATHLEN];
@@ -608,7 +622,7 @@ int XrdFsOss::DelXattr(const char *Aname, const char *path,
 int XrdFsOss::GetXattr(const char *Aname, void *Aval, int Avsz,
                        const char *path, XrdOucEnv *envP, int fd)
 {
-   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   XrdFsOssUid uid(fsuidMode, fsuidMapNobody, envP, &eDest);
    if (!uid.Ok()) return uid.RC();
    const char *use = path;
    char pb[MAXPATHLEN];
@@ -622,7 +636,7 @@ int XrdFsOss::GetXattr(const char *Aname, void *Aval, int Avsz,
 int XrdFsOss::SetXattr(const char *Aname, const void *Aval, int Avsz,
                        const char *path, XrdOucEnv *envP, int fd, int isNew)
 {
-   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   XrdFsOssUid uid(fsuidMode, fsuidMapNobody, envP, &eDest);
    if (!uid.Ok()) return uid.RC();
    const char *use = path;
    char pb[MAXPATHLEN];
@@ -636,7 +650,7 @@ int XrdFsOss::SetXattr(const char *Aname, const void *Aval, int Avsz,
 int XrdFsOss::ListXattr(XrdSysXAttr::AList **aPL, const char *path,
                         XrdOucEnv *envP, int fd, int getSz)
 {
-   XrdFsOssUid uid(fsuidMode, envP, &eDest);
+   XrdFsOssUid uid(fsuidMode, fsuidMapNobody, envP, &eDest);
    if (!uid.Ok()) return uid.RC();
    const char *use = path;
    char pb[MAXPATHLEN];
