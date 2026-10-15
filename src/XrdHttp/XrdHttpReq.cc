@@ -868,8 +868,13 @@ int XrdHttpReq::runLockReq(bool unlocking)
   }
 
   if (!have && unlocking) {
+    // Nothing was held, so this never reaches the bridge. reset() clears
+    // headerok; without that, HTTP/2 still treats the request as in flight
+    // and replays it instead of reading the next stream.
     prot->SendSimpleResp(200, NULL, NULL, (char *)"OK", 0, keepalive);
-    return keepalive ? 1 : -1;
+    bool ret_keepalive = keepalive;
+    reset();
+    return ret_keepalive ? 1 : -1;
   }
 
   if (!have)

@@ -118,6 +118,7 @@ static int runTest(Client &c, std::string prefix)
     return true;
   };
 
+  const bool exportRoot = (prefix == "/");
   auto cleanup = [&]() {
     std::string e;
     c.unlock(file, e);
@@ -130,7 +131,9 @@ static int runTest(Client &c, std::string prefix)
     c.unlink(link, e);
     c.unlink(fifo, e);
     c.unlink(sub, e);
-    c.unlink(prefix, e);
+    // "/" is the export itself. Deleting it rmdirs localroot.
+    if (!exportRoot)
+      c.unlink(prefix, e);
   };
 
   std::cout << "xiofscli test: prefix " << prefix << "\n";
@@ -324,13 +327,17 @@ static int runTest(Client &c, std::string prefix)
   }
 
   cleanup();
-  XioFS::Attr left;
-  rc = c.getattr(prefix, left, err);
-  if (rc)
-    std::cout << "ok cleanup\n";
-  else {
-    std::cerr << "xiofscli test: FAIL cleanup: prefix still exists\n";
-    failed++;
+  if (exportRoot) {
+    std::cout << "ok cleanup (left /)\n";
+  } else {
+    XioFS::Attr left;
+    rc = c.getattr(prefix, left, err);
+    if (rc)
+      std::cout << "ok cleanup\n";
+    else {
+      std::cerr << "xiofscli test: FAIL cleanup: prefix still exists\n";
+      failed++;
+    }
   }
 
   if (failed) {
