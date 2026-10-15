@@ -40,13 +40,17 @@ public:
    int     getFD() {return fd;}
 
            XrdFsOssDir(XrdFsOss *oss, const char *tid)
-              : XrdOssDF(tid, DF_isDir), ossP(oss), dirP(0), statP(0) {}
+              : XrdOssDF(tid, DF_isDir), ossP(oss), dirP(0), statP(0),
+                impUid(0), impGid(0), imp(false) {}
           ~XrdFsOssDir() {if (dirP) Close();}
 
 private:
    XrdFsOss *ossP;
    DIR      *dirP;
    struct stat *statP;
+   uid_t     impUid;
+   gid_t     impGid;
+   bool      imp;
 };
 
 class XrdFsOssFile : public XrdOssDF

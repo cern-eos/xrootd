@@ -35,6 +35,10 @@ int XrdFsOssDir::Opendir(const char *path, XrdOucEnv &env)
    XrdFsOssUid uid(ossP->fsuidMode, ossP->fsuidMapNobody, &env, &ossP->Eroute());
    if (!uid.Ok()) return uid.RC();
 
+   imp = false;
+   if (uid.Applied())
+      {imp = true; impUid = uid.Uid(); impGid = uid.Gid();}
+
    char pb[MAXPATHLEN]; const char *pfn;
    int rc = ossP->Pfn(path, pb, sizeof(pb), pfn);
    if (rc) return rc;
@@ -44,9 +48,9 @@ int XrdFsOssDir::Opendir(const char *path, XrdOucEnv &env)
    return 0;
 }
 
-int XrdFsOssDir::Readdir(char *buff, int blen)
+static int readOneEntry(DIR *dirP, int fd, struct stat *statP,
+                         char *buff, int blen)
 {
-   if (!dirP) return -EBADF;
    errno = 0;
    struct dirent *rp;
    while ((rp = readdir(dirP)))
@@ -63,6 +67,20 @@ int XrdFsOssDir::Readdir(char *buff, int blen)
    return errno ? -errno : 0;
 }
 
+int XrdFsOssDir::Readdir(char *buff, int blen)
+{
+   if (!dirP) return -EBADF;
+   // fstatat() checks the directory mode with the current fsuid. The guard
+   // in Opendir() has already been destroyed, so a 0700 directory opened as
+   // nobody is no longer searchable and every entry fails with EACCES. The
+   // dirlist then reports success with no names.
+   if (!imp)
+      return readOneEntry(dirP, fd, statP, buff, blen);
+   XrdFsOssUid as(impUid, impGid);
+   if (!as.Ok()) return as.RC();
+   return readOneEntry(dirP, fd, statP, buff, blen);
+}
+
 int XrdFsOssDir::StatRet(struct stat *buff)
 {
    statP = buff;
@@ -74,7 +92,7 @@ int XrdFsOssDir::Close(long long *retsz)
    (void)retsz;
    if (!dirP) return 0;
    int rc = closedir(dirP) ? -errno : 0;
-   dirP = 0; fd = -1; statP = 0;
+   dirP = 0; fd = -1; statP = 0; imp = false;
    return rc;
 }
 

@@ -25,7 +25,9 @@
 //!
 //! Only uid and primary gid are applied. Supplementary groups are not set
 //! (setgroups is process-wide). Metadata syscalls must run while this object
-//! is alive. I/O on an already open fd does not need it.
+//! is alive. I/O on an already open fd does not need it. A later fstatat()
+//! on a directory fd does: it checks search permission with the current
+//! fsuid, so the same uid/gid has to be applied again.
 //!
 //! An entity with uid 0 and no name is the unauthenticated client. Unless
 //! mapNobody is false, that identity is the unix nobody account.
@@ -37,7 +39,7 @@ public:
    enum Mode { Off = 0, On = 1, Require = 2 };
 
    XrdFsOssUid(Mode mode, bool mapNobody, XrdOucEnv *envP, XrdSysError *eDest)
-      : prevUid(-1), prevGid(-1), rc(0), ok(true)
+      : prevUid(-1), prevGid(-1), wantUid(0), wantGid(0), rc(0), ok(true)
    {
       if (mode == Off || !envP) return;
 
@@ -47,20 +49,14 @@ public:
       if (!Resolve(se, mode, mapNobody, uid, gid, rc, eDest))
          {ok = (rc == 0); return;}
 
-#ifdef __linux__
-      prevUid = setfsuid(uid);
-      if (setfsuid(uid) != (int)uid)
-         {setfsuid(prevUid); prevUid = -1;
-          rc = -EPERM; ok = false; return;}
+      Apply(uid, gid);
+   }
 
-      prevGid = setfsgid(gid);
-      if (setfsgid(gid) != (int)gid)
-         {setfsgid(prevGid); prevGid = -1;
-          setfsuid(prevUid); prevUid = -1;
-          rc = -EPERM; ok = false; return;}
-#else
-      (void)uid; (void)gid; (void)eDest;
-#endif
+   // Re-apply a uid/gid this class already resolved on this thread.
+   XrdFsOssUid(uid_t uid, gid_t gid)
+      : prevUid(-1), prevGid(-1), wantUid(0), wantGid(0), rc(0), ok(true)
+   {
+      Apply(uid, gid);
    }
 
    ~XrdFsOssUid()
@@ -73,6 +69,9 @@ public:
 
    bool Ok() const { return ok; }
    int  RC() const { return rc; }
+   bool Applied() const { return prevUid >= 0; }
+   uid_t Uid() const { return wantUid; }
+   gid_t Gid() const { return wantGid; }
 
    XrdFsOssUid(const XrdFsOssUid&) = delete;
    XrdFsOssUid &operator=(const XrdFsOssUid&) = delete;
@@ -132,10 +131,32 @@ private:
       return true;
    }
 
-   int  prevUid;
-   int  prevGid;
-   int  rc;
-   bool ok;
+   void Apply(uid_t uid, gid_t gid)
+   {
+      wantUid = uid;
+      wantGid = gid;
+#ifdef __linux__
+      prevUid = setfsuid(uid);
+      if (setfsuid(uid) != (int)uid)
+         {setfsuid(prevUid); prevUid = -1;
+          rc = -EPERM; ok = false; return;}
+
+      prevGid = setfsgid(gid);
+      if (setfsgid(gid) != (int)gid)
+         {setfsgid(prevGid); prevGid = -1;
+          setfsuid(prevUid); prevUid = -1;
+          rc = -EPERM; ok = false; return;}
+#else
+      (void)uid; (void)gid;
+#endif
+   }
+
+   int   prevUid;
+   int   prevGid;
+   uid_t wantUid;
+   gid_t wantGid;
+   int   rc;
+   bool  ok;
 };
 
 #endif
