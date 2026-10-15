@@ -17,6 +17,30 @@
 
 namespace XioFS {
 
+std::string statusDetail(const char *what, int status, const std::string &body)
+{
+  std::string e = std::string(what) + " status " + std::to_string(status);
+  std::string snip;
+  for (unsigned char c : body) {
+    if (c == '\r' || c == '\n' || c == '\t')
+      c = ' ';
+    if (c < 0x20 || c == 0x7f)
+      continue;
+    if (c == ' ' && (snip.empty() || snip.back() == ' '))
+      continue;
+    snip.push_back(static_cast<char>(c));
+    if (snip.size() >= 160)
+      break;
+  }
+  while (!snip.empty() && snip.back() == ' ')
+    snip.pop_back();
+  if (!snip.empty()) {
+    e += ": ";
+    e += snip;
+  }
+  return e;
+}
+
 int httpToErrno(int status)
 {
   switch (status) {
@@ -445,7 +469,7 @@ int Client::proppatch(const std::string &relpath, const std::string &body,
   if (rc)
     return rc;
   if (int e = httpToErrno(resp.status)) {
-    err = "PROPPATCH status " + std::to_string(resp.status);
+    err = statusDetail("PROPPATCH", resp.status, resp.body);
     return -e;
   }
   return 0;
@@ -595,7 +619,7 @@ int Client::mknod(const std::string &relpath, mode_t mode, dev_t rdev,
       return rc;
   }
   if (int e = httpToErrno(resp.status)) {
-    err = "MKNOD status " + std::to_string(resp.status);
+    err = statusDetail("MKNOD", resp.status, resp.body);
     return -e;
   }
   return 0;
@@ -670,7 +694,7 @@ int Client::lock(const std::string &relpath, const std::string &cmd,
   if (rc)
     return rc;
   if (int e = httpToErrno(resp.status)) {
-    err = "LOCK status " + std::to_string(resp.status);
+    err = statusDetail("LOCK", resp.status, resp.body);
     return -e;
   }
   return 0;
@@ -686,7 +710,7 @@ int Client::flock(const std::string &relpath, const std::string &op,
   if (rc)
     return rc;
   if (int e = httpToErrno(resp.status)) {
-    err = "FLOCK status " + std::to_string(resp.status);
+    err = statusDetail("FLOCK", resp.status, resp.body);
     return -e;
   }
   return 0;

@@ -224,6 +224,7 @@ std::string emitXrd(const Cfg &cfg)
      << "oss.localroot " << cfg.export_path << "\n"
      << "ofs.osslib libXrdFsOss.so\n"
      << "ofs.posix\n"
+     << "ofs.xattr\n"
      << "oss.fsuid require\n"
      << "\n";
 

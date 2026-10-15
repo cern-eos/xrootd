@@ -271,7 +271,15 @@ static int runTest(Client &c, std::string prefix)
     if (dirHas(ents, "file.bin") && dirHas(ents, "sub"))
       std::cout << "ok ls entries\n";
     else {
-      std::cerr << "xiofscli test: FAIL ls entries\n";
+      std::cerr << "xiofscli test: FAIL ls entries";
+      if (ents.empty())
+        std::cerr << " (no names)";
+      else {
+        std::cerr << ":";
+        for (const auto &e : ents)
+          std::cerr << " [" << (e.name.empty() ? e.href : e.name) << "]";
+      }
+      std::cerr << "\n";
       failed++;
     }
   }

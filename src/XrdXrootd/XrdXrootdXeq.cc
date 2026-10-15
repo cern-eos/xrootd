@@ -4660,7 +4660,7 @@ int XrdXrootdProtocol::mapMode(int Mode)
 //
    Map_Mode(ur, RUSR); Map_Mode(uw, WUSR);  Map_Mode(ux, XUSR);
    Map_Mode(gr, RGRP); Map_Mode(gw, WGRP);  Map_Mode(gx, XGRP);
-   Map_Mode(or, ROTH);                      Map_Mode(ox, XOTH);
+   Map_Mode(or, ROTH); Map_Mode(ow, WOTH);  Map_Mode(ox, XOTH);
 
 // All done
 //

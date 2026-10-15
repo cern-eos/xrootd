@@ -594,7 +594,9 @@ int XrdHttpReq::sendPropPatchResult()
   prot->SendSimpleResp(207, (char *)"Multi-Status",
                        (char *)"Content-Type: text/xml; charset=\"utf-8\"",
                        (char *)body.c_str(), body.length(), keepalive);
-  return keepalive ? 1 : -1;
+  bool ret_keepalive = keepalive;
+  reset();
+  return ret_keepalive ? 1 : -1;
 }
 
 int XrdHttpReq::runPropPatchOps()
@@ -613,7 +615,10 @@ int XrdHttpReq::runPropPatchOps()
       prot->SendSimpleResp(500, NULL, NULL, (char *) "Could not run chmod request.", 0, false);
       return -1;
     }
-    return 1;
+    // Return 0 so the bridge calls us again. PostProcess only records
+    // success; the 207 is sent on that next call. Returning 1 here ends
+    // the request with no response and the client waits forever.
+    return 0;
   }
 
   if ((proppatchHaveUid || proppatchHaveGid) && !(proppatchDone & 2)) {
@@ -631,7 +636,7 @@ int XrdHttpReq::runPropPatchOps()
       prot->SendSimpleResp(500, NULL, NULL, (char *) "Could not run chown request.", 0, false);
       return -1;
     }
-    return 1;
+    return 0;
   }
 
   if ((proppatchHaveAtime || proppatchHaveMtime) && !(proppatchDone & 4)) {
@@ -649,16 +654,18 @@ int XrdHttpReq::runPropPatchOps()
       prot->SendSimpleResp(500, NULL, NULL, (char *) "Could not run utimes request.", 0, false);
       return -1;
     }
-    return 1;
+    return 0;
   }
 
   if (!proppatchXattrDel.empty() && !(proppatchDone & 8)) {
     proppatchDone |= 8;
-    return runFattrReq(kXR_fattrDel, proppatchXattrDel, {});
+    int rc = runFattrReq(kXR_fattrDel, proppatchXattrDel, {});
+    return rc > 0 ? 0 : rc;
   }
   if (!proppatchXattrName.empty() && !(proppatchDone & 16)) {
     proppatchDone |= 16;
-    return runFattrReq(kXR_fattrSet, proppatchXattrName, proppatchXattrValue);
+    int rc = runFattrReq(kXR_fattrSet, proppatchXattrName, proppatchXattrValue);
+    return rc > 0 ? 0 : rc;
   }
 
   return sendPropPatchResult();
@@ -864,7 +871,9 @@ int XrdHttpReq::runLockReq(bool unlocking)
       prot->SendSimpleResp(500, NULL, NULL, (char *)"Could not open for lock.", 0, false);
       return -1;
     }
-    return 1;
+    // The open's PostProcess returns 0 so the lock itself is issued on the
+    // next call. Returning 1 suppresses that call and the client hangs.
+    return 0;
   }
 
   if (!have && unlocking) {
@@ -2648,8 +2657,16 @@ int XrdHttpReq::ProcessHTTPReq() {
     }
     case XrdHttpReq::rtPROPFIND:
     {
-
-
+      // Prefer the stored header. parseLine's atoll() sees the raw value
+      // with its trailing CRLF; a missed update left depth at 0 and the
+      // listing was only the collection, which the client then skipped.
+      auto dit = allheaders.find("depth");
+      if (dit != allheaders.end() && !dit->second.empty()) {
+        if (!strcasecmp(dit->second.c_str(), "infinity"))
+          depth = -1;
+        else
+          depth = atoll(dit->second.c_str());
+      }
 
       switch (reqstate) {
 
@@ -2825,11 +2842,21 @@ int XrdHttpReq::ProcessHTTPReq() {
     }
     case XrdHttpReq::rtPROPPATCH:
     {
-      if (reqstate == 0) {
-        if (prot->fileCacheCloseIfOpen())
-          return 0;
-
+      if (reqstate == 0 && !proppatchBodyRead) {
         if (length > 0) {
+#ifdef HAVE_NGHTTP2
+          // Headers are dispatched as soon as Content-Length is known, so
+          // DATA may still be on the wire. Closing the cached GET first
+          // re-enters with lp==0, which does not read the socket, and the
+          // short body becomes HTTP 400.
+          if (prot->isHttp2() && prot->BuffUsed() < length) {
+            const auto sid = prot->http2Session_.activeStreamId();
+            const bool ended =
+                sid >= 0 && prot->http2Session_.activeBodyComplete();
+            if (!ended)
+              return 1;
+          }
+#endif
           char *p = 0;
           if (prot->BuffgetData(length, &p, true) < length) {
             prot->SendSimpleResp(400, NULL, NULL,
@@ -2838,7 +2865,10 @@ int XrdHttpReq::ProcessHTTPReq() {
           }
           parsePropPatch(p, length);
         }
+        proppatchBodyRead = true;
       }
+      if (reqstate == 0 && prot->fileCacheCloseIfOpen())
+        return 0;
       return runPropPatchOps();
     }
     case XrdHttpReq::rtSYMLINK:
@@ -3870,27 +3900,42 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
 
 
           // Now parse the answer building the entries vector
-          if (iovN > 0) {
-            char *startp = (char *) iovP[0].iov_base, *endp = 0;
+          if (iovN > 0 && iovP && iovP[0].iov_base && iovP[0].iov_len > 1) {
+            // Scan the byte length, not strchr(). A NUL inside a stat line
+            // used to end the C string and drop every name after the first.
+            const char *base = static_cast<const char *>(iovP[0].iov_base);
+            const size_t len = static_cast<size_t>(iovP[0].iov_len);
+            size_t off = 0;
             char entry[1024];
-            DirListInfo e;
 
-            while ( (size_t)(startp - (char *) iovP[0].iov_base) < (size_t)(iovP[0].iov_len - 1) ) {
-              // Find the filename, it comes before the \n
-              if ((endp = (char *) mystrchrnul((const char*) startp, '\n'))) {
-                strncpy(entry, (char *) startp, endp - startp);
-                entry[endp - startp] = 0;
-                e.path = entry;
+            while (off + 1 < len) {
+              size_t nl = off;
+              while (nl < len && base[nl] != '\n')
+                nl++;
+              if (nl >= len)
+                break;
+              size_t namelen = nl - off;
+              if (namelen >= sizeof(entry))
+                namelen = sizeof(entry) - 1;
+              memcpy(entry, base + off, namelen);
+              entry[namelen] = 0;
 
-                endp++;
-
-                // Now parse the stat info
-                TRACEI(REQ, "Dirlist " <<resource.c_str() <<" entry=" <<entry
-                            << " stat=" << endp);
-
-                fillDirListFromStat(endp, e);
+              const size_t stat_off = nl + 1;
+              size_t stat_nl = stat_off;
+              while (stat_nl < len && base[stat_nl] != '\n')
+                stat_nl++;
+              std::string statline;
+              statline.reserve(stat_nl > stat_off ? stat_nl - stat_off : 0);
+              for (size_t i = stat_off; i < stat_nl; i++) {
+                if (base[i])
+                  statline.push_back(base[i]);
               }
 
+              DirListInfo e;
+              e.path = entry;
+              TRACEI(REQ, "Dirlist " << resource.c_str() << " entry=" << entry
+                          << " stat=" << statline);
+              fillDirListFromStat(statline.c_str(), e);
 
               if (e.path.length() && (e.path != ".") && (e.path != "..")) {
                 std::string p = resource.c_str();
@@ -3916,14 +3961,9 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
                 }
               }
 
-
-
-              if (endp) {
-                  char *pp = (char *)strchr((const char *)endp, '\n');
-                  if (pp) startp = pp+1;
-                  else break;
-              } else break;
-
+              if (stat_nl >= len)
+                break;
+              off = stat_nl + 1;
             }
           }
 
@@ -4432,6 +4472,7 @@ void XrdHttpReq::reset() {
   proppatchHaveAtime = proppatchHaveMtime = false;
   proppatchAtime = proppatchMtime = -1;
   proppatchDone = 0;
+  proppatchBodyRead = false;
 
   iovP = 0;
   iovN = 0;

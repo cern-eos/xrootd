@@ -478,6 +478,7 @@ public:
   long long proppatchAtime{-1};
   long long proppatchMtime{-1};
   int proppatchDone{0};
+  bool proppatchBodyRead{false};
   std::string proppatchXattrName;
   std::string proppatchXattrValue;
   std::string proppatchXattrDel;
