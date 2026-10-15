@@ -273,7 +273,8 @@ static int runTest(Client &c, std::string prefix)
     else {
       std::cerr << "xiofscli test: FAIL ls entries";
       if (ents.empty())
-        std::cerr << " (no names)";
+        std::cerr << " (no names)"
+                  << (err.empty() ? "" : (": " + err));
       else {
         std::cerr << ":";
         for (const auto &e : ents)

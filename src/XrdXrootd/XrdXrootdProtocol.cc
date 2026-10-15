@@ -506,6 +506,8 @@ int XrdXrootdProtocol::Process2()
                              break;
           case kXR_chkpoint: return do_ChkPnt();
           case kXR_clone:    return do_Clone();
+          case kXR_fcntlLock:ReqID.setID(Request.header.streamid);
+                             return do_FcntlLock();
           default:           break;
          }
 
@@ -598,7 +600,6 @@ int XrdXrootdProtocol::Process2()
           case kXR_readlink:  return do_Readlink();
           case kXR_utimes:    return do_Utimes();
           case kXR_mknod:     return do_Mknod();
-          case kXR_fcntlLock: return do_FcntlLock();
           case kXR_query:     return do_Query();
           case kXR_prepare:   return do_Prepare();
           case kXR_rm:        return do_Rm();

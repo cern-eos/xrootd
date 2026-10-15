@@ -245,9 +245,11 @@ int Client::readdir(const std::string &relpath,
   while (!reqPath.empty() && reqPath.back() == '/')
     reqPath.pop_back();
 
+  int delivered = 0;
   bool first = true;
   DavStreamParser parser([&](DavEntry &&e) {
     if (e.href.empty()) {
+      delivered++;
       if (on_entry)
         on_entry(std::move(e));
       return;
@@ -260,24 +262,17 @@ int Client::readdir(const std::string &relpath,
       return;
     }
     first = false;
+    delivered++;
     if (on_entry)
       on_entry(std::move(e));
   });
 
-  std::vector<std::pair<std::string, std::string>> hdrs{
-      {"depth", "1"},
-      {"xrd-stream", "1"},
-      {"x-xiofs-stream", "1"}};
+  std::vector<std::pair<std::string, std::string>> hdrs{{"depth", "1"}};
 
   HttpRequest req;
   req.method = "PROPFIND";
   req.path = absPath(relpath);
   req.headers = hdrs;
-  req.on_chunk = [&](const uint8_t *data, size_t len) -> int {
-    if (!parser.feed(reinterpret_cast<const char *>(data), len, err))
-      return -EIO;
-    return 0;
-  };
 
   HttpResponse resp;
   int rc = 0;
@@ -304,8 +299,18 @@ int Client::readdir(const std::string &relpath,
     return -httpToErrno(resp.status);
   }
 
-  if (!parser.finish(err))
+  if (!parser.feed(resp.body.data(), resp.body.size(), err) ||
+      !parser.finish(err))
     return -EIO;
+
+  if (delivered == 0) {
+    std::string snippet = resp.body.substr(0, 180);
+    for (char &c : snippet) {
+      if (c == '\n' || c == '\r')
+        c = ' ';
+    }
+    err = snippet.empty() ? "empty PROPFIND body" : snippet;
+  }
 
   return 0;
 }

@@ -3827,9 +3827,10 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
         return -1;
       }
 
-      switch (reqstate) {
-
-        case 0: // response to stat()
+      // A kXR_dirlist reply is name/stat lines, not one stat line. Parsing it
+      // as the collection stat fails sscanf and returns only that collection.
+      if (ntohs(xrdreq.header.requestid) != kXR_dirlist) {
+        // response to stat()
         {
           DirListInfo e;
           e.size = 0;
@@ -3875,8 +3876,14 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
               davAppendEntry(stringresp, e.path, e);
           }
 
-          // If this was the last bunch of entries, send the buffer and empty it immediately
-          if ((depth == 0) || !(e.flags & kXR_isDir)) {
+          // If this was the last bunch of entries, send the buffer and empty it immediately.
+          // ftype covers a stat line whose flags word did not parse: depth 1
+          // on that result used to return only the collection, which the
+          // client skips, so the listing looked empty.
+          const bool isDir = (e.flags & kXR_isDir) || e.ftype == "dir" ||
+                             (depth != 0 && e.id == 0 && e.ftype.empty() &&
+                              iovN > 0);
+          if ((depth == 0) || !isDir) {
             std::string s = kDavMultistatusOpen;
             stringresp.insert(0, s);
             stringresp += "</D:multistatus>\n";
@@ -3893,18 +3900,25 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
           // Depth > 0 directory listing: check if streaming is requested
           m_propfind_stream = isStreamRequested();
 
-          break;
         }
-        default: // response to dirlist()
+      } else {
+        // response to dirlist()
         {
-
+          std::string listing;
+          if (iovN > 0 && iovP) {
+            for (int i = 0; i < iovN; i++) {
+              if (iovP[i].iov_base && iovP[i].iov_len)
+                listing.append(static_cast<const char *>(iovP[i].iov_base),
+                               static_cast<size_t>(iovP[i].iov_len));
+            }
+          }
 
           // Now parse the answer building the entries vector
-          if (iovN > 0 && iovP && iovP[0].iov_base && iovP[0].iov_len > 1) {
+          if (listing.size() > 1) {
             // Scan the byte length, not strchr(). A NUL inside a stat line
             // used to end the C string and drop every name after the first.
-            const char *base = static_cast<const char *>(iovP[0].iov_base);
-            const size_t len = static_cast<size_t>(iovP[0].iov_len);
+            const char *base = listing.data();
+            const size_t len = listing.size();
             size_t off = 0;
             char entry[1024];
 
