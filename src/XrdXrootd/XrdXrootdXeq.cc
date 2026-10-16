@@ -1548,7 +1548,12 @@ int XrdXrootdProtocol::do_FcntlLock()
    if (SFS_OK != rc)
       return fsError(rc, 0, fp->XrdSfsp->error, 0, 0);
 
-   if (cmd == F_GETLK) {
+   // HTTP issues F_OFD_GETLK so one client can see another's lock. The
+   // reply layout is the same as F_GETLK.
+#ifndef F_OFD_GETLK
+#define F_OFD_GETLK 36
+#endif
+   if (cmd == F_GETLK || cmd == F_OFD_GETLK) {
       char out[20];
       kXR_int16 typ = htons(static_cast<kXR_int16>(fl.l_type));
       kXR_int16 whence = htons(static_cast<kXR_int16>(fl.l_whence));

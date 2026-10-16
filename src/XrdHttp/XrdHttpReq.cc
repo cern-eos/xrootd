@@ -864,7 +864,9 @@ int XrdHttpReq::runLockReq(bool unlocking)
       return 0;
     memset(&xrdreq, 0, sizeof(ClientRequest));
     xrdreq.open.requestid = htons(kXR_open);
-    xrdreq.open.options = htons(kXR_open_updt | kXR_retstat);
+    // kXR_force: the holder already has this path open for writing. A lock
+    // query or a nonblocking attempt still needs its own fd.
+    xrdreq.open.options = htons(kXR_open_updt | kXR_retstat | kXR_force);
     int l = resourceplusopaque.length() + 1;
     xrdreq.open.dlen = htonl(l);
     if (!prot->Bridge->Run((char *)&xrdreq, (char *)resourceplusopaque.c_str(), l)) {
@@ -919,10 +921,18 @@ int XrdHttpReq::runLockReq(bool unlocking)
     return 1;
   }
 
-  int fcmd = F_SETLK;
-  if (cmdname == "SETLKW") fcmd = F_SETLKW;
-  else if (cmdname == "GETLK") fcmd = F_GETLK;
-  if (unlocking) fcmd = F_SETLK;
+  // Open-file-description locks, not process locks. Every client shares this
+  // server process, so F_SETLK is invisible to F_GETLK on another fd and is
+  // dropped when that fd is closed.
+#ifndef F_OFD_GETLK
+#define F_OFD_GETLK  36
+#define F_OFD_SETLK  37
+#define F_OFD_SETLKW 38
+#endif
+  int fcmd = F_OFD_SETLK;
+  if (cmdname == "SETLKW") fcmd = F_OFD_SETLKW;
+  else if (cmdname == "GETLK") fcmd = F_OFD_GETLK;
+  if (unlocking) fcmd = F_OFD_SETLK;
   xrdreq.fcntlLock.cmd = htons(static_cast<kXR_unt16>(fcmd));
 
   kXR_int16 typ = htons(static_cast<kXR_int16>(unlocking ? F_UNLCK : F_WRLCK));
@@ -4129,7 +4139,15 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
     case XrdHttpReq::rtUNLOCK:
     {
       if (xrdresp != kXR_ok) {
-        prot->SendSimpleResp(httpStatusCode, NULL, NULL, (char *) etext.c_str(), 0, false);
+        // The open already recorded a hold. A refused lock must not keep it.
+        prot->lockHoldErase(prot->fileCacheKey(*this));
+        int status = httpStatusCode;
+        // EAGAIN from flock/fcntl arrives as kXR_FSError. 423 is what the
+        // client turns back into EAGAIN.
+        if (etext.find("temporarily unavailable") != std::string::npos ||
+            etext.find("would block") != std::string::npos)
+          status = HTTP_LOCKED;
+        prot->SendSimpleResp(status, NULL, NULL, (char *) etext.c_str(), 0, false);
         return -1;
       }
       if (ntohs(xrdreq.header.requestid) == kXR_open) {
@@ -4151,6 +4169,9 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
           int op = cmd & ~kXR_flockCmd;
           op &= ~LOCK_NB;
           releaseHold = (op == LOCK_UN);
+        } else if (cmd == F_GETLK || cmd == F_OFD_GETLK) {
+          // GETLK does not acquire a lock. The open above recorded a hold.
+          releaseHold = true;
         }
       }
       if (releaseHold)
