@@ -80,11 +80,13 @@ public:
                   std::string &err);
   int lock(const std::string &relpath, const std::string &cmd,
            const std::string &type, const std::string &whence,
-           long long start, long long len, std::string &err);
+           long long start, long long len, std::string &err,
+           std::string *body_out = nullptr);
   int flock(const std::string &relpath, const std::string &op, std::string &err);
   int unlock(const std::string &relpath, std::string &err);
 
   const Url &base() const { return base_; }
+  const Http2Session::Options &options() const { return opt_; }
   bool connected() const { return sess_.connected(); }
 
 private:

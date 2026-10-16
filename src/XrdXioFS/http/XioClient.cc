@@ -686,7 +686,8 @@ int Client::removexattr(const std::string &relpath, const std::string &name,
 
 int Client::lock(const std::string &relpath, const std::string &cmd,
                  const std::string &type, const std::string &whence,
-                 long long start, long long len, std::string &err)
+                 long long start, long long len, std::string &err,
+                 std::string *body_out)
 {
   std::vector<std::pair<std::string, std::string>> hdrs{
       {"xrd-lock-cmd", cmd.empty() ? "SETLK" : cmd},
@@ -702,6 +703,8 @@ int Client::lock(const std::string &relpath, const std::string &cmd,
     err = statusDetail("LOCK", resp.status, resp.body);
     return -e;
   }
+  if (body_out)
+    *body_out = resp.body;
   return 0;
 }
 
