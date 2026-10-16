@@ -136,9 +136,15 @@ void XrdXrootdFile::Init(XrdXrootdFileLock *lp, XrdSysError *erP, bool sfok)
 /*                            D e s t r u c t o r                             */
 /******************************************************************************/
   
+void XrdXrootdForgetPosixLocks(XrdXrootdFile *fp);
+
 XrdXrootdFile::~XrdXrootdFile()
 {
    if (aioFob) aioFob->Reset();
+
+   // OFS keeps one descriptor per path. Drop this open's locks before that
+   // descriptor goes away, so another client is not left waiting on it.
+   XrdXrootdForgetPosixLocks(this);
 
    Serialize(); // Make sure there are no outstanding references
 

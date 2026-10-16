@@ -27,7 +27,9 @@
 /* specific prior written permission of the institution or contributor.       */
 /******************************************************************************/
 
+#include <algorithm>
 #include <cctype>
+#include <climits>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -57,6 +59,7 @@
 #include "XrdSec/XrdSecInterface.hh"
 #include "XrdSec/XrdSecProtector.hh"
 #include "XrdSys/XrdSysE2T.hh"
+#include "XrdSys/XrdSysPthread.hh"
 #include "Xrd/XrdBuffer.hh"
 #include "Xrd/XrdInet.hh"
 #include "Xrd/XrdLinkCtl.hh"
@@ -1505,6 +1508,240 @@ int XrdXrootdProtocol::do_Mknod()
 /*                         d o _ F c n t l L o c k                            */
 /******************************************************************************/
 
+// OFS attaches every writer of a path to one file descriptor. Kernel flock
+// and fcntl then cannot tell two clients apart: GETLK reports the caller's
+// own lock as free, and a second exclusive flock is granted. Remember each
+// open's lock here, and mirror the union onto that shared descriptor.
+#ifndef F_OFD_GETLK
+#define F_OFD_GETLK  36
+#define F_OFD_SETLK  37
+#define F_OFD_SETLKW 38
+#endif
+
+namespace {
+
+struct ClientLock {
+  XrdXrootdFile *owner;
+  bool           bsd;
+  int            type;
+  short          whence;
+  off_t          start;
+  off_t          len;
+};
+
+struct ClientLockTable {
+  XrdSysCondVar cv;
+  std::map<std::string, std::vector<ClientLock>> tab;
+  ClientLockTable() : cv(0) {}
+};
+
+ClientLockTable &clientLocks()
+{
+  static ClientLockTable t;
+  return t;
+}
+
+bool rangesOverlap(off_t as, off_t al, off_t bs, off_t bl)
+{
+  const long long aEnd = al == 0 ? LLONG_MAX : static_cast<long long>(as) + al;
+  const long long bEnd = bl == 0 ? LLONG_MAX : static_cast<long long>(bs) + bl;
+  return static_cast<long long>(as) < bEnd && static_cast<long long>(bs) < aEnd;
+}
+
+bool fcntlHits(const ClientLock &e, int type, off_t start, off_t len)
+{
+  if (e.bsd || type == F_UNLCK)
+    return false;
+  if (e.type == F_RDLCK && type == F_RDLCK)
+    return false;
+  return rangesOverlap(e.start, e.len, start, len);
+}
+
+bool flockHits(const ClientLock &e, int op)
+{
+  if (!e.bsd)
+    return false;
+  const int want = op & ~LOCK_NB;
+  if (want == LOCK_UN)
+    return false;
+  if (want == LOCK_SH)
+    return e.type == LOCK_EX;
+  return e.type == LOCK_SH || e.type == LOCK_EX;
+}
+
+void kernelSync(XrdSfsFile *f, const std::vector<ClientLock> &v)
+{
+  if (!f)
+    return;
+  bool rd = false, wr = false, sh = false, ex = false;
+  for (const auto &e : v) {
+    if (e.bsd) {
+      if (e.type == LOCK_EX)
+        ex = true;
+      else
+        sh = true;
+    } else if (e.type == F_WRLCK) {
+      wr = true;
+    } else {
+      rd = true;
+    }
+  }
+  struct flock fl;
+  memset(&fl, 0, sizeof(fl));
+  fl.l_whence = SEEK_SET;
+  fl.l_type = (wr || rd) ? (wr ? F_WRLCK : F_RDLCK) : F_UNLCK;
+  f->fcntlLock(F_OFD_SETLK, &fl);
+  if (ex)
+    f->flock(LOCK_EX | LOCK_NB);
+  else if (sh)
+    f->flock(LOCK_SH | LOCK_NB);
+  else
+    f->flock(LOCK_UN);
+}
+
+int lockDenied(XrdSfsFile *f)
+{
+  f->error.setErrInfo(EAGAIN,
+                      "Unable to lock; resource temporarily unavailable");
+  return SFS_ERROR;
+}
+
+void dropOwner(std::vector<ClientLock> &v, XrdXrootdFile *owner, bool bsd)
+{
+  v.erase(std::remove_if(v.begin(), v.end(),
+                         [&](const ClientLock &e) {
+                           return e.owner == owner && e.bsd == bsd;
+                         }),
+          v.end());
+}
+
+int applyFlock(XrdXrootdFile *fp, int op)
+{
+  const bool wait = (op & LOCK_NB) == 0 && (op & LOCK_UN) == 0;
+  const std::string key = fp->FileKey ? fp->FileKey : "";
+  auto &t = clientLocks();
+  t.cv.Lock();
+  for (;;) {
+    auto it = t.tab.find(key);
+    bool hit = false;
+    if (it != t.tab.end() && (op & LOCK_UN) == 0) {
+      for (const auto &e : it->second)
+        if (e.owner != fp && flockHits(e, op))
+          hit = true;
+    }
+    if (!hit)
+      break;
+    if (!wait) {
+      t.cv.UnLock();
+      return lockDenied(fp->XrdSfsp);
+    }
+    t.cv.Wait();
+  }
+  auto &v = t.tab[key];
+  dropOwner(v, fp, true);
+  if ((op & LOCK_UN) == 0) {
+    ClientLock e;
+    e.owner = fp;
+    e.bsd = true;
+    e.type = (op & LOCK_SH) ? LOCK_SH : LOCK_EX;
+    e.whence = SEEK_SET;
+    e.start = 0;
+    e.len = 0;
+    v.push_back(e);
+  }
+  kernelSync(fp->XrdSfsp, v);
+  if (v.empty())
+    t.tab.erase(key);
+  t.cv.Broadcast();
+  t.cv.UnLock();
+  return SFS_OK;
+}
+
+int applyFcntl(XrdXrootdFile *fp, int cmd, struct flock *fl)
+{
+  const bool get = cmd == F_GETLK || cmd == F_OFD_GETLK;
+  const bool wait = cmd == F_SETLKW || cmd == F_OFD_SETLKW;
+  const std::string key = fp->FileKey ? fp->FileKey : "";
+  auto &t = clientLocks();
+  t.cv.Lock();
+  if (get) {
+    auto it = t.tab.find(key);
+    if (it != t.tab.end()) {
+      for (const auto &e : it->second) {
+        if (e.owner == fp || !fcntlHits(e, fl->l_type, fl->l_start, fl->l_len))
+          continue;
+        fl->l_type = e.type;
+        fl->l_whence = e.whence;
+        fl->l_start = e.start;
+        fl->l_len = e.len;
+        t.cv.UnLock();
+        return SFS_OK;
+      }
+    }
+    t.cv.UnLock();
+    fl->l_type = F_UNLCK;
+    return SFS_OK;
+  }
+  for (;;) {
+    auto it = t.tab.find(key);
+    bool hit = false;
+    if (it != t.tab.end() && fl->l_type != F_UNLCK) {
+      for (const auto &e : it->second)
+        if (e.owner != fp && fcntlHits(e, fl->l_type, fl->l_start, fl->l_len))
+          hit = true;
+    }
+    if (!hit)
+      break;
+    if (!wait) {
+      t.cv.UnLock();
+      return lockDenied(fp->XrdSfsp);
+    }
+    t.cv.Wait();
+  }
+  auto &v = t.tab[key];
+  dropOwner(v, fp, false);
+  if (fl->l_type != F_UNLCK) {
+    ClientLock e;
+    e.owner = fp;
+    e.bsd = false;
+    e.type = fl->l_type;
+    e.whence = fl->l_whence;
+    e.start = fl->l_start;
+    e.len = fl->l_len;
+    v.push_back(e);
+  }
+  kernelSync(fp->XrdSfsp, v);
+  if (v.empty())
+    t.tab.erase(key);
+  t.cv.Broadcast();
+  t.cv.UnLock();
+  return SFS_OK;
+}
+
+} // namespace
+
+void XrdXrootdForgetPosixLocks(XrdXrootdFile *fp)
+{
+  if (!fp || !fp->FileKey)
+    return;
+  auto &t = clientLocks();
+  t.cv.Lock();
+  auto it = t.tab.find(fp->FileKey);
+  if (it == t.tab.end()) {
+    t.cv.UnLock();
+    return;
+  }
+  auto &v = it->second;
+  v.erase(std::remove_if(v.begin(), v.end(),
+                         [&](const ClientLock &e) { return e.owner == fp; }),
+          v.end());
+  kernelSync(fp->XrdSfsp, v);
+  if (v.empty())
+    t.tab.erase(it);
+  t.cv.Broadcast();
+  t.cv.UnLock();
+}
+
 int XrdXrootdProtocol::do_FcntlLock()
 {
    XrdXrootdFile *fp;
@@ -1518,7 +1755,7 @@ int XrdXrootdProtocol::do_FcntlLock()
 
    if (cmd & kXR_flockCmd) {
       int op = static_cast<int>(cmd & ~kXR_flockCmd);
-      rc = fp->XrdSfsp->flock(op);
+      rc = applyFlock(fp, op);
       TRACEP(FS, "flock rc=" <<rc <<" op=" <<op);
       if (SFS_OK != rc)
          return fsError(rc, 0, fp->XrdSfsp->error, 0, 0);
@@ -1543,16 +1780,11 @@ int XrdXrootdProtocol::do_FcntlLock()
       fl.l_whence = SEEK_SET;
    }
 
-   rc = fp->XrdSfsp->fcntlLock(static_cast<int>(cmd), &fl);
+   rc = applyFcntl(fp, static_cast<int>(cmd), &fl);
    TRACEP(FS, "fcntlLock rc=" <<rc <<" cmd=" <<cmd);
    if (SFS_OK != rc)
       return fsError(rc, 0, fp->XrdSfsp->error, 0, 0);
 
-   // HTTP issues F_OFD_GETLK so one client can see another's lock. The
-   // reply layout is the same as F_GETLK.
-#ifndef F_OFD_GETLK
-#define F_OFD_GETLK 36
-#endif
    if (cmd == F_GETLK || cmd == F_OFD_GETLK) {
       char out[20];
       kXR_int16 typ = htons(static_cast<kXR_int16>(fl.l_type));
