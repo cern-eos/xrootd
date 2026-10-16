@@ -4141,7 +4141,19 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
         prot->fileCacheStore(*this, true);
         return 0;
       }
-      if (request == rtUNLOCK)
+      // FLOCK UN arrives as LOCK, not UNLOCK. Leaving that hold set keeps the
+      // cached open alive and, after this connection is recycled, makes the
+      // next client refuse to close its read before PATCH.
+      bool releaseHold = (request == rtUNLOCK);
+      if (!releaseHold && ntohs(xrdreq.header.requestid) == kXR_fcntlLock) {
+        kXR_unt16 cmd = ntohs(xrdreq.fcntlLock.cmd);
+        if (cmd & kXR_flockCmd) {
+          int op = cmd & ~kXR_flockCmd;
+          op &= ~LOCK_NB;
+          releaseHold = (op == LOCK_UN);
+        }
+      }
+      if (releaseHold)
         prot->lockHoldErase(prot->fileCacheKey(*this));
       else
         prot->lockHoldPut(prot->fileCacheKey(*this), fhandle);

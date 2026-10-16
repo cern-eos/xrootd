@@ -2566,6 +2566,10 @@ void XrdHttpProtocol::Reset() {
   sbio = 0;
 
   fileCacheForget();
+  // The protocol object is pooled. A lock hold from the previous connection
+  // otherwise blocks the next one from closing its own read, and fcntl is
+  // issued with a handle that is no longer open.
+  lockHolds_.clear();
 }
 
 /******************************************************************************/
