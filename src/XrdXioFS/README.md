@@ -10,15 +10,18 @@ universal transport. To export a local directory, run `xiofs-server`
 POSIX app
     |
     v
-  FUSE (xiofsd)  or  xiofscli
+  FUSE (xiofsd)  or  xiofscli  or  NIXL (GPU direct)
     |
-    | HTTP/2  ALPN h2   (nghttp2 + OpenSSL)
+    | HTTP/2  ALPN h2 (TCP)  or  spt:// (libparsocket parallel TCP / RDMA)
     v
   XrdHttp  (same verbs on HTTP/1.1)
     |
     v
   XRootD storage
 ```
+
+For zero-copy AI/LLM model loading and checkpoint streaming directly into GPU
+VRAM over RDMA, see [README-NIXL.md](README-NIXL.md).
 
 Later, `xiofs.ko` keeps the data path in-kernel on **AlmaLinux 9
 (kernel 5.14)** and **AlmaLinux 10 (kernel 6.12)**:
