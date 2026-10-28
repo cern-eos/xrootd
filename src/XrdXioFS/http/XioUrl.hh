@@ -19,12 +19,13 @@ struct Hop {
 };
 
 struct Url {
-  std::string scheme;     // "https" or "http"
+  std::string scheme;     // "https", "http", or "spt" / "parsock"
   std::string host;
   int         port{443};
   std::string path{"/"};  // always starts with '/'
   std::string authority;  // host[:port] for :authority
   bool        tls{true};
+  bool        parsock{false};
   std::vector<Hop> hops;
 };
 

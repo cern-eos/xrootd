@@ -142,8 +142,12 @@ bool parseUrl(const std::string &in, Url &out, std::string &err)
   } else if (out.scheme == "http") {
     out.tls = false;
     out.port = 80;
+  } else if (out.scheme == "spt" || out.scheme == "parsock") {
+    out.tls = true;
+    out.port = 8443;
+    out.parsock = true;
   } else {
-    err = "unsupported URL scheme (use http or https)";
+    err = "unsupported URL scheme (use http, https, spt, or parsock)";
     return false;
   }
 
@@ -175,7 +179,7 @@ bool parseUrl(const std::string &in, Url &out, std::string &err)
   out.host = out.hops[0].host;
   out.port = out.hops[0].port;
 
-  if ((out.tls && out.port == 443) || (!out.tls && out.port == 80))
+  if ((out.tls && !out.parsock && out.port == 443) || (!out.tls && out.port == 80))
     out.authority = out.host;
   else
     out.authority = out.host + ":" + std::to_string(out.port);
@@ -185,7 +189,8 @@ bool parseUrl(const std::string &in, Url &out, std::string &err)
 
 std::string formatUrl(const Url &u)
 {
-  std::string s = u.tls ? "https://" : "http://";
+  std::string s = u.parsock ? (u.scheme.empty() ? "spt://" : u.scheme + "://")
+                            : (u.tls ? "https://" : "http://");
   auto hopStr = [](const Hop &h) {
     bool v6 = h.host.find(':') != std::string::npos;
     if (h.alias)

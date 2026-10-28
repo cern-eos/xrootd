@@ -54,6 +54,10 @@ public:
     bool verify_peer{true};
     size_t max_body{64ull * 1024ull * 1024ull};
     uint32_t max_streams{100};
+    bool parsock{false};
+    int parsock_sockets{4};
+    std::string parsock_transport{"tcp"}; // tcp, rdma, quic
+    std::string parsock_protection{"confidential"}; // confidential, authenticated
   };
 
   Http2Session();
@@ -92,6 +96,9 @@ private:
   void *ssl_ctx_{nullptr};
   void *ssl_{nullptr};
   void *session_{nullptr};
+#ifdef HAVE_PARSOCKET
+  void *parsock_{nullptr};
+#endif
   uint32_t max_concurrent_{100};
   bool stop_{false};
   std::thread io_;

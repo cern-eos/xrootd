@@ -27,6 +27,12 @@ target_link_libraries(XrdXioFS
     ${CMAKE_THREAD_LIBS_INIT}
 )
 
+if(BUILD_PARSOCKET)
+  target_compile_definitions(XrdXioFS PUBLIC HAVE_PARSOCKET)
+  target_include_directories(XrdXioFS PUBLIC ${PARSOCK_INCLUDE_DIRS})
+  target_link_libraries(XrdXioFS PUBLIC ${PARSOCK_LIBRARIES})
+endif()
+
 if(BUILD_KRB5 AND KERBEROS5_FOUND)
   target_compile_definitions(XrdXioFS PUBLIC HAVE_KRB5)
   target_include_directories(XrdXioFS PUBLIC ${KERBEROS5_INCLUDE_DIR})

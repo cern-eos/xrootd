@@ -7,5 +7,10 @@ add_executable(xrdhttp-unit-tests XrdHttpTests.cc
 
 target_link_libraries(xrdhttp-unit-tests XrdHttpUtils GTest::gtest GTest::gtest_main XrdUtils)
 
+if(BUILD_HTTP2)
+  target_link_libraries(xrdhttp-unit-tests XrdXioFS)
+  target_include_directories(xrdhttp-unit-tests PRIVATE ${PROJECT_SOURCE_DIR}/src/XrdXioFS/http)
+endif()
+
 gtest_discover_tests(xrdhttp-unit-tests
   PROPERTIES DISCOVERY_TIMEOUT 10)

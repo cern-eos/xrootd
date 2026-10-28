@@ -39,9 +39,9 @@ static void usage(const char *argv0)
 {
   std::cerr
       << "Usage: " << argv0
-      << " [--cacert FILE] [--insecure] [--token TOK] URL COMMAND\n"
+      << " [--cacert FILE] [--insecure] [--token TOK] [--parsock] [--sockets N] [--transport tcp|rdma|quic] URL COMMAND\n"
       << "\n"
-      << "  URL is an https:// (ALPN h2) or http:// (h2c) XrdHttp path.\n"
+      << "  URL is an https:// (ALPN h2), http:// (h2c), or spt:// (parsock) XrdHttp path.\n"
       << "  Commands:\n"
       << "    stat\n"
       << "    ls\n"
@@ -732,6 +732,14 @@ int main(int argc, char **argv)
       opt.verify_peer = false;
     else if (a == "--token" && i + 1 < argc)
       opt.bearer = argv[++i];
+    else if (a == "--parsock")
+      opt.parsock = true;
+    else if (a == "--sockets" && i + 1 < argc)
+      opt.parsock_sockets = std::atoi(argv[++i]);
+    else if (a == "--transport" && i + 1 < argc)
+      opt.parsock_transport = argv[++i];
+    else if (a == "--protection" && i + 1 < argc)
+      opt.parsock_protection = argv[++i];
     else if (a == "-h" || a == "--help") {
       usage(argv[0]);
       return 0;
@@ -744,6 +752,11 @@ int main(int argc, char **argv)
   if (args.size() < 2) {
     usage(argv[0]);
     return 2;
+  }
+
+  if (const char *env_ps = std::getenv("XIOFS_PARSOCK")) {
+    if (!strcmp(env_ps, "1") || !strcasecmp(env_ps, "true") || !strcasecmp(env_ps, "yes"))
+      opt.parsock = true;
   }
 
   if (opt.bearer.empty()) {

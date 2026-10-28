@@ -94,6 +94,7 @@ TEST(XioUrl, FormatUrlRoundTrip)
       "https://eosatlas.cern.ch,1094/eos",
       "https://[2001:db8::1]:1094,[2001:db8::2]:1095/export",
       "http://mgr1.example,1094,mgr2.example,1095/",
+      "spt://storage.example:8443/data",
   };
   for (const char *s : in) {
     Url u;
@@ -109,4 +110,25 @@ TEST(XioUrl, FormatUrlRoundTrip)
       EXPECT_EQ(u2.hops[i].alias, u.hops[i].alias);
     }
   }
+}
+
+TEST(XioUrl, ParsockScheme)
+{
+  Url u;
+  std::string err;
+  ASSERT_TRUE(parseUrl("spt://storage.example/data", u, err)) << err;
+  EXPECT_EQ(u.scheme, "spt");
+  EXPECT_TRUE(u.parsock);
+  EXPECT_TRUE(u.tls);
+  EXPECT_EQ(u.host, "storage.example");
+  EXPECT_EQ(u.port, 8443);
+  EXPECT_EQ(u.path, "/data");
+
+  ASSERT_TRUE(parseUrl("parsock://[2001:db8::1]:9443/export", u, err)) << err;
+  EXPECT_EQ(u.scheme, "parsock");
+  EXPECT_TRUE(u.parsock);
+  EXPECT_TRUE(u.tls);
+  EXPECT_EQ(u.host, "2001:db8::1");
+  EXPECT_EQ(u.port, 9443);
+  EXPECT_EQ(u.path, "/export");
 }

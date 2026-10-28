@@ -580,7 +580,8 @@ void usage(const char *argv0)
 {
   std::cerr << "Usage: " << argv0
             << " [--cacert FILE] [--insecure] [--token TOK] [--tokenfile FILE]"
-            << " [--krb5] [--principal USER] URL MOUNTPOINT [fuse options]\n";
+            << " [--krb5] [--principal USER] [--parsock] [--sockets N]"
+            << " [--transport tcp|rdma|quic] URL MOUNTPOINT [fuse options]\n";
 }
 
 } // namespace
@@ -607,6 +608,14 @@ int main(int argc, char **argv)
       opt.krb5 = true;
     else if (a == "--principal" && i + 1 < argc)
       opt.principal = argv[++i];
+    else if (a == "--parsock")
+      opt.parsock = true;
+    else if (a == "--sockets" && i + 1 < argc)
+      opt.parsock_sockets = std::atoi(argv[++i]);
+    else if (a == "--transport" && i + 1 < argc)
+      opt.parsock_transport = argv[++i];
+    else if (a == "--protection" && i + 1 < argc)
+      opt.parsock_protection = argv[++i];
     else if (a == "-h" || a == "--help") {
       usage(argv[0]);
       return 0;
@@ -621,6 +630,11 @@ int main(int argc, char **argv)
   if (url.empty() || mount.empty()) {
     usage(argv[0]);
     return 2;
+  }
+
+  if (const char *env_ps = std::getenv("XIOFS_PARSOCK")) {
+    if (!strcmp(env_ps, "1") || !strcasecmp(env_ps, "true") || !strcasecmp(env_ps, "yes"))
+      opt.parsock = true;
   }
 
   if (!opt.krb5 && opt.bearer.empty()) {

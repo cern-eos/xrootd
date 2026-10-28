@@ -4,6 +4,10 @@
 #include "XioHttp2.hh"
 #include "XioKrb5.hh"
 
+#ifdef HAVE_PARSOCKET
+#include "parsock.h"
+#endif
+
 #include <nghttp2/nghttp2.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -87,7 +91,11 @@ int Http2Session::setNonBlocking(int fd)
 bool Http2Session::connected() const
 {
   std::lock_guard<std::mutex> lock(mu_);
-  return fd_ >= 0 && session_ != nullptr && io_.joinable() && !stop_;
+  return (fd_ >= 0
+#ifdef HAVE_PARSOCKET
+          || parsock_ != nullptr
+#endif
+         ) && session_ != nullptr && io_.joinable() && !stop_;
 }
 
 void Http2Session::wakeIo()
@@ -138,6 +146,13 @@ void Http2Session::close()
 
   std::lock_guard<std::mutex> lock(mu_);
   failInflight(-ENOTCONN, "connection closed");
+
+#ifdef HAVE_PARSOCKET
+  if (parsock_) {
+    ps_close(static_cast<ps_connection_t *>(parsock_));
+    parsock_ = nullptr;
+  }
+#endif
 
   if (session_) {
     nghttp2_session_del(static_cast<nghttp2_session *>(session_));
@@ -298,6 +313,22 @@ int Http2Session::tlsHandshake(std::string &err)
 
 int Http2Session::sslWrite(const uint8_t *buf, size_t len, std::string &err)
 {
+#ifdef HAVE_PARSOCKET
+  if (parsock_) {
+    size_t off = 0;
+    auto *conn = static_cast<ps_connection_t *>(parsock_);
+    while (off < len) {
+      ssize_t n = ps_send(conn, buf + off, len - off);
+      if (n <= 0) {
+        err = "parsock send failed: " +
+              std::string(ps_strerror(ps_connection_error(conn)));
+        return -EIO;
+      }
+      off += static_cast<size_t>(n);
+    }
+    return 0;
+  }
+#endif
   size_t off = 0;
   while (off < len) {
     if (ssl_) {
@@ -345,6 +376,33 @@ int Http2Session::sslWrite(const uint8_t *buf, size_t len, std::string &err)
 
 int Http2Session::sslRead(uint8_t *buf, size_t len, std::string &err)
 {
+#ifdef HAVE_PARSOCKET
+  if (parsock_) {
+    auto *conn = static_cast<ps_connection_t *>(parsock_);
+    struct ps_stats stats;
+    if (ps_connection_stats(conn, &stats) != 0) {
+      err = "parsock stats failed";
+      return -EIO;
+    }
+    if (stats.reassembly_bytes == 0) {
+      if (ps_connection_state(conn) != PS_STATE_OPEN) {
+        err = "parsock connection closed";
+        return -ECONNRESET;
+      }
+      return 0;
+    }
+    ssize_t n = ps_recv(conn, buf, len);
+    if (n > 0)
+      return static_cast<int>(n);
+    if (n == 0) {
+      err = "parsock connection closed";
+      return -ECONNRESET;
+    }
+    err = "parsock recv failed: " +
+          std::string(ps_strerror(ps_connection_error(conn)));
+    return -EIO;
+  }
+#endif
   if (ssl_) {
     int n = SSL_read(static_cast<SSL *>(ssl_), buf, static_cast<int>(len));
     if (n > 0)
@@ -387,22 +445,69 @@ int Http2Session::connect(const Url &url, const Options &opt, std::string &err)
     }
   }
 
-  int rc = tcpConnect(err);
-  if (rc)
-    return rc;
-  if (url_.tls) {
-    rc = tlsHandshake(err);
-    if (rc) {
-      if (fd_ >= 0) {
-        ::close(fd_);
-        fd_ = -1;
-      }
-      return rc;
+#ifdef HAVE_PARSOCKET
+  if (url_.parsock || opt_.parsock) {
+    struct ps_options popt;
+    ps_options_init(&popt);
+    popt.initial_sockets =
+        opt_.parsock_sockets > 0 ? static_cast<unsigned>(opt_.parsock_sockets) : 4;
+    popt.min_sockets = 1;
+    popt.max_sockets = popt.initial_sockets > 4 ? popt.initial_sockets : 4;
+    if (opt_.parsock_transport == "rdma")
+      popt.transport = PS_TRANSPORT_RDMA_RC;
+    else if (opt_.parsock_transport == "quic")
+      popt.transport = PS_TRANSPORT_QUIC;
+    else
+      popt.transport = PS_TRANSPORT_TCP;
+
+    if (opt_.parsock_protection == "authenticated" ||
+        opt_.parsock_protection == "auth")
+      popt.min_protection = PS_PROTECTION_AUTHENTICATED;
+    else
+      popt.min_protection = PS_PROTECTION_CONFIDENTIAL;
+
+    popt.connect_timeout_ms =
+        opt_.timeout_ms > 0 ? static_cast<uint32_t>(opt_.timeout_ms) : 10000;
+    popt.io_timeout_ms =
+        opt_.timeout_ms > 0 ? static_cast<uint32_t>(opt_.timeout_ms) : 30000;
+
+    struct ps_tls_config ptls;
+    memset(&ptls, 0, sizeof(ptls));
+    ptls.server_name = url_.host.c_str();
+    if (!opt_.cacert.empty())
+      ptls.ca_file = opt_.cacert.c_str();
+    ptls.verify_peer = opt_.verify_peer ? 1 : 0;
+    ptls.allow_insecure = opt_.verify_peer ? 0 : 1;
+    popt.tls = &ptls;
+
+    ps_connection_t *pconn =
+        ps_connect(url_.host.c_str(), static_cast<uint16_t>(url_.port), &popt);
+    if (!pconn) {
+      err = std::string("ps_connect failed: ") + ps_strerror(ps_recent_error());
+      return -ECONNREFUSED;
     }
-  }
-  if (int e = setNonBlocking(fd_)) {
-    err = "fcntl O_NONBLOCK failed";
-    return e;
+    parsock_ = pconn;
+    fd_ = 0;
+  } else
+#endif
+  {
+    int rc = tcpConnect(err);
+    if (rc)
+      return rc;
+    if (url_.tls) {
+      rc = tlsHandshake(err);
+      if (rc) {
+        if (fd_ >= 0) {
+          ::close(fd_);
+          fd_ = -1;
+        }
+        return rc;
+      }
+    }
+    if (int e = setNonBlocking(fd_)) {
+      err = "fcntl O_NONBLOCK failed";
+      return e;
+    }
   }
 
   int p[2];
@@ -596,23 +701,46 @@ void Http2Session::ioLoop()
     int timeout = nextPollTimeoutMsLocked();
     const bool pending_ssl =
         ssl_ && SSL_pending(static_cast<SSL *>(ssl_)) > 0;
+#ifdef HAVE_PARSOCKET
+    const bool pending_parsock = parsock_ && ([&]() {
+      struct ps_stats st;
+      return ps_connection_stats(static_cast<ps_connection_t *>(parsock_), &st) == 0 &&
+             st.reassembly_bytes > 0;
+    })();
+#else
+    const bool pending_parsock = false;
+#endif
     lock.unlock();
 
-    if (!pending_ssl) {
+    if (!pending_ssl && !pending_parsock) {
       pollfd pfds[2]{};
       nfds_t np = 0;
-      pfds[np].fd = fd_;
-      pfds[np].events = POLLIN;
-      if (want_write)
-        pfds[np].events = static_cast<short>(pfds[np].events | POLLOUT);
-      np++;
-      if (wake_rd_ >= 0) {
-        pfds[np].fd = wake_rd_;
+#ifdef HAVE_PARSOCKET
+      if (parsock_) {
+        if (wake_rd_ >= 0) {
+          pfds[np].fd = wake_rd_;
+          pfds[np].events = POLLIN;
+          np++;
+        }
+        int wait_ms = inflight_.empty() ? timeout : std::min(timeout, 2);
+        poll(pfds, np, wait_ms);
+        drainWake();
+      } else
+#endif
+      {
+        pfds[np].fd = fd_;
         pfds[np].events = POLLIN;
+        if (want_write)
+          pfds[np].events = static_cast<short>(pfds[np].events | POLLOUT);
         np++;
+        if (wake_rd_ >= 0) {
+          pfds[np].fd = wake_rd_;
+          pfds[np].events = POLLIN;
+          np++;
+        }
+        poll(pfds, np, timeout);
+        drainWake();
       }
-      poll(pfds, np, timeout);
-      drainWake();
     }
 
     uint8_t buf[16384];
@@ -648,7 +776,11 @@ int Http2Session::request(const HttpRequest &req, HttpResponse &resp,
   st.on_chunk = req.on_chunk;
 
   std::unique_lock<std::mutex> lock(mu_);
-  if (fd_ < 0 || !session_ || !io_.joinable() || stop_) {
+  if ((fd_ < 0
+#ifdef HAVE_PARSOCKET
+       && !parsock_
+#endif
+      ) || !session_ || !io_.joinable() || stop_) {
     err = "not connected";
     return -ENOTCONN;
   }
