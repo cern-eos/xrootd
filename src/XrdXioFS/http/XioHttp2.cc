@@ -98,6 +98,75 @@ bool Http2Session::connected() const
          ) && session_ != nullptr && io_.joinable() && !stop_;
 }
 
+bool Http2Session::isParsock() const
+{
+#ifdef HAVE_PARSOCKET
+  std::lock_guard<std::mutex> lock(mu_);
+  return parsock_ != nullptr;
+#else
+  return false;
+#endif
+}
+
+int Http2Session::registerDeviceMem(void *dev_ptr, size_t len, int dmabuf_fd,
+                                    void **mem_handle, std::string &err)
+{
+  if (!mem_handle) {
+    err = "null mem_handle pointer";
+    return -EINVAL;
+  }
+  *mem_handle = nullptr;
+
+#ifdef HAVE_PARSOCKET
+  std::lock_guard<std::mutex> lock(mu_);
+  if (parsock_) {
+    auto *dm = new ps_device_mem{};
+    dm->type = dmabuf_fd >= 0 ? PS_MEM_DMABUF : PS_MEM_CUDA;
+    dm->ptr = dev_ptr;
+    dm->length = len;
+    dm->dmabuf_fd = dmabuf_fd;
+    dm->offset = 0;
+    dm->internal_mr = nullptr;
+
+    int rc = ps_rdma_reg_device_mem(static_cast<ps_connection_t *>(parsock_), dm);
+    if (rc != PS_OK) {
+      err = "ps_rdma_reg_device_mem failed: " + std::string(ps_strerror(rc < 0 ? -rc : rc));
+      delete dm;
+      return -EIO;
+    }
+    *mem_handle = dm;
+    return 0;
+  }
+#endif
+
+  auto *dummy = new size_t(len);
+  *mem_handle = dummy;
+  return 0;
+}
+
+int Http2Session::deregisterDeviceMem(void *mem_handle, std::string &err)
+{
+  if (!mem_handle)
+    return 0;
+
+#ifdef HAVE_PARSOCKET
+  std::lock_guard<std::mutex> lock(mu_);
+  if (parsock_) {
+    auto *dm = static_cast<ps_device_mem *>(mem_handle);
+    int rc = ps_rdma_dereg_device_mem(static_cast<ps_connection_t *>(parsock_), dm);
+    delete dm;
+    if (rc != PS_OK) {
+      err = "ps_rdma_dereg_device_mem failed: " + std::string(ps_strerror(rc < 0 ? -rc : rc));
+      return -EIO;
+    }
+    return 0;
+  }
+#endif
+
+  delete static_cast<size_t *>(mem_handle);
+  return 0;
+}
+
 void Http2Session::wakeIo()
 {
   if (wake_wr_ < 0)

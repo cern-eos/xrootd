@@ -68,6 +68,10 @@ public:
   int connect(const Url &url, const Options &opt, std::string &err);
   void close();
   bool connected() const;
+  bool isParsock() const;
+
+  int registerDeviceMem(void *dev_ptr, size_t len, int dmabuf_fd, void **mem_handle, std::string &err);
+  int deregisterDeviceMem(void *mem_handle, std::string &err);
 
   int request(const HttpRequest &req, HttpResponse &resp, std::string &err);
 

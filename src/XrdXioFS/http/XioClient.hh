@@ -85,6 +85,15 @@ public:
   int flock(const std::string &relpath, const std::string &op, std::string &err);
   int unlock(const std::string &relpath, std::string &err);
 
+  // Device memory / GPU zero-copy I/O extensions
+  int registerDeviceMem(void *dev_ptr, size_t len, int dmabuf_fd, void **mem_handle, std::string &err);
+  int deregisterDeviceMem(void *mem_handle, std::string &err);
+  int readDevice(const std::string &relpath, uint64_t offset, uint64_t length,
+                 void *dev_ptr, void *mem_handle, size_t &bytes_read, std::string &err);
+  int writeDevice(const std::string &relpath, uint64_t offset,
+                  const void *dev_ptr, void *mem_handle, size_t length,
+                  std::string &err, const std::string &if_match = {});
+
   const Url &base() const { return base_; }
   const Http2Session::Options &options() const { return opt_; }
   bool connected() const { return sess_.connected(); }

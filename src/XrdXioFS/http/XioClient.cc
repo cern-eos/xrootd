@@ -360,6 +360,107 @@ int Client::read(const std::string &relpath, uint64_t offset, uint64_t length,
   return 0;
 }
 
+int Client::registerDeviceMem(void *dev_ptr, size_t len, int dmabuf_fd,
+                              void **mem_handle, std::string &err)
+{
+  std::lock_guard<std::mutex> lock(mu_);
+  int rc = ensure(err);
+  if (rc)
+    return rc;
+  return sess_.registerDeviceMem(dev_ptr, len, dmabuf_fd, mem_handle, err);
+}
+
+int Client::deregisterDeviceMem(void *mem_handle, std::string &err)
+{
+  std::lock_guard<std::mutex> lock(mu_);
+  return sess_.deregisterDeviceMem(mem_handle, err);
+}
+
+int Client::readDevice(const std::string &relpath, uint64_t offset, uint64_t length,
+                       void *dev_ptr, void * /*mem_handle*/, size_t &bytes_read,
+                       std::string &err)
+{
+  bytes_read = 0;
+  if (length == 0)
+    return 0;
+  if (!dev_ptr) {
+    err = "null dev_ptr";
+    return -EINVAL;
+  }
+
+  std::string range = "bytes=" + std::to_string(offset) + "-" +
+                      std::to_string(offset + length - 1);
+  std::vector<std::pair<std::string, std::string>> hdrs{{"range", range}};
+
+  HttpRequest req;
+  req.method = "GET";
+  req.path = absPath(relpath);
+  req.headers = hdrs;
+
+  uint8_t *dst = static_cast<uint8_t *>(dev_ptr);
+  size_t written = 0;
+
+  req.on_chunk = [&](const uint8_t *data, size_t len) -> int {
+    if (written + len > length) {
+      size_t avail = length - written;
+      if (avail > 0) {
+        memcpy(dst + written, data, avail);
+        written += avail;
+      }
+      return 0;
+    }
+    memcpy(dst + written, data, len);
+    written += len;
+    return 0;
+  };
+
+  HttpResponse resp;
+  int rc = 0;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    rc = ensure(err);
+    if (rc)
+      return rc;
+  }
+  rc = sess_.request(req, resp, err);
+  if (rc) {
+    std::lock_guard<std::mutex> lock(mu_);
+    sess_.close();
+    int rc2 = sess_.connect(base_, opt_, err);
+    if (rc2)
+      return rc2;
+    rc = sess_.request(req, resp, err);
+    if (rc)
+      return rc;
+  }
+
+  if (resp.status == 416) {
+    bytes_read = 0;
+    return 0;
+  }
+  if (resp.status != 206 && resp.status != 200) {
+    err = "GET status " + std::to_string(resp.status);
+    return -httpToErrno(resp.status);
+  }
+
+  bytes_read = written;
+  return 0;
+}
+
+int Client::writeDevice(const std::string &relpath, uint64_t offset,
+                        const void *dev_ptr, void * /*mem_handle*/, size_t length,
+                        std::string &err, const std::string &if_match)
+{
+  if (length == 0)
+    return 0;
+  if (!dev_ptr) {
+    err = "null dev_ptr";
+    return -EINVAL;
+  }
+  std::string data(static_cast<const char *>(dev_ptr), length);
+  return write(relpath, offset, data, err, if_match);
+}
+
 int Client::put(const std::string &relpath, const std::string &body,
                 std::string &err, const std::string &if_match,
                 const std::string &if_none_match)
