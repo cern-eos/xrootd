@@ -1085,5 +1085,44 @@ TEST(XrdHttpTests, parsockXioHttp2ClientSession) {
   EXPECT_FALSE(sess.connected());
   listener.Stop();
 }
+
+TEST(XrdHttpTests, parsockXioHttp2AuthenticatedProtection) {
+  XrdHttpParsockListener listener;
+  XrdHttpParsockConfig cfg;
+  cfg.enabled = true;
+  cfg.port = 0;
+  cfg.bind_addr = "127.0.0.1";
+  cfg.transport = "tcp";
+  cfg.initial_sockets = 2;
+  cfg.protection = "authenticated";
+
+  ASSERT_TRUE(listener.Start(cfg));
+  uint16_t port = static_cast<uint16_t>(listener.port());
+
+  XioFS::Url u;
+  u.scheme = "spt";
+  u.host = "127.0.0.1";
+  u.port = port;
+  u.path = "/";
+  u.authority = "127.0.0.1:" + std::to_string(port);
+  u.tls = true;
+  u.parsock = true;
+
+  XioFS::Http2Session::Options opt;
+  opt.verify_peer = false;
+  opt.parsock = true;
+  opt.parsock_sockets = 2;
+  opt.parsock_protection = "authenticated";
+  opt.timeout_ms = 5000;
+
+  XioFS::Http2Session sess;
+  std::string err;
+  ASSERT_EQ(0, sess.connect(u, opt, err)) << err;
+  EXPECT_TRUE(sess.connected());
+
+  sess.close();
+  EXPECT_FALSE(sess.connected());
+  listener.Stop();
+}
 #endif
 #endif

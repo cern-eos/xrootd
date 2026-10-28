@@ -1805,16 +1805,21 @@ int XrdHttpProtocol::SendData(const char *body, int bodylen) {
   return r <= 0 ? -1 : 0;
 }
 
-int XrdHttpProtocol::SendWireData(const char *body, int bodylen)
+int XrdHttpProtocol::SendWireData(const char *body, int bodylen, bool is_data_payload)
 {
   if (!body || bodylen <= 0)
     return 0;
 
 #ifdef HAVE_PARSOCKET
   if (parsockConn_) {
+    const ps_protection_t prot_mode =
+        (is_data_payload && isParsockAuthAllowed())
+            ? PS_PROTECTION_AUTHENTICATED
+            : PS_PROTECTION_CONFIDENTIAL;
+
     int total = 0;
     while (total < bodylen) {
-      ssize_t r = ps_send(parsockConn_, body + total, bodylen - total);
+      ssize_t r = ps_send_protected(parsockConn_, body + total, bodylen - total, prot_mode);
       if (r <= 0) {
         CurrentReq.monState = XrdHttpMonState::ERR_NET;
         return -1;

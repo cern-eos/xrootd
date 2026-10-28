@@ -197,6 +197,31 @@ int sendDataCallback(nghttp2_session * /*session*/, nghttp2_frame *frame,
   const size_t padlen = frame->data.padlen;
   const char *payload = length ? resp->unsentData() : nullptr;
 
+#ifdef HAVE_PARSOCKET
+  if (ctx->prot->isParsock()) {
+    if (ctx->flushSendBuf() != 0)
+      return NGHTTP2_ERR_CALLBACK_FAILURE;
+    if (ctx->prot->SendWireData(reinterpret_cast<const char *>(framehd), 9, false) < 0)
+      return NGHTTP2_ERR_CALLBACK_FAILURE;
+    if (padlen > 0) {
+      uint8_t padb = static_cast<uint8_t>(padlen - 1);
+      if (ctx->prot->SendWireData(reinterpret_cast<const char *>(&padb), 1, false) < 0)
+        return NGHTTP2_ERR_CALLBACK_FAILURE;
+    }
+    if (length && ctx->prot->SendWireData(payload, static_cast<int>(length), true) < 0)
+      return NGHTTP2_ERR_CALLBACK_FAILURE;
+    if (padlen > 1) {
+      static const uint8_t zeros[256] = {};
+      if (padlen - 1 > sizeof(zeros) ||
+          ctx->prot->SendWireData(reinterpret_cast<const char *>(zeros),
+                                  static_cast<int>(padlen - 1), false) < 0)
+        return NGHTTP2_ERR_CALLBACK_FAILURE;
+    }
+    resp->consume(length);
+    return 0;
+  }
+#endif
+
   // HTTPS cannot writev; coalesce into sendbuf so TLS records stay large.
   if (ctx->prot->isHTTPS()) {
     if (ctx->appendSendBuf(framehd, 9) != 0)

@@ -145,7 +145,7 @@ public:
   int doChksum(const XrdOucString &fname);
 
   /// Send wire bytes (used by HTTP/2 framing)
-  int SendWireData(const char *body, int bodylen);
+  int SendWireData(const char *body, int bodylen, bool is_data_payload = false);
 
   /// writev of several buffers (cleartext). HTTPS falls back to SendWireData.
   int SendWirev(const struct iovec *iov, int iocnt, int bytes = 0);
@@ -183,6 +183,10 @@ public:
 #ifdef HAVE_PARSOCKET
   bool isParsock() const { return parsockConn_ != nullptr; }
   ps_connection_t *getParsock() const { return parsockConn_; }
+  bool isParsockAuthAllowed() const {
+    return s_parsockConfig.protection == "authenticated" ||
+           s_parsockConfig.protection == "auth";
+  }
   void attachParsock(ps_connection_t *conn, const std::string &peer_ip = "");
   void detachParsock();
   static XrdHttpParsockListener &parsockListener() { return s_parsockListener; }

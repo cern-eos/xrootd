@@ -315,16 +315,56 @@ int Http2Session::sslWrite(const uint8_t *buf, size_t len, std::string &err)
 {
 #ifdef HAVE_PARSOCKET
   if (parsock_) {
-    size_t off = 0;
     auto *conn = static_cast<ps_connection_t *>(parsock_);
-    while (off < len) {
-      ssize_t n = ps_send(conn, buf + off, len - off);
-      if (n <= 0) {
-        err = "parsock send failed: " +
-              std::string(ps_strerror(ps_connection_error(conn)));
+    const bool allow_auth = (opt_.parsock_protection == "authenticated" ||
+                             opt_.parsock_protection == "auth");
+
+    size_t off = 0;
+    static const char kPreface[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    const size_t kPrefaceLen = sizeof(kPreface) - 1;
+    if (off + kPrefaceLen <= len && memcmp(buf + off, kPreface, kPrefaceLen) == 0) {
+      ssize_t sent = ps_send_protected(conn, buf + off, kPrefaceLen, PS_PROTECTION_CONFIDENTIAL);
+      if (sent <= 0) {
+        err = "parsock send failed: " + std::string(ps_strerror(ps_connection_error(conn)));
         return -EIO;
       }
-      off += static_cast<size_t>(n);
+      off += kPrefaceLen;
+    }
+
+    while (off < len) {
+      if (len - off < 9) {
+        ssize_t sent = ps_send_protected(conn, buf + off, len - off, PS_PROTECTION_CONFIDENTIAL);
+        if (sent <= 0) {
+          err = "parsock send failed: " + std::string(ps_strerror(ps_connection_error(conn)));
+          return -EIO;
+        }
+        break;
+      }
+
+      size_t payload_len = (static_cast<size_t>(buf[off]) << 16) |
+                           (static_cast<size_t>(buf[off + 1]) << 8) |
+                           static_cast<size_t>(buf[off + 2]);
+      uint8_t type = buf[off + 3];
+      size_t frame_total = 9 + payload_len;
+      if (off + frame_total > len)
+        frame_total = len - off;
+
+      ps_protection_t prot_mode = PS_PROTECTION_CONFIDENTIAL;
+      if (type == 0x00 && allow_auth) {
+        prot_mode = PS_PROTECTION_AUTHENTICATED;
+      }
+
+      size_t frame_sent = 0;
+      while (frame_sent < frame_total) {
+        ssize_t sent = ps_send_protected(conn, buf + off + frame_sent,
+                                         frame_total - frame_sent, prot_mode);
+        if (sent <= 0) {
+          err = "parsock send failed: " + std::string(ps_strerror(ps_connection_error(conn)));
+          return -EIO;
+        }
+        frame_sent += static_cast<size_t>(sent);
+      }
+      off += frame_total;
     }
     return 0;
   }
