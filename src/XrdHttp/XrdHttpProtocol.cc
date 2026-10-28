@@ -142,6 +142,11 @@ decltype(XrdHttpProtocol::m_staticheader_map) XrdHttpProtocol::m_staticheader_ma
 decltype(XrdHttpProtocol::m_staticheaders) XrdHttpProtocol::m_staticheaders;
 std::vector<std::string> XrdHttpProtocol::m_h2push_paths;
 
+#ifdef HAVE_PARSOCKET
+XrdHttpParsockConfig XrdHttpProtocol::s_parsockConfig;
+XrdHttpParsockListener XrdHttpProtocol::s_parsockListener;
+#endif
+
 XrdSysTrace XrdHttpTrace("http");
 
 namespace
@@ -347,6 +352,10 @@ XrdProtocol *XrdHttpProtocol::Match(XrdLink *lp) {
 char *XrdHttpProtocol::GetClientIPStr() {
   char buf[256];
   buf[0] = '\0';
+#ifdef HAVE_PARSOCKET
+  if (parsockConn_ && !parsockClientIP_.empty())
+    return strdup(parsockClientIP_.c_str());
+#endif
   if (!Link) return strdup("unknown");
   XrdNetAddrInfo *ai = Link->AddrInfo();
   if (!ai) return strdup("unknown");
@@ -1169,6 +1178,7 @@ int XrdHttpProtocol::Config(const char *ConfigFN, XrdOucEnv *myEnv) {
       else if TS_Xeq("maxdelay", xmaxdelay);
       else if TS_Xeq("h2push", xh2push);
       else if TS_Xeq("h2", xh2);
+      else if TS_Xeq("parsock", xparsock);
       else {
         eDest.Say("Config warning: ignoring unknown directive '", var, "'.");
         Config.Echo();
@@ -1800,6 +1810,21 @@ int XrdHttpProtocol::SendWireData(const char *body, int bodylen)
   if (!body || bodylen <= 0)
     return 0;
 
+#ifdef HAVE_PARSOCKET
+  if (parsockConn_) {
+    int total = 0;
+    while (total < bodylen) {
+      ssize_t r = ps_send(parsockConn_, body + total, bodylen - total);
+      if (r <= 0) {
+        CurrentReq.monState = XrdHttpMonState::ERR_NET;
+        return -1;
+      }
+      total += static_cast<int>(r);
+    }
+    return total;
+  }
+#endif
+
   int total = 0;
   while (total < bodylen) {
     int r = 0;
@@ -1836,6 +1861,16 @@ int XrdHttpProtocol::SendWirev(const struct iovec *iov, int iocnt, int bytes)
     for (int i = 0; i < iocnt; i++)
       bytes += static_cast<int>(iov[i].iov_len);
   }
+#ifdef HAVE_PARSOCKET
+  if (parsockConn_) {
+    for (int i = 0; i < iocnt; i++) {
+      if (SendWireData(static_cast<const char *>(iov[i].iov_base),
+                       static_cast<int>(iov[i].iov_len)) < 0)
+        return -1;
+    }
+    return bytes;
+  }
+#endif
   if (ishttps) {
     for (int i = 0; i < iocnt; i++) {
       if (SendWireData(static_cast<const char *>(iov[i].iov_base),
@@ -1858,6 +1893,22 @@ int XrdHttpProtocol::RecvWireData(char *buf, int buflen, int timeout_ms)
 {
   if (!buf || buflen <= 0)
     return 0;
+
+#ifdef HAVE_PARSOCKET
+  if (parsockConn_) {
+    if (timeout_ms == 0) {
+      struct ps_stats stats;
+      if (ps_connection_stats(parsockConn_, &stats) == 0 && stats.reassembly_bytes == 0)
+        return 0;
+    }
+    ssize_t n = ps_recv(parsockConn_, buf, buflen);
+    if (n <= 0) {
+      CurrentReq.monState = XrdHttpMonState::ERR_NET;
+      return -1;
+    }
+    return static_cast<int>(n);
+  }
+#endif
 
   if (ishttps) {
     if (!ssl)
@@ -1944,6 +1995,43 @@ int XrdHttpProtocol::BuffInject(const char *data, int len)
   }
   return n;
 }
+
+#ifdef HAVE_PARSOCKET
+void XrdHttpProtocol::attachParsock(ps_connection_t *conn, const std::string &peer_ip)
+{
+  parsockConn_ = conn;
+  parsockClientIP_ = peer_ip;
+  ishttps = true;
+  ssldone = true;
+#ifdef HAVE_NGHTTP2
+  wireMode_ = XrdHttpWireMode::kHttp2;
+#endif
+
+  if (!myBuff && BPool) {
+    myBuff = BPool->Obtain(1024 * 1024);
+  }
+  if (myBuff) {
+    myBuffStart = myBuffEnd = myBuff->buff;
+  }
+  if (!SecEntity.host) {
+    SecEntity.host = strdup(peer_ip.empty() ? "parsock-client" : peer_ip.c_str());
+    strcpy(SecEntity.prot, "https");
+  }
+}
+
+void XrdHttpProtocol::detachParsock()
+{
+  parsockConn_ = nullptr;
+  parsockClientIP_.clear();
+}
+#endif
+
+#ifdef HAVE_NGHTTP2
+int XrdHttpProtocol::feedHttp2Wire(const char *data, size_t len)
+{
+  return http2Session_.feedRecv(*this, reinterpret_cast<const uint8_t *>(data), len);
+}
+#endif
 
 #ifdef HAVE_NGHTTP2
 void XrdHttpProtocol::detectWireMode()
@@ -2299,6 +2387,25 @@ int XrdHttpProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
                 (XrdHttpTrace.What & TRACE_MEM ? TRACE_MEM : 0));
   ProtStack.Set((pi->ConnMax / 3 ? pi->ConnMax / 3 : 30), 60 * 60);
 
+#ifdef HAVE_PARSOCKET
+  if (s_parsockConfig.enabled && s_parsockConfig.port > 0) {
+    if (sslcert && s_parsockConfig.cert_file.empty())
+      s_parsockConfig.cert_file = sslcert;
+    if (sslkey && s_parsockConfig.key_file.empty())
+      s_parsockConfig.key_file = sslkey;
+    if (sslcafile && s_parsockConfig.ca_file.empty())
+      s_parsockConfig.ca_file = sslcafile;
+
+    if (!s_parsockListener.Start(s_parsockConfig)) {
+      eDest.Emsg("Config", "Failed to start Parsock HTTP/2 listener on port", std::to_string(s_parsockConfig.port).c_str());
+      return 0;
+    }
+    char pbuf[32];
+    snprintf(pbuf, sizeof(pbuf), "%d (data %d)", s_parsockListener.port(), s_parsockListener.dataPort());
+    eDest.Say("++++++ Parsock HTTP/2 listener started on port ", pbuf);
+  }
+#endif
+
   // Return success
   //
 
@@ -2443,6 +2550,14 @@ void XrdHttpProtocol::Cleanup() {
 
   TRACE(ALL, " Cleanup");
 
+#ifdef HAVE_PARSOCKET
+  if (parsockConn_) {
+    ps_close(parsockConn_);
+    parsockConn_ = nullptr;
+  }
+  parsockClientIP_.clear();
+#endif
+
   if (BPool && myBuff) {
     BuffConsume(BuffUsed());
     BPool->Release(myBuff);
@@ -2517,6 +2632,13 @@ void XrdHttpProtocol::Reset() {
 
   TRACE(ALL, " Reset");
   Link = 0;
+#ifdef HAVE_PARSOCKET
+  if (parsockConn_) {
+    ps_close(parsockConn_);
+    parsockConn_ = nullptr;
+  }
+  parsockClientIP_.clear();
+#endif
   CurrentReq.reset();
   CurrentReq.reqstate = 0;
 
@@ -3785,6 +3907,63 @@ int XrdHttpProtocol::xh2push(XrdOucStream &Config) {
   m_h2push_paths.emplace_back(val);
   eDest.Say("Config http.h2push ", val);
   return 0;
+}
+
+int XrdHttpProtocol::xparsock(XrdOucStream &Config) {
+#ifdef HAVE_PARSOCKET
+  char *val = Config.GetWord();
+  if (!val || !val[0]) {
+    eDest.Emsg("Config", "parsock directive requires arguments (e.g. port <p> [transport tcp|rdma|quic])");
+    return 1;
+  }
+
+  s_parsockConfig.enabled = true;
+
+  while (val && val[0]) {
+    if (!strcmp(val, "off") || !strcmp(val, "disable")) {
+      s_parsockConfig.enabled = false;
+    } else if (!strcmp(val, "on") || !strcmp(val, "enable")) {
+      s_parsockConfig.enabled = true;
+    } else if (!strcmp(val, "port")) {
+      val = Config.GetWord();
+      if (!val) { eDest.Emsg("Config", "parsock port requires a value"); return 1; }
+      s_parsockConfig.port = atoi(val);
+    } else if (!strcmp(val, "bind")) {
+      val = Config.GetWord();
+      if (!val) { eDest.Emsg("Config", "parsock bind requires an address"); return 1; }
+      s_parsockConfig.bind_addr = val;
+    } else if (!strcmp(val, "transport")) {
+      val = Config.GetWord();
+      if (!val) { eDest.Emsg("Config", "parsock transport requires tcp, rdma, or quic"); return 1; }
+      s_parsockConfig.transport = val;
+    } else if (!strcmp(val, "protection")) {
+      val = Config.GetWord();
+      if (!val) { eDest.Emsg("Config", "parsock protection requires confidential or authenticated"); return 1; }
+      s_parsockConfig.protection = val;
+    } else if (!strcmp(val, "sockets")) {
+      val = Config.GetWord();
+      if (!val) { eDest.Emsg("Config", "parsock sockets requires a number"); return 1; }
+      int n = atoi(val);
+      if (n > 0) {
+        s_parsockConfig.initial_sockets = n;
+        s_parsockConfig.min_sockets = 1;
+        s_parsockConfig.max_sockets = n > 4 ? n : 4;
+      }
+    } else if (!strcmp(val, "rdma_device")) {
+      val = Config.GetWord();
+      if (!val) { eDest.Emsg("Config", "parsock rdma_device requires a device name"); return 1; }
+      s_parsockConfig.rdma_device = val;
+    } else {
+      eDest.Say("Config warning: unknown parsock option '", val, "'.");
+    }
+    val = Config.GetWord();
+  }
+  return 0;
+#else
+  (void)Config;
+  eDest.Emsg("Config", "parsock is not supported in this build (requires libparsocket)");
+  return 1;
+#endif
 }
 
 int XrdHttpProtocol::xparser(XrdOucStream &Config) {

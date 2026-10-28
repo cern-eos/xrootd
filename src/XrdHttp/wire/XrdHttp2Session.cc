@@ -734,7 +734,7 @@ int XrdHttp2Session::recvFrames(XrdHttpProtocol &prot, XrdLink *lp)
   if (drainPending() < 0)
     return -1;
 
-  if (lp) {
+  if (lp || prot.isParsock()) {
     const int n = prot.RecvWireData(reinterpret_cast<char *>(recvbuf_),
                                     static_cast<int>(kRecvBufSize));
     if (n < 0)

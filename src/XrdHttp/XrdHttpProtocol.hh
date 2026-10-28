@@ -51,6 +51,9 @@
 #ifdef HAVE_NGHTTP2
 #include "wire/XrdHttp2Session.hh"
 #endif
+#ifdef HAVE_PARSOCKET
+#include "wire/XrdHttpParsockListener.hh"
+#endif
 
 #include <chrono>
 #include <cstdlib>
@@ -173,8 +176,20 @@ public:
   void detectWireMode();
   bool Http2OutboundPending() const;
   bool maybeUpgradeH2c();
+  int feedHttp2Wire(const char *data, size_t len);
 #endif
   static const std::vector<std::string> &h2pushPaths() { return m_h2push_paths; }
+
+#ifdef HAVE_PARSOCKET
+  bool isParsock() const { return parsockConn_ != nullptr; }
+  ps_connection_t *getParsock() const { return parsockConn_; }
+  void attachParsock(ps_connection_t *conn, const std::string &peer_ip = "");
+  void detachParsock();
+  static XrdHttpParsockListener &parsockListener() { return s_parsockListener; }
+  static XrdHttpParsockConfig &parsockConfig() { return s_parsockConfig; }
+#else
+  bool isParsock() const { return false; }
+#endif
 
   /// Ctor, dtors and copy ctor
   XrdHttpProtocol(const XrdHttpProtocol&) = delete;
@@ -304,6 +319,14 @@ private:
   static int xmaxdelay(XrdOucStream &Config);
   static int xh2push(XrdOucStream &Config);
   static int xh2(XrdOucStream &Config);
+  static int xparsock(XrdOucStream &Config);
+
+#ifdef HAVE_PARSOCKET
+  ps_connection_t *parsockConn_{nullptr};
+  std::string parsockClientIP_;
+  static XrdHttpParsockListener s_parsockListener;
+  static XrdHttpParsockConfig s_parsockConfig;
+#endif
 
   static bool isRequiredXtractor; // If true treat secxtractor errors as fatal
   static XrdHttpSecXtractor *secxtractor;

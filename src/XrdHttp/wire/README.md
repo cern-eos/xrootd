@@ -13,6 +13,9 @@ HTTP/1.1 and HTTP/2 wire-protocol substrate for XrdHTTP.
   application request. `http.h2push` advertises and serves promised GETs
   when the client enables push.
 - `XrdHttp2ResponseWriter` — HTTP/2 response headers and DATA frames.
+- `XrdHttpParsockListener` — libparsocket listener enabling HTTP/2 over
+  parallel TCP or RDMA RC transport (`BUILD_PARSOCKET`). Accepts connections
+  on a dedicated SPT port and drives HTTP/2 streaming sessions.
 
 Both protocols funnel parsed requests into `XrdHttpReq` and
 `XrdHttpProtocol::processParsedRequest()`.
@@ -26,6 +29,16 @@ http.parser legacy    # previous line-based parser
 
 HTTP/2 is negotiated via TLS ALPN, the h2c connection preface, or
 `Upgrade: h2c` when built with nghttp2 (`BUILD_HTTP2`).
+
+### Parsock (Parallel TCP / RDMA)
+
+When built with `ENABLE_PARSOCKET=TRUE` and `libparsocket` is available,
+HTTP/2 can be carried across multiple parallel TCP lanes, RDMA RC queue
+pairs, or QUIC:
+
+```cfg
+http.parsock port 8443 [bind <addr>] [transport tcp|rdma|quic] [sockets <n>] [protection confidential|authenticated]
+```
 
 ## Build
 

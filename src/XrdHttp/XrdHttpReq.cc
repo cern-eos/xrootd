@@ -3173,8 +3173,10 @@ XrdHttpReq::PostProcessListing(bool final_) {
 
     if (prot->SecEntity.name)
       stringresp += prot->SecEntity.name;
-    else
+    else if (prot->Link && prot->Link->ID)
       stringresp += prot->Link->ID;
+    else
+      stringresp += "unknown";
 
     if (prot->SecEntity.vorg ||
       prot->SecEntity.name ||

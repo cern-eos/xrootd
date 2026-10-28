@@ -940,3 +940,108 @@ TEST(XrdHttpTests, propfindStreamRequested) {
   req.parseLine(h3, strlen(h3));
   EXPECT_FALSE(req.isStreamRequested());
 }
+
+#ifdef HAVE_PARSOCKET
+#include "wire/XrdHttpParsockListener.hh"
+
+TEST(XrdHttpTests, parsockListenerLifecycle) {
+  XrdHttpParsockListener listener;
+  XrdHttpParsockConfig cfg;
+  cfg.enabled = true;
+  cfg.port = 0;
+  cfg.bind_addr = "127.0.0.1";
+  cfg.transport = "tcp";
+  cfg.initial_sockets = 2;
+  cfg.protection = "confidential";
+
+  EXPECT_TRUE(listener.Start(cfg));
+  EXPECT_TRUE(listener.isRunning());
+  EXPECT_GT(listener.port(), 0);
+  EXPECT_GT(listener.dataPort(), 0);
+
+  listener.Stop();
+  EXPECT_FALSE(listener.isRunning());
+}
+
+TEST(XrdHttpTests, parsockClientConnect) {
+  XrdHttpParsockListener listener;
+  XrdHttpParsockConfig cfg;
+  cfg.enabled = true;
+  cfg.port = 0;
+  cfg.bind_addr = "127.0.0.1";
+  cfg.transport = "tcp";
+  cfg.initial_sockets = 2;
+  cfg.protection = "confidential";
+
+  ASSERT_TRUE(listener.Start(cfg));
+  uint16_t port = static_cast<uint16_t>(listener.port());
+
+  struct ps_options copt;
+  ps_options_init(&copt);
+  copt.initial_sockets = 2;
+  copt.min_sockets = 1;
+  copt.max_sockets = 2;
+  struct ps_tls_config ctls;
+  memset(&ctls, 0, sizeof(ctls));
+  ctls.allow_insecure = 1;
+  ctls.verify_peer = 0;
+  ctls.server_name = "127.0.0.1";
+  copt.tls = &ctls;
+
+  ps_connection_t *conn = ps_connect("127.0.0.1", port, &copt);
+  ASSERT_NE(nullptr, conn);
+  EXPECT_EQ(PS_STATE_OPEN, ps_connection_state(conn));
+
+  ps_close(conn);
+  listener.Stop();
+}
+
+TEST(XrdHttpTests, parsockHttp2PrefaceExchange) {
+  XrdHttpParsockListener listener;
+  XrdHttpParsockConfig cfg;
+  cfg.enabled = true;
+  cfg.port = 0;
+  cfg.bind_addr = "127.0.0.1";
+  cfg.transport = "tcp";
+  cfg.initial_sockets = 2;
+  cfg.protection = "confidential";
+
+  ASSERT_TRUE(listener.Start(cfg));
+  uint16_t port = static_cast<uint16_t>(listener.port());
+
+  struct ps_options copt;
+  ps_options_init(&copt);
+  copt.initial_sockets = 2;
+  copt.min_sockets = 1;
+  copt.max_sockets = 2;
+  struct ps_tls_config ctls;
+  memset(&ctls, 0, sizeof(ctls));
+  ctls.allow_insecure = 1;
+  ctls.verify_peer = 0;
+  ctls.server_name = "127.0.0.1";
+  copt.tls = &ctls;
+
+  ps_connection_t *conn = ps_connect("127.0.0.1", port, &copt);
+  ASSERT_NE(nullptr, conn);
+  EXPECT_EQ(PS_STATE_OPEN, ps_connection_state(conn));
+
+  // Send client HTTP/2 connection preface + empty SETTINGS frame
+  const char client_preface[] =
+      "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+      "\x00\x00\x00\x04\x00\x00\x00\x00\x00";
+  ssize_t sent = ps_send(conn, client_preface, sizeof(client_preface) - 1);
+  EXPECT_EQ(static_cast<ssize_t>(sizeof(client_preface) - 1), sent);
+
+  // Read server HTTP/2 SETTINGS frame response
+  char srv_buf[128];
+  ssize_t recvd = ps_recv(conn, srv_buf, sizeof(srv_buf));
+  EXPECT_GT(recvd, 0);
+  if (recvd >= 9) {
+    uint8_t frame_type = static_cast<uint8_t>(srv_buf[3]);
+    EXPECT_EQ(0x04, frame_type); // NGHTTP2_SETTINGS
+  }
+
+  ps_close(conn);
+  listener.Stop();
+}
+#endif

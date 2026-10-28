@@ -38,6 +38,11 @@ if(BUILD_HTTP2)
     wire/XrdHttp2ResponseWriter.cc wire/XrdHttp2ResponseWriter.hh)
 endif()
 
+if(BUILD_PARSOCKET)
+  list(APPEND XRDHTTPUTILS_SRCS
+    wire/XrdHttpParsockListener.cc wire/XrdHttpParsockListener.hh)
+endif()
+
 add_library(XrdHttpUtils SHARED ${XRDHTTPUTILS_SRCS})
 
 set_target_properties(XrdHttpUtils
@@ -69,6 +74,12 @@ if(BUILD_HTTP2)
   target_compile_definitions(XrdHttpUtils PUBLIC HAVE_NGHTTP2)
   target_include_directories(XrdHttpUtils PUBLIC ${NGHTTP2_INCLUDE_DIR})
   target_link_libraries(XrdHttpUtils PUBLIC ${NGHTTP2_LIBRARY})
+endif()
+
+if(BUILD_PARSOCKET)
+  target_compile_definitions(XrdHttpUtils PUBLIC HAVE_PARSOCKET)
+  target_include_directories(XrdHttpUtils PUBLIC ${PARSOCK_INCLUDE_DIRS})
+  target_link_libraries(XrdHttpUtils PUBLIC ${PARSOCK_LIBRARIES})
 endif()
 
 set(XrdHttp XrdHttp-${PLUGIN_VERSION})

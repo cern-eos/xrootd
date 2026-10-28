@@ -161,6 +161,10 @@ public:
   void onStreamClosed(int32_t stream_id, uint32_t error_code);
   void onGoaway();
 
+  int feedRecv(XrdHttpProtocol &prot, const uint8_t *data, size_t len);
+
+  friend class XrdHttpProtocol;
+
 private:
 
   static const uint32_t kMaxConcurrentStreams = 100;
@@ -176,7 +180,6 @@ private:
 
   int applyTo(XrdHttp2StreamState *st, XrdHttpReq &req);
   int recvFrames(XrdHttpProtocol &prot, XrdLink *lp);
-  int feedRecv(XrdHttpProtocol &prot, const uint8_t *data, size_t len);
   int ensureSession(XrdHttpProtocol &prot, bool flush = true);
   int dispatchStream(int32_t stream_id, XrdHttpProtocol &prot, XrdLink *lp);
   int dispatchNext(XrdHttpProtocol &prot, XrdLink *lp);
