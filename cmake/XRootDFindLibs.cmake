@@ -28,6 +28,16 @@ if( SYSTEMD_FOUND )
   add_definitions( -DHAVE_SYSTEMD )
 endif()
 
+if( APPLE )
+  if( NOT DEFINED OPENSSL_ROOT_DIR AND NOT DEFINED ENV{OPENSSL_ROOT_DIR} )
+    if( EXISTS "/opt/homebrew/opt/openssl@3" )
+      set( OPENSSL_ROOT_DIR "/opt/homebrew/opt/openssl@3" CACHE PATH "OpenSSL root directory" )
+    elseif( EXISTS "/usr/local/opt/openssl@3" )
+      set( OPENSSL_ROOT_DIR "/usr/local/opt/openssl@3" CACHE PATH "OpenSSL root directory" )
+    endif()
+  endif()
+endif()
+
 find_package( OpenSSL 1.1.1 REQUIRED )
 
 if( ENABLE_KRB5 )

@@ -691,13 +691,15 @@ time_t XrdCryptosslASN1toUTC(const ASN1_TIME *tsn1)
    // Our result is in agreement with 'date +%s`. 
    struct tm ltm;
    char zz;
-   if ((sscanf((const char *)(tsn1->data),
+   const char *asn1_data = (const char *)ASN1_STRING_get0_data(tsn1);
+   if (!asn1_data) return -1;
+   if ((sscanf(asn1_data,
        "%02d%02d%02d%02d%02d%02d%c", 
        &(ltm.tm_year), &(ltm.tm_mon), &(ltm.tm_mday),
        &(ltm.tm_hour), &(ltm.tm_min), &(ltm.tm_sec),
                                       &zz) != 7) || (zz != 'Z')) {
        // Try GeneralizedTime
-       if ((sscanf((const char *)(tsn1->data),
+       if ((sscanf(asn1_data,
            "%04d%02d%02d%02d%02d%02d%c", 
            &(ltm.tm_year), &(ltm.tm_mon), &(ltm.tm_mday),
            &(ltm.tm_hour), &(ltm.tm_min), &(ltm.tm_sec),

@@ -36,14 +36,14 @@ jobs:
       CC: clang
       CXX: clang++
       CMAKE_ARGS: "-DPython_FIND_UNVERSIONED_NAMES=FIRST"
-      CMAKE_PREFIX_PATH: /usr/local/opt/openssl@3
+      CMAKE_PREFIX_PATH: /opt/homebrew/opt/openssl@3:/usr/local/opt/openssl@3
 
     steps:
     - name: Workaround for issue 1772
       run: sudo sed -i -e "s/localhost/localhost $(hostname)/g" /etc/hosts
 
     - name: Install dependencies with Homebrew
-      run: brew install googletest libzip nlohmann-json python-setuptools
+      run: brew install googletest libzip nlohmann-json python-setuptools openssl@3
 
     - name: Clone repository
       uses: actions/checkout@v6
