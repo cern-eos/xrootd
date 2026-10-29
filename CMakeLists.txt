@@ -46,7 +46,7 @@ configure_file(src/XrdVersion.hh.in src/XrdVersion.hh)
 # Build in subdirectories
 #-------------------------------------------------------------------------------
 
-include_directories(BEFORE ${PROJECT_SOURCE_DIR}/src ${PROJECT_BINARY_DIR}/src)
+include_directories(BEFORE ${PROJECT_SOURCE_DIR}/src ${PROJECT_BINARY_DIR}/src ${OPENSSL_INCLUDE_DIR})
 
 include(CTest)
 

@@ -29,6 +29,8 @@ set_target_properties(XrdUtils
   VERSION ${XRootD_LIBVERSION}
 )
 
+target_include_directories(XrdUtils BEFORE PUBLIC ${OPENSSL_INCLUDE_DIR})
+
 target_link_libraries(XrdUtils
   PRIVATE
     OpenSSL::SSL
