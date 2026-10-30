@@ -11,6 +11,10 @@ add_library(XrdXioFS STATIC
   http/XioKrb5.cc
 )
 
+# Linked into libXrdHttpParsockTpc.so. A static archive needs -fPIC or the
+# shared link fails with R_X86_64_32 relocations.
+set_target_properties(XrdXioFS PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 target_include_directories(XrdXioFS
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/http
