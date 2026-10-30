@@ -40,6 +40,7 @@ BuildRequires:	libcurl-devel
 BuildRequires:	libnghttp2-devel
 BuildRequires:	libxml2-devel
 BuildRequires:	libzip-devel
+BuildRequires:	libzstd-devel
 BuildRequires:	ncurses-devel
 BuildRequires:	openssl-devel
 BuildRequires:	perl-generators
@@ -89,6 +90,7 @@ BuildRequires:	krb5-workstation
 BuildRequires:	openssl
 BuildRequires:	procps-ng
 BuildRequires:	sqlite
+BuildRequires:	zstd
 %endif
 
 %if %{with xrdec}

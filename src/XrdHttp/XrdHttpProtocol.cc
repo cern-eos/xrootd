@@ -2243,6 +2243,15 @@ int XrdHttpProtocol::StartChunkedResp(int code, const char *desc,
 /*                             C h u n k R e s p                              */
 /******************************************************************************/
   
+int XrdHttpProtocol::finishHttp2Body()
+{
+#ifdef HAVE_NGHTTP2
+  if (wireMode_ == XrdHttpWireMode::kHttp2)
+    return XrdHttp2ResponseWriter::finishStream(*this);
+#endif
+  return 0;
+}
+
 int XrdHttpProtocol::ChunkResp(const char *body, long long bodylen) {
   long long content_length = (bodylen <= 0) ? (body ? strlen(body) : 0) : bodylen;
   long long header_len = (bodylen < 0) ? 0 : content_length;

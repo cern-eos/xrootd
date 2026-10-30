@@ -517,8 +517,13 @@ int XrdHttp2ResponseWriter::finishStream(XrdHttpProtocol &prot)
     do {
       ZSTD_outBuffer out = {out_buf, sizeof(out_buf), 0};
       ret = ZSTD_compressStream2(zcs, &out, &in, ZSTD_e_end);
-      if (ZSTD_isError(ret))
-        break;
+      if (ZSTD_isError(ret)) {
+        TRACE(ALL, "ZSTD_compressStream2 end error: "
+              << ZSTD_getErrorName(ret));
+        ZSTD_freeCStream(zcs);
+        pending.zcs = nullptr;
+        return -1;
+      }
       if (out.pos > 0)
         pending.body.append(out_buf, out.pos);
     } while (ret > 0);

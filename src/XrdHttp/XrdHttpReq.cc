@@ -2365,6 +2365,10 @@ int XrdHttpReq::ProcessHTTPReq() {
                 if (prot->ChunkResp(trailer.c_str(), -1))
                   return -1;
               }
+              // Known-length GETs never send a terminating chunk. HTTP/2 zstd
+              // still needs ZSTD_e_end and END_STREAM or the frame is truncated.
+              if (prot->finishHttp2Body())
+                return -1;
               const int rc = keepalive ? 1 : -1;
               reset();
               return rc;
@@ -3608,6 +3612,7 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
 
               if (prot->ChunkResp(trailer.c_str(), -1)) return -1;
             }
+            if (prot->finishHttp2Body()) return -1;
 
               if (rrerror) return -1;
               return keepalive ? 1 : -1;

@@ -154,6 +154,10 @@ public:
   /// timeout_ms == 0 never blocks; > 0 waits up to that long for data.
   int RecvWireData(char *buf, int buflen, int timeout_ms = 0);
 
+  /// End a streaming HTTP/2 response. Closes a zstd frame and sends END_STREAM.
+  /// No-op for HTTP/1 and for responses that already finished.
+  int finishHttp2Body();
+
   /// True when this connection speaks HTTP/2 (false if not built with nghttp2).
   bool isHttp2() const {
 #ifdef HAVE_NGHTTP2

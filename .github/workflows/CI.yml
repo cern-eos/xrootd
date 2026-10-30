@@ -69,7 +69,9 @@ jobs:
           sudo \
           util-linux-dev \
           uuidgen \
-          zlib-dev
+          zlib-dev \
+          zstd \
+          zstd-dev
 
     - name: Clone repository
       uses: actions/checkout@v6
@@ -306,7 +308,7 @@ jobs:
       run: sudo sed -i -e "s/localhost/localhost $(hostname)/g" /etc/hosts
 
     - name: Install dependencies with Homebrew
-      run: brew install googletest libnghttp2 libzip nlohmann-json python-setuptools openssl@3
+      run: brew install googletest libnghttp2 libzip nlohmann-json python-setuptools openssl@3 zstd
 
     - name: Clone repository
       uses: actions/checkout@v6
