@@ -7,6 +7,8 @@
 #include "wire/XrdHttp2Session.hh"
 #include "XrdHttpProtocol.hh"
 #include "XrdHttpTrace.hh"
+#include "XrdXrootd/XrdXrootdTransit.hh"
+#include "XProtocol/XProtocol.hh"
 
 #ifdef HAVE_ZSTD
 #include <zstd.h>
@@ -16,10 +18,123 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
+#include <cstdio>
 #include <cstring>
 #include <sys/uio.h>
 #include <utility>
 #include <vector>
+
+namespace {
+
+struct CapEv {
+  int type{1};
+  std::vector<std::string> parts;
+  int iovL{0};
+  bool final{true};
+  int code{0};
+  std::string text;
+};
+
+class BridgeCapture : public XrdXrootd::Bridge::Result {
+public:
+  explicit BridgeCapture(std::vector<CapEv> *out) : out_(out) {}
+
+  bool Data(XrdXrootd::Bridge::Context &, const struct iovec *iovP, int iovN,
+            int iovL, bool final) override
+  {
+    CapEv ev;
+    ev.type = 0;
+    ev.iovL = iovL;
+    ev.final = final;
+    if (iovP) {
+      for (int i = 0; i < iovN; i++) {
+        const char *p = static_cast<const char *>(iovP[i].iov_base);
+        ev.parts.emplace_back(p ? p : "", p ? iovP[i].iov_len : 0);
+      }
+    }
+    out_->push_back(std::move(ev));
+    return true;
+  }
+
+  bool Done(XrdXrootd::Bridge::Context &) override
+  {
+    CapEv ev;
+    ev.type = 1;
+    out_->push_back(std::move(ev));
+    return true;
+  }
+
+  bool Error(XrdXrootd::Bridge::Context &, int ecode, const char *etext) override
+  {
+    CapEv ev;
+    ev.type = 2;
+    ev.code = ecode;
+    ev.text = etext ? etext : "";
+    out_->push_back(std::move(ev));
+    return true;
+  }
+
+  bool Redir(XrdXrootd::Bridge::Context &, int port, const char *hname) override
+  {
+    CapEv ev;
+    ev.type = 3;
+    ev.code = port;
+    ev.text = hname ? hname : "";
+    out_->push_back(std::move(ev));
+    return true;
+  }
+
+  int File(XrdXrootd::Bridge::Context &, int) override
+  {
+    CapEv ev;
+    ev.type = 2;
+    ev.code = kXR_ServerError;
+    ev.text = "sendfile is not used for HTTP/2";
+    out_->push_back(std::move(ev));
+    return 0;
+  }
+
+private:
+  std::vector<CapEv> *out_;
+};
+
+std::string fhKey(const void *fhv)
+{
+  const auto *fh = static_cast<const unsigned char *>(fhv);
+  char b[16];
+  std::snprintf(b, sizeof(b), "fh:%02x%02x%02x%02x",
+                fh[0], fh[1], fh[2], fh[3]);
+  return b;
+}
+
+std::string laneKeyOf(const ClientRequest &req, const char *data, int len)
+{
+  const unsigned short id = ntohs(req.header.requestid);
+  const int dlen = static_cast<int>(ntohl(req.header.dlen));
+  switch (id) {
+    case kXR_read:     return fhKey(req.read.fhandle);
+    case kXR_write:    return fhKey(req.write.fhandle);
+    case kXR_close:    return fhKey(req.close.fhandle);
+    case kXR_sync:     return fhKey(req.sync.fhandle);
+    case kXR_truncate: if (dlen == 0) return fhKey(req.truncate.fhandle); break;
+    case kXR_stat:     if (dlen == 0) return fhKey(req.stat.fhandle); break;
+    case kXR_query:    if (dlen == 0) return fhKey(req.query.fhandle); break;
+    case kXR_readv:    if (data && len >= 4) return fhKey(data); break;
+    default: break;
+  }
+  std::string path;
+  if (data && len > 0)
+    path.assign(data, strnlen(data, static_cast<size_t>(len)));
+  const auto q = path.find('?');
+  if (q != std::string::npos)
+    path.resize(q);
+  if (path.empty())
+    path = "*";
+  return "path:" + path;
+}
+
+} // namespace
 
 void XrdHttp2PendingResponse::cleanupZstd()
 {
@@ -619,8 +734,265 @@ void XrdHttp2Session::synthesizeContentLength(XrdHttp2StreamState *st)
   st->headers.emplace_back("content-length", std::to_string(remain));
 }
 
+XrdXrootdTransit *XrdHttp2Session::transitFor(XrdHttpProtocol &prot, int worker)
+{
+  if (worker < 0 || worker >= kBridgeWorkers || !prot.Bridge)
+    return nullptr;
+  std::lock_guard<std::mutex> lock(sideMu_);
+  if (side_.empty())
+    side_.assign(kBridgeWorkers, nullptr);
+  if (!side_[worker])
+    side_[worker] = XrdXrootdTransit::Spawn(
+        static_cast<XrdXrootdTransit *>(prot.Bridge));
+  return side_[worker];
+}
+
+std::string XrdHttp2Session::resolveLane(const std::string &key) const
+{
+  const auto it = laneAlias_.find(key);
+  return it == laneAlias_.end() ? key : it->second;
+}
+
+void XrdHttp2Session::bindHandle(const std::string &laneKey, const char fh[4])
+{
+  if (laneKey.compare(0, 3, "fh:") == 0)
+    return;
+  laneAlias_[fhKey(fh)] = laneKey;
+}
+
+void XrdHttp2Session::parkActive(XrdHttpProtocol &prot, bool skipBump)
+{
+  if (activeStreamId_ < 0)
+    return;
+  ParkedReq &slot = parked_[activeStreamId_];
+  if (!slot.req)
+    slot.req.reset(new XrdHttpReq(&prot, XrdHttpProtocol::ReadRangeConfig));
+  prot.exchangeRequest(*slot.req);
+  slot.skipBump = skipBump;
+  slot.live = true;
+  activeStreamId_ = -1;
+}
+
+int XrdHttp2Session::parkIfSubmitted(XrdHttpProtocol &prot)
+{
+  if (prot.http2Defer_) {
+    if (activeStreamId_ >= 0)
+      prot.fileCacheAddWaiter(activeStreamId_);
+    parkActive(prot, true);
+    prot.http2Defer_ = false;
+    return 1;
+  }
+  if (prot.http2BridgeQueued_) {
+    parkActive(prot, false);
+    prot.http2BridgeQueued_ = false;
+    return 1;
+  }
+  return 0;
+}
+
+bool XrdHttp2Session::replay(XrdHttpProtocol &prot, XrdHttpReq &req,
+                             const BridgeDone &done)
+{
+  kXR_char sid[2] = {0, 0};
+  XrdXrootd::Bridge::Context ctx(prot.Link, sid, done.reqId);
+  for (const BridgeEvent &ev : done.events) {
+    if (ev.type == BridgeEvent::kDone) {
+      if (!req.Done(ctx))
+        return false;
+      continue;
+    }
+    if (ev.type == BridgeEvent::kError) {
+      if (!req.Error(ctx, ev.code, ev.text.c_str()))
+        return false;
+      continue;
+    }
+    if (ev.type == BridgeEvent::kRedir) {
+      if (!req.Redir(ctx, ev.code, ev.text.c_str()))
+        return false;
+      continue;
+    }
+    std::vector<struct iovec> iov(ev.parts.size());
+    for (size_t i = 0; i < ev.parts.size(); i++) {
+      iov[i].iov_base = const_cast<char *>(ev.parts[i].data());
+      iov[i].iov_len = ev.parts[i].size();
+    }
+    if (!req.Data(ctx, iov.empty() ? nullptr : iov.data(),
+                  static_cast<int>(iov.size()), ev.iovL, ev.final))
+      return false;
+  }
+  return true;
+}
+
+int XrdHttp2Session::drainCompletions(XrdHttpProtocol &prot)
+{
+  for (;;) {
+    BridgeDone done;
+    {
+      std::lock_guard<std::mutex> lock(doneMu_);
+      if (done_.empty())
+        return 0;
+      if (prot.CurrentReq.headerok || prot.CurrentReq.reqstate > 0 ||
+          prot.DoingLogin)
+        return 0;
+      done = std::move(done_.front());
+      done_.pop_front();
+      if (done.counted && bridgesInFlight_ > 0)
+        bridgesInFlight_--;
+    }
+
+    const auto pit = parked_.find(done.streamId);
+    if (pit == parked_.end() || !pit->second.live || !pit->second.req)
+      continue;
+
+    const bool skipBump = pit->second.skipBump;
+    prot.exchangeRequest(*pit->second.req);
+    pit->second.live = false;
+    activeStreamId_ = done.streamId;
+
+    // Take waiters before replay. A close completion erases the cache entry,
+    // and that erase would drop the streams parked behind this open or close.
+    std::vector<int> waiters;
+    if (done.reqId == kXR_open || done.reqId == kXR_close)
+      waiters = prot.fileCacheTakeOpenWaiters(prot.CurrentReq);
+
+    if (done.failed && done.events.empty()) {
+      prot.SendSimpleResp(500, nullptr, nullptr, "Bridge request failed.", 0,
+                          false);
+      prot.CurrentReq.reset();
+    } else {
+      replay(prot, prot.CurrentReq, done);
+    }
+    if (prot.CurrentReq.fopened && done.reqId == kXR_open)
+      bindHandle(done.laneKey, prot.CurrentReq.fhandle);
+
+    if (prot.http2BridgeQueued_) {
+      parkActive(prot, false);
+      prot.http2BridgeQueued_ = false;
+    } else if (prot.CurrentReq.headerok || prot.CurrentReq.reqstate > 0) {
+      const int rc = prot.resumeBridgedRequest(skipBump);
+      if (prot.http2Defer_) {
+        prot.fileCacheAddWaiter(done.streamId);
+        parkActive(prot, true);
+        prot.http2Defer_ = false;
+      } else if (prot.http2BridgeQueued_) {
+        parkActive(prot, false);
+        prot.http2BridgeQueued_ = false;
+      } else if (rc < 0 || (!prot.CurrentReq.headerok &&
+                            prot.CurrentReq.reqstate <= 0)) {
+        if (prot.CurrentReq.headerok || prot.CurrentReq.reqstate > 0)
+          prot.CurrentReq.reset();
+        activeStreamId_ = -1;
+        dropStream(done.streamId);
+      }
+    } else {
+      activeStreamId_ = -1;
+      dropStream(done.streamId);
+    }
+
+    if (!waiters.empty()) {
+      std::lock_guard<std::mutex> lock(doneMu_);
+      for (int w : waiters) {
+        BridgeDone wake;
+        wake.streamId = w;
+        wake.counted = false;
+        done_.push_back(std::move(wake));
+      }
+    }
+  }
+}
+
+bool XrdHttp2Session::submitBridge(XrdHttpProtocol &prot, char *xreq,
+                                   char *xdata, int xdataL)
+{
+  if (!xreq || activeStreamId_ < 0 || !prot.Bridge)
+    return false;
+
+  ClientRequest req;
+  memcpy(&req, xreq, sizeof(req));
+  const std::string key = resolveLane(laneKeyOf(req, xdata, xdataL));
+  const int32_t streamId = activeStreamId_;
+  const unsigned short reqId = ntohs(req.header.requestid);
+
+  std::vector<char> reqBytes(sizeof(ClientRequest));
+  memcpy(reqBytes.data(), xreq, sizeof(ClientRequest));
+  std::vector<char> data;
+  if (xdata && xdataL > 0)
+    data.assign(xdata, xdata + xdataL);
+
+  // Count the job before the worker can run it. submit() releases its
+  // lock before returning, and the worker can finish inside that call.
+  bridgesInFlight_++;
+  prot.http2BridgeQueued_ = true;
+
+  XrdHttp2Session *self = this;
+  const bool ok = lanes_.submit(key, [self, &prot, streamId, key, reqId,
+                                      reqBytes, data](int worker) mutable {
+    BridgeDone done;
+    done.streamId = streamId;
+    done.laneKey = key;
+    done.reqId = reqId;
+    XrdXrootdTransit *tr = self->transitFor(prot, worker);
+    if (!tr) {
+      done.failed = true;
+    } else {
+      std::vector<CapEv> evs;
+      BridgeCapture cap(&evs);
+      char *arg = data.empty() ? nullptr : data.data();
+      const int rc = tr->RunStaged(&cap, reqBytes.data(), arg,
+                                   static_cast<int>(data.size()));
+      for (CapEv &ev : evs) {
+        XrdHttp2Session::BridgeEvent out;
+        out.type = static_cast<XrdHttp2Session::BridgeEvent::Type>(ev.type);
+        out.parts = std::move(ev.parts);
+        out.iovL = ev.iovL;
+        out.final = ev.final;
+        out.code = ev.code;
+        out.text = std::move(ev.text);
+        done.events.push_back(std::move(out));
+      }
+      if (rc < 0 && done.events.empty())
+        done.failed = true;
+    }
+    {
+      std::lock_guard<std::mutex> lock(self->doneMu_);
+      self->done_.push_back(std::move(done));
+    }
+    XrdXrootdTransit *poker = tr;
+    if (!poker && prot.Bridge)
+      poker = static_cast<XrdXrootdTransit *>(prot.Bridge);
+    if (poker)
+      poker->PokeLink();
+  });
+  if (!ok) {
+    if (bridgesInFlight_ > 0)
+      bridgesInFlight_--;
+    prot.http2BridgeQueued_ = false;
+    return false;
+  }
+  return true;
+}
+
 void XrdHttp2Session::reset()
 {
+  lanes_.shutdown();
+  {
+    std::lock_guard<std::mutex> lock(doneMu_);
+    done_.clear();
+    bridgesInFlight_ = 0;
+  }
+  parked_.clear();
+  laneAlias_.clear();
+  {
+    std::lock_guard<std::mutex> lock(sideMu_);
+    for (XrdXrootdTransit *tr : side_) {
+      if (!tr)
+        continue;
+      tr->ReleaseSide();
+      delete tr;
+    }
+    side_.clear();
+  }
+
   pendingResponses_.clear();
   emptyPending_ = {};
   streams_.clear();
@@ -923,6 +1295,7 @@ int XrdHttp2Session::dispatchStream(int32_t stream_id, XrdHttpProtocol &prot,
     return -1;
 
   activeStreamId_ = stream_id;
+  prot.CurrentReq.http2StreamId = stream_id;
   st->dispatched = true;
   st->queued = false;
   if (injectPendingBody(prot) < 0)
@@ -932,12 +1305,22 @@ int XrdHttp2Session::dispatchStream(int32_t stream_id, XrdHttpProtocol &prot,
         << st->method << " " << st->path);
 
   int rc = prot.processParsedRequest(lp);
+  if (parkIfSubmitted(prot)) {
+    if (flushSend(prot) < 0)
+      return -1;
+    return 0;
+  }
   // Cache-hit GETs now issue kXR_stat before reuse. fopened is already true
   // while that verify is in flight, so do not skip ahead on reqstate 0.
   if (rc == 0 && lp && prot.CurrentReq.fopened &&
       prot.CurrentReq.reqstate > 0) {
     prot.CurrentReq.reqstate++;
     rc = prot.processParsedRequest(nullptr);
+    if (parkIfSubmitted(prot)) {
+      if (flushSend(prot) < 0)
+        return -1;
+      return 0;
+    }
   }
   if (flushSend(prot) < 0)
     return -1;
@@ -978,8 +1361,17 @@ bool XrdHttp2Session::appInFlight(XrdHttpProtocol &prot) const
          prot.DoingLogin;
 }
 
+int32_t XrdHttp2Session::useStream(int fallback)
+{
+  if (activeStreamId_ < 0 && fallback >= 0)
+    activeStreamId_ = fallback;
+  return activeStreamId_;
+}
+
 int XrdHttp2Session::drive(XrdHttpProtocol &prot, XrdLink *lp)
 {
+  if (drainCompletions(prot) < 0)
+    return -1;
   if (ensureSession(prot) < 0)
     return -1;
   if (flushSend(prot) < 0)
@@ -989,11 +1381,17 @@ int XrdHttp2Session::drive(XrdHttpProtocol &prot, XrdLink *lp)
     return -1;
   if (injectPendingBody(prot) < 0)
     return -1;
+  if (drainCompletions(prot) < 0)
+    return -1;
 
   if (appInFlight(prot)) {
     if (!prot.CurrentReq.headerok && !prot.DoingLogin)
       return 1;
     const int rc = prot.processParsedRequest(lp);
+    if (parkIfSubmitted(prot)) {
+      if (flushSend(prot) < 0)
+        return -1;
+    } else {
     if (rc < 0)
       return rc;
     if (flushSend(prot) < 0)
@@ -1006,29 +1404,34 @@ int XrdHttp2Session::drive(XrdHttpProtocol &prot, XrdLink *lp)
       if (appInFlight(prot))
         return 0;
     }
-    if (rc == 1 && !appInFlight(prot) && ready_queue_.empty() &&
-        prot.fileCacheCloseIfOpen())
-      return 0;
     return rc;
+    }
   }
 
   finishActiveIfIdle(prot);
 
-  if (!ready_queue_.empty()) {
+  while (!ready_queue_.empty() && !appInFlight(prot)) {
     const int rc = dispatchNext(prot, lp);
+    if (rc < 0)
+      return rc;
     if (flushSend(prot) < 0)
       return -1;
-    return rc;
+    if (appInFlight(prot))
+      return rc == 0 ? 0 : rc;
   }
 
   if (flushSend(prot) < 0)
     return -1;
 
-  // Close a cached GET/PATCH handle before parking the connection. A later
-  // connection's writer is denied while this reader (or writer) is held, and
-  // Recycle waits on SSL_shutdown before FTab can drop it.
-  if (prot.fileCacheCloseIfOpen())
-    return 0;
+  if (bridgesInFlight_ > 0) {
+    std::lock_guard<std::mutex> lock(doneMu_);
+    if (!done_.empty())
+      return 0;
+    // Keep the socket armed. A client still sends WINDOW_UPDATE and new
+    // streams while a file operation runs. The worker schedules this link
+    // when the operation finishes, so the response is not stuck on a poll
+    // that will never see more client bytes.
+  }
 
   // Wait for the next poll event. Returning 0 here busy-loops the scheduler
   // on keep-alive connections that have no Bridge work left.

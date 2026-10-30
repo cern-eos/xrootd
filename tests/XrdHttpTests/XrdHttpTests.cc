@@ -1934,4 +1934,151 @@ TEST(XrdHttpTests, parsockTpcTransportHint) {
   EXPECT_FALSE(opt.parsock);
   EXPECT_EQ("https", url.scheme);
 }
+
+#include "XrdHttp/wire/XrdHttp2Lanes.hh"
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+
+TEST(XrdHttpTests, http2LanesDifferentFilesOverlap) {
+  XrdHttp2Lanes lanes(2);
+  std::mutex mu;
+  std::condition_variable cv;
+  int inside = 0;
+  int peak = 0;
+  bool overlapped = false;
+  std::atomic<int> done{0};
+
+  auto job = [&](int) {
+    std::unique_lock<std::mutex> lk(mu);
+    inside++;
+    if (inside > peak)
+      peak = inside;
+    if (inside >= 2)
+      overlapped = true;
+    cv.notify_all();
+    cv.wait_for(lk, std::chrono::seconds(2), [&] { return overlapped; });
+    inside--;
+    done.fetch_add(1);
+  };
+
+  ASSERT_TRUE(lanes.submit("file-a", job));
+  ASSERT_TRUE(lanes.submit("file-b", job));
+  for (int i = 0; i < 50 && done.load() < 2; i++)
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  lanes.shutdown();
+  EXPECT_EQ(2, done.load());
+  EXPECT_EQ(2, peak);
+}
+
+TEST(XrdHttpTests, http2LanesSameFileStaysOrdered) {
+  XrdHttp2Lanes lanes(4);
+  std::mutex mu;
+  std::vector<int> order;
+  std::atomic<int> started{0};
+  std::atomic<bool> release{false};
+
+  ASSERT_TRUE(lanes.submit("same", [&](int) {
+    started.fetch_add(1);
+    while (!release.load())
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    std::lock_guard<std::mutex> lk(mu);
+    order.push_back(1);
+  }));
+  for (int i = 0; i < 100 && started.load() == 0; i++)
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  ASSERT_EQ(1, started.load());
+
+  ASSERT_TRUE(lanes.submit("same", [&](int) {
+    std::lock_guard<std::mutex> lk(mu);
+    order.push_back(2);
+  }));
+  ASSERT_TRUE(lanes.submit("same", [&](int) {
+    std::lock_guard<std::mutex> lk(mu);
+    order.push_back(3);
+  }));
+  release.store(true);
+  for (int i = 0; i < 200; i++) {
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      if (order.size() == 3)
+        break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  lanes.shutdown();
+  ASSERT_EQ((std::vector<int>{1, 2, 3}), order);
+}
+
+TEST(XrdHttpTests, http2LanesBusyFileDoesNotBlockAnother) {
+  XrdHttp2Lanes lanes(2);
+  std::atomic<bool> hold{true};
+  std::atomic<int> phase{0};
+
+  ASSERT_TRUE(lanes.submit("busy", [&](int) {
+    phase.store(1);
+    while (hold.load())
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }));
+  for (int i = 0; i < 100 && phase.load() == 0; i++)
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  ASSERT_EQ(1, phase.load());
+
+  ASSERT_TRUE(lanes.submit("busy", [&](int) { phase.store(4); }));
+  ASSERT_TRUE(lanes.submit("other", [&](int) { phase.store(2); }));
+  for (int i = 0; i < 100 && phase.load() != 2; i++)
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  EXPECT_EQ(2, phase.load());
+  hold.store(false);
+  for (int i = 0; i < 200 && phase.load() != 4; i++)
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  lanes.shutdown();
+  EXPECT_EQ(4, phase.load());
+}
+
+TEST(XrdHttpTests, http2LanesRespectWorkerCap) {
+  XrdHttp2Lanes lanes(2);
+  std::mutex mu;
+  int inside = 0;
+  int peak = 0;
+  std::atomic<int> done{0};
+
+  for (int n = 0; n < 8; n++) {
+    ASSERT_TRUE(lanes.submit("k" + std::to_string(n), [&](int) {
+      {
+        std::lock_guard<std::mutex> lk(mu);
+        inside++;
+        if (inside > peak)
+          peak = inside;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(30));
+      {
+        std::lock_guard<std::mutex> lk(mu);
+        inside--;
+      }
+      done.fetch_add(1);
+    }));
+  }
+  for (int i = 0; i < 200 && done.load() < 8; i++)
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  lanes.shutdown();
+  EXPECT_EQ(8, done.load());
+  EXPECT_EQ(2, peak);
+}
+
+TEST(XrdHttpTests, http2LanesRestartAfterShutdown) {
+  XrdHttp2Lanes lanes(2);
+  std::atomic<int> n{0};
+  ASSERT_TRUE(lanes.submit("a", [&](int) { n.fetch_add(1); }));
+  for (int i = 0; i < 100 && n.load() < 1; i++)
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  lanes.shutdown();
+  EXPECT_EQ(1, n.load());
+  ASSERT_TRUE(lanes.submit("b", [&](int) { n.fetch_add(1); }));
+  for (int i = 0; i < 100 && n.load() < 2; i++)
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  lanes.shutdown();
+  EXPECT_EQ(2, n.load());
+}
 #endif

@@ -50,8 +50,9 @@
 #include "Xrd/XrdLink.hh"
 #include "XrdXrootd/XrdXrootdBridge.hh"
 #include "Xrd/XrdBuffer.hh"
-#include <algorithm> 
-#include <functional> 
+#include <algorithm>
+#include <functional>
+#include <utility>
 #include <cctype>
 #include <cstdint>
 #include <ctime>
@@ -610,7 +611,7 @@ int XrdHttpReq::runPropPatchOps()
     xrdreq.chmod.mode = htons(unixToKxrMode(static_cast<mode_t>(proppatchUnixMode)));
     l = resourceplusopaque.length() + 1;
     xrdreq.chmod.dlen = htonl(l);
-    if (!prot->Bridge->Run((char *) &xrdreq,
+    if (!prot->RunBridge((char *) &xrdreq,
                            (char *) resourceplusopaque.c_str(), l)) {
       prot->SendSimpleResp(500, NULL, NULL, (char *) "Could not run chmod request.", 0, false);
       return -1;
@@ -631,7 +632,7 @@ int XrdHttpReq::runPropPatchOps()
         proppatchHaveGid ? proppatchGid : (gid_t)-1));
     l = resourceplusopaque.length() + 1;
     xrdreq.chown.dlen = htonl(l);
-    if (!prot->Bridge->Run((char *) &xrdreq,
+    if (!prot->RunBridge((char *) &xrdreq,
                            (char *) resourceplusopaque.c_str(), l)) {
       prot->SendSimpleResp(500, NULL, NULL, (char *) "Could not run chown request.", 0, false);
       return -1;
@@ -649,7 +650,7 @@ int XrdHttpReq::runPropPatchOps()
     memcpy(xrdreq.utimes.times + 8, &ms, 8);
     l = resourceplusopaque.length() + 1;
     xrdreq.utimes.dlen = htonl(l);
-    if (!prot->Bridge->Run((char *) &xrdreq,
+    if (!prot->RunBridge((char *) &xrdreq,
                            (char *) resourceplusopaque.c_str(), l)) {
       prot->SendSimpleResp(500, NULL, NULL, (char *) "Could not run utimes request.", 0, false);
       return -1;
@@ -722,7 +723,7 @@ int XrdHttpReq::runSymlinkReq()
   xrdreq.symlink.arg1len = htons(static_cast<kXR_int16>(target.length()));
   xrdreq.symlink.dlen = htonl(l);
 
-  if (!prot->Bridge->Run((char *) &xrdreq, (char *) link_args.c_str(), l)) {
+  if (!prot->RunBridge((char *) &xrdreq, (char *) link_args.c_str(), l)) {
     prot->SendSimpleResp(500, NULL, NULL, (char *) "Could not run symlink request.", 0, false);
     return -1;
   }
@@ -739,7 +740,7 @@ int XrdHttpReq::runReadlinkReq()
   xrdreq.readlink.requestid = htons(kXR_readlink);
   int l = resourceplusopaque.length() + 1;
   xrdreq.readlink.dlen = htonl(l);
-  if (!prot->Bridge->Run((char *) &xrdreq,
+  if (!prot->RunBridge((char *) &xrdreq,
                          (char *) resourceplusopaque.c_str(), l)) {
     prot->SendSimpleResp(500, NULL, NULL, (char *) "Could not run readlink request.", 0, false);
     return -1;
@@ -801,7 +802,7 @@ int XrdHttpReq::runMknodReq()
   memcpy(xrdreq.mknod.rdev, &nr, 8);
   int l = resourceplusopaque.length() + 1;
   xrdreq.mknod.dlen = htonl(l);
-  if (!prot->Bridge->Run((char *)&xrdreq, (char *)resourceplusopaque.c_str(), l)) {
+  if (!prot->RunBridge((char *)&xrdreq, (char *)resourceplusopaque.c_str(), l)) {
     prot->SendSimpleResp(500, NULL, NULL, (char *)"Could not run mknod request.", 0, false);
     return -1;
   }
@@ -842,7 +843,7 @@ int XrdHttpReq::runFattrReq(int subcode, const std::string &name,
   xrdreq.fattr.subcode = static_cast<kXR_char>(subcode);
   xrdreq.fattr.numattr = (subcode == kXR_fattrList) ? 0 : 1;
   xrdreq.fattr.dlen = htonl(static_cast<kXR_int32>(buf.size()));
-  if (!prot->Bridge->Run((char *)&xrdreq, buf.data(),
+  if (!prot->RunBridge((char *)&xrdreq, buf.data(),
                          static_cast<int>(buf.size()))) {
     prot->SendSimpleResp(500, NULL, NULL, (char *)"Could not run fattr request.", 0, false);
     return -1;
@@ -869,7 +870,7 @@ int XrdHttpReq::runLockReq(bool unlocking)
     xrdreq.open.options = htons(kXR_open_updt | kXR_retstat | kXR_force);
     int l = resourceplusopaque.length() + 1;
     xrdreq.open.dlen = htonl(l);
-    if (!prot->Bridge->Run((char *)&xrdreq, (char *)resourceplusopaque.c_str(), l)) {
+    if (!prot->RunBridge((char *)&xrdreq, (char *)resourceplusopaque.c_str(), l)) {
       prot->SendSimpleResp(500, NULL, NULL, (char *)"Could not open for lock.", 0, false);
       return -1;
     }
@@ -914,7 +915,7 @@ int XrdHttpReq::runLockReq(bool unlocking)
     if (unlocking) op = LOCK_UN;
     xrdreq.fcntlLock.cmd = htons(static_cast<kXR_unt16>(kXR_flockCmd | op));
     xrdreq.fcntlLock.dlen = htonl(0);
-    if (!prot->Bridge->Run((char *)&xrdreq, 0, 0)) {
+    if (!prot->RunBridge((char *)&xrdreq, 0, 0)) {
       prot->SendSimpleResp(500, NULL, NULL, (char *)"Could not run flock.", 0, false);
       return -1;
     }
@@ -959,7 +960,7 @@ int XrdHttpReq::runLockReq(bool unlocking)
   memcpy(payload + 4, &start, 8);
   memcpy(payload + 12, &len, 8);
   xrdreq.fcntlLock.dlen = htonl(20);
-  if (!prot->Bridge->Run((char *)&xrdreq, payload, 20)) {
+  if (!prot->RunBridge((char *)&xrdreq, payload, 20)) {
     prot->SendSimpleResp(500, NULL, NULL, (char *)"Could not run fcntlLock.", 0, false);
     return -1;
   }
@@ -970,6 +971,108 @@ XrdHttpReq::~XrdHttpReq() {
   //if (xmlbody) xmlFreeDoc(xmlbody);
 
   reset();
+}
+
+void XrdHttpReq::exchange(XrdHttpReq &other)
+{
+  if (this == &other)
+    return;
+#define XRDHTTP_SWAP(member) std::swap(member, other.member)
+  XRDHTTP_SWAP(httpStatusCode);
+  XRDHTTP_SWAP(initialStatusCode);
+  XRDHTTP_SWAP(httpErrorCode);
+  XRDHTTP_SWAP(httpErrorBody);
+  XRDHTTP_SWAP(m_user_agent);
+  XRDHTTP_SWAP(m_transfer_encoding_chunked);
+  XRDHTTP_SWAP(m_current_chunk_offset);
+  XRDHTTP_SWAP(m_current_chunk_size);
+  XRDHTTP_SWAP(m_trailer_headers);
+  XRDHTTP_SWAP(m_status_trailer);
+  XRDHTTP_SWAP(request);
+  XRDHTTP_SWAP(requestverb);
+  XRDHTTP_SWAP(allheaders);
+  XRDHTTP_SWAP(resource);
+  XRDHTTP_SWAP(opaque);
+  XRDHTTP_SWAP(resourceplusopaque);
+  XRDHTTP_SWAP(headerok);
+  XRDHTTP_SWAP(readRangeHandler);
+  XRDHTTP_SWAP(readClosing);
+  XRDHTTP_SWAP(closeAfterError);
+  XRDHTTP_SWAP(keepalive);
+  XRDHTTP_SWAP(length);
+  XRDHTTP_SWAP(length_seen);
+  XRDHTTP_SWAP(depth);
+  XRDHTTP_SWAP(sendcontinue);
+  XRDHTTP_SWAP(host);
+  XRDHTTP_SWAP(destination);
+  XRDHTTP_SWAP(m_want_digest);
+  XRDHTTP_SWAP(m_req_cksum);
+  XRDHTTP_SWAP(m_resource_with_digest);
+  XRDHTTP_SWAP(m_digest_header);
+  XRDHTTP_SWAP(hdr2cgistr);
+  XRDHTTP_SWAP(m_appended_hdr2cgistr);
+  XRDHTTP_SWAP(m_appended_asize);
+  XRDHTTP_SWAP(ralist);
+  XRDHTTP_SWAP(rwOpDone);
+  XRDHTTP_SWAP(rwOpPartialDone);
+  XRDHTTP_SWAP(xrdreq);
+  XRDHTTP_SWAP(xrdresp);
+  XRDHTTP_SWAP(xrderrcode);
+  XRDHTTP_SWAP(etext);
+  XRDHTTP_SWAP(redirdest);
+  XRDHTTP_SWAP(iovP);
+  XRDHTTP_SWAP(iovN);
+  XRDHTTP_SWAP(iovL);
+  XRDHTTP_SWAP(final);
+  XRDHTTP_SWAP(etagval);
+  XRDHTTP_SWAP(filesize);
+  XRDHTTP_SWAP(fileflags);
+  XRDHTTP_SWAP(filemodtime);
+  XRDHTTP_SWAP(filectime);
+  XRDHTTP_SWAP(filectime_ns);
+  char fh[4];
+  memcpy(fh, fhandle, 4);
+  memcpy(fhandle, other.fhandle, 4);
+  memcpy(other.fhandle, fh, 4);
+  XRDHTTP_SWAP(fopened);
+  XRDHTTP_SWAP(stringresp);
+  XRDHTTP_SWAP(m_propfind_stream);
+  XRDHTTP_SWAP(m_propfind_stream_started);
+  XRDHTTP_SWAP(reqstate);
+  XRDHTTP_SWAP(http2StreamId);
+  XRDHTTP_SWAP(writtenbytes);
+  XRDHTTP_SWAP(patchOffset);
+  XRDHTTP_SWAP(patchLength);
+  XRDHTTP_SWAP(patchComplete);
+  XRDHTTP_SWAP(if_match);
+  XRDHTTP_SWAP(if_none_match);
+  XRDHTTP_SWAP(if_modified_since);
+  XRDHTTP_SWAP(if_unmodified_since);
+  XRDHTTP_SWAP(m_precond_ok);
+  XRDHTTP_SWAP(m_poststat_pending);
+  XRDHTTP_SWAP(proppatchItems);
+  XRDHTTP_SWAP(proppatchUnixMode);
+  XRDHTTP_SWAP(proppatchHaveUid);
+  XRDHTTP_SWAP(proppatchHaveGid);
+  XRDHTTP_SWAP(proppatchUid);
+  XRDHTTP_SWAP(proppatchGid);
+  XRDHTTP_SWAP(proppatchHaveAtime);
+  XRDHTTP_SWAP(proppatchHaveMtime);
+  XRDHTTP_SWAP(proppatchAtime);
+  XRDHTTP_SWAP(proppatchMtime);
+  XRDHTTP_SWAP(proppatchDone);
+  XRDHTTP_SWAP(proppatchBodyRead);
+  XRDHTTP_SWAP(proppatchXattrName);
+  XRDHTTP_SWAP(proppatchXattrValue);
+  XRDHTTP_SWAP(proppatchXattrDel);
+  XRDHTTP_SWAP(fattrSubcode);
+  XRDHTTP_SWAP(mScitag);
+  XRDHTTP_SWAP(m_origin);
+  XRDHTTP_SWAP(startTime);
+  XRDHTTP_SWAP(m_repr_digest);
+  XRDHTTP_SWAP(m_want_repr_digest);
+  XRDHTTP_SWAP(monState);
+#undef XRDHTTP_SWAP
 }
 
 int XrdHttpReq::parseLine(char *line, int len) {
@@ -1951,7 +2054,7 @@ int XrdHttpReq::processWritePayload()
       xrdreq.write.dlen = htonl(bytes_to_write);
 
       TRACEI(REQ, "XrdHTTP " << verb << ": Writing chunk of size " << bytes_to_write << " starting with '" << *(prot->myBuffStart) << "'" << " with " << chunk_bytes_remaining << " bytes remaining in the chunk");
-      if (!prot->Bridge->Run((char *) &xrdreq, prot->myBuffStart, bytes_to_write)) {
+      if (!prot->RunBridge((char *) &xrdreq, prot->myBuffStart, bytes_to_write)) {
         generateWebdavErrMsg();
         return sendFooterError("Could not run write request on the bridge");
       }
@@ -1974,7 +2077,7 @@ int XrdHttpReq::processWritePayload()
     xrdreq.write.dlen = htonl(bytes_to_read);
 
     TRACEI(REQ, "Writing " << bytes_to_read << " at " << writeFileOffset());
-    if (!prot->Bridge->Run((char *) &xrdreq, prot->myBuffStart, bytes_to_read)) {
+    if (!prot->RunBridge((char *) &xrdreq, prot->myBuffStart, bytes_to_read)) {
       generateWebdavErrMsg();
       return sendFooterError("Could not run write request on the bridge");
     }
@@ -2013,7 +2116,7 @@ int XrdHttpReq::processWritePayload()
     memcpy(xrdreq.close.fhandle, fhandle, 4);
 
 
-    if (!prot->Bridge->Run((char *) &xrdreq, 0, 0)) {
+    if (!prot->RunBridge((char *) &xrdreq, 0, 0)) {
       generateWebdavErrMsg();
       return sendFooterError("Could not run close request on the bridge");
     }
@@ -2228,7 +2331,10 @@ int XrdHttpReq::ProcessHTTPReq() {
             return 0;
           } else if (prot->fileCacheCloseIfOpen()) {
             return 0;
+          } else if (prot->deferSamePathOpen(*this)) {
+            return 0;
           } else {
+          prot->fileCacheMarkOpen(*this);
           memset(&xrdreq, 0, sizeof (ClientRequest));
           xrdreq.open.requestid = htons(kXR_open);
           l = resourceplusopaque.length() + 1;
@@ -2238,7 +2344,8 @@ int XrdHttpReq::ProcessHTTPReq() {
           // GETs of the same path on this connection (open-once cache).
           xrdreq.open.options = htons(kXR_retstat | kXR_open_read);
 
-          if (!prot->Bridge->Run((char *) &xrdreq, (char *) resourceplusopaque.c_str(), l)) {
+          if (!prot->RunBridge((char *) &xrdreq, (char *) resourceplusopaque.c_str(), l)) {
+            prot->fileCacheClearOpen(*this);
             prot->SendSimpleResp(404, NULL, NULL, (char *) "Could not run request.", 0, false);
             return -1;
           }
@@ -2274,7 +2381,7 @@ int XrdHttpReq::ProcessHTTPReq() {
             xrdreq.close.requestid = htons(kXR_close);
             memcpy(xrdreq.close.fhandle, fhandle, 4);
 
-            if (!prot->Bridge->Run((char *) &xrdreq, 0, 0)) {
+            if (!prot->RunBridge((char *) &xrdreq, 0, 0)) {
               generateWebdavErrMsg();
               return sendFooterError("Could not run close request on the bridge");
             }
@@ -2315,7 +2422,7 @@ int XrdHttpReq::ProcessHTTPReq() {
             l = res.length() + 1;
             xrdreq.dirlist.dlen = htonl(l);
 
-            if (!prot->Bridge->Run((char *) &xrdreq, (char *) res.c_str(), l)) {
+            if (!prot->RunBridge((char *) &xrdreq, (char *) res.c_str(), l)) {
               generateWebdavErrMsg();
               prot->SendSimpleResp(httpStatusCode, NULL, NULL, httpErrorBody.c_str(), httpErrorBody.length(), false);
               sendFooterError("Could not run listing request on the bridge");
@@ -2378,7 +2485,7 @@ int XrdHttpReq::ProcessHTTPReq() {
             xrdreq.close.requestid = htons(kXR_close);
             memcpy(xrdreq.close.fhandle, fhandle, 4);
 
-            if (!prot->Bridge->Run((char *) &xrdreq, 0, 0)) {
+            if (!prot->RunBridge((char *) &xrdreq, 0, 0)) {
               TRACEI(REQ, " Failed to run close request on the bridge.");
               // Note: we have already completed the request and sent the data to the client.
               // Hence, there's no need to send an error.  However, since the bridge is potentially
@@ -2447,7 +2554,7 @@ int XrdHttpReq::ProcessHTTPReq() {
               return sendFooterError(ss.str());
             }
             
-            if (!prot->Bridge->Run((char *) &xrdreq, 0, 0)) {
+            if (!prot->RunBridge((char *) &xrdreq, 0, 0)) {
               generateWebdavErrMsg();
               return sendFooterError("Could not run read request on the bridge");
             }
@@ -2456,7 +2563,7 @@ int XrdHttpReq::ProcessHTTPReq() {
 
             length = ReqReadV(readChunkList);
 
-            if (!prot->Bridge->Run((char *) &xrdreq, (char *) &ralist[0], length)) {
+            if (!prot->RunBridge((char *) &xrdreq, (char *) &ralist[0], length)) {
               generateWebdavErrMsg();
               return sendFooterError("Could not run ReadV request on the bridge");
             }
@@ -2495,7 +2602,7 @@ int XrdHttpReq::ProcessHTTPReq() {
           xrdreq.stat.requestid = htons(kXR_stat);
           l = resourceplusopaque.length() + 1;
           xrdreq.stat.dlen = htonl(l);
-          if (!prot->Bridge->Run((char *) &xrdreq,
+          if (!prot->RunBridge((char *) &xrdreq,
                                  (char *) resourceplusopaque.c_str(), l)) {
             prot->SendSimpleResp(404, NULL, NULL,
                                  (char *) "Could not run request.", 0, false);
@@ -2526,7 +2633,7 @@ int XrdHttpReq::ProcessHTTPReq() {
         else
           xrdreq.open.options = htons(kXR_mkpath | kXR_open_wrto | kXR_new | kXR_retstat);
 
-        if (!prot->Bridge->Run((char *) &xrdreq, (char *) resourceplusopaque.c_str(), l)) {
+        if (!prot->RunBridge((char *) &xrdreq, (char *) resourceplusopaque.c_str(), l)) {
           prot->SendSimpleResp(404, NULL, NULL, (char *) "Could not run request.", 0, keepalive);
           return -1;
         }
@@ -2573,7 +2680,7 @@ int XrdHttpReq::ProcessHTTPReq() {
           l = resourceplusopaque.length() + 1;
           xrdreq.stat.dlen = htonl(l);
 
-          if (!prot->Bridge->Run((char *) &xrdreq, (char *) resourceplusopaque.c_str(), l)) {
+          if (!prot->RunBridge((char *) &xrdreq, (char *) resourceplusopaque.c_str(), l)) {
             prot->SendSimpleResp(501, NULL, NULL, (char *) "Could not run request.", 0, false);
             return -1;
           }
@@ -2593,7 +2700,7 @@ int XrdHttpReq::ProcessHTTPReq() {
             l = s.length() + 1;
             xrdreq.rmdir.dlen = htonl(l);
 
-            if (!prot->Bridge->Run((char *) &xrdreq, (char *) s.c_str(), l)) {
+            if (!prot->RunBridge((char *) &xrdreq, (char *) s.c_str(), l)) {
               prot->SendSimpleResp(501, NULL, NULL, (char *) "Could not run rmdir request.", 0, false);
               return -1;
             }
@@ -2607,7 +2714,7 @@ int XrdHttpReq::ProcessHTTPReq() {
             l = s.length() + 1;
             xrdreq.rm.dlen = htonl(l);
 
-            if (!prot->Bridge->Run((char *) &xrdreq, (char *) s.c_str(), l)) {
+            if (!prot->RunBridge((char *) &xrdreq, (char *) s.c_str(), l)) {
               prot->SendSimpleResp(501, NULL, NULL, (char *) "Could not run rm request.", 0, false);
               return -1;
             }
@@ -2651,7 +2758,7 @@ int XrdHttpReq::ProcessHTTPReq() {
           // kXR_open_updt maps to SFS_O_RDWR: in-place writes, no truncate.
           xrdreq.open.options = htons(kXR_open_updt | kXR_retstat);
 
-          if (!prot->Bridge->Run((char *) &xrdreq,
+          if (!prot->RunBridge((char *) &xrdreq,
                                  (char *) resourceplusopaque.c_str(), l)) {
             prot->SendSimpleResp(404, NULL, NULL,
                                  (char *) "Could not run request.", 0, keepalive);
@@ -2718,7 +2825,7 @@ int XrdHttpReq::ProcessHTTPReq() {
           l = resourceplusopaque.length() + 1;
           xrdreq.stat.dlen = htonl(l);
 
-          if (!prot->Bridge->Run((char *) &xrdreq, (char *) resourceplusopaque.c_str(), l)) {
+          if (!prot->RunBridge((char *) &xrdreq, (char *) resourceplusopaque.c_str(), l)) {
             prot->SendSimpleResp(501, NULL, NULL, (char *) "Could not run request.", 0, false);
             return -1;
           }
@@ -2750,7 +2857,7 @@ int XrdHttpReq::ProcessHTTPReq() {
           l = s.length() + 1;
           xrdreq.dirlist.dlen = htonl(l);
 
-          if (!prot->Bridge->Run((char *) &xrdreq, (char *) s.c_str(), l)) {
+          if (!prot->RunBridge((char *) &xrdreq, (char *) s.c_str(), l)) {
             prot->SendSimpleResp(501, NULL, NULL, (char *) "Could not run request.", 0, false);
             return -1;
           }
@@ -2799,7 +2906,7 @@ int XrdHttpReq::ProcessHTTPReq() {
       l = s.length() + 1;
       xrdreq.mkdir.dlen = htonl(l);
 
-      if (!prot->Bridge->Run((char *) &xrdreq, (char *) s.c_str(), l)) {
+      if (!prot->RunBridge((char *) &xrdreq, (char *) s.c_str(), l)) {
         prot->SendSimpleResp(501, NULL, NULL, (char *) "Could not run request.", 0, false);
         return -1;
       }
@@ -2848,7 +2955,7 @@ int XrdHttpReq::ProcessHTTPReq() {
       xrdreq.mv.arg1len = htons(resourceplusopaque.length());
       xrdreq.mv.dlen = htonl(l);
       
-      if (!prot->Bridge->Run((char *) &xrdreq, (char *) mv_args.c_str(), l)) {
+      if (!prot->RunBridge((char *) &xrdreq, (char *) mv_args.c_str(), l)) {
         prot->SendSimpleResp(500, NULL, NULL, (char *) "Could not run request.", 0, false);
         return -1;
       }
@@ -2972,7 +3079,7 @@ int XrdHttpReq::ProcessHTTPReq() {
       xrdreq.link.arg1len = htons(resourceplusopaque.length());
       xrdreq.link.dlen = htonl(l);
 
-      if (!prot->Bridge->Run((char *) &xrdreq, (char *) link_args.c_str(), l)) {
+      if (!prot->RunBridge((char *) &xrdreq, (char *) link_args.c_str(), l)) {
         prot->SendSimpleResp(500, NULL, NULL, (char *) "Could not run request.", 0, false);
         return -1;
       }
@@ -4475,6 +4582,7 @@ void XrdHttpReq::reset() {
 
   // Reset the state of the request's digest request.
   m_want_digest.clear();
+  http2StreamId = -1;
   m_digest_header.clear();
   m_req_cksum = nullptr;
 

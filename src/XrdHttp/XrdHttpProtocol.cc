@@ -483,6 +483,13 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
 {
   XrdSysMutexHelper xGuard(&procMutex_);
   int rc = 0;
+  syncBridgeRan_ = false;
+
+  // A second DoIt can still be queued when the peer's close_notify makes us
+  // drop the connection. By the time it runs, this object may already belong
+  // to a new link. Leave that DoIt disabled instead of closing again.
+  if (closing_ || (lp && Link != lp))
+    return -EINPROGRESS;
 
   TRACEI(DEBUG, " Process. lp:"<<(void *)lp<<" reqstate: "<<CurrentReq.reqstate);
 
@@ -2096,10 +2103,13 @@ void XrdHttpProtocol::detectWireMode()
 int XrdHttpProtocol::processHttp2(XrdLink *lp)
 {
   const int rc = http2Session_.drive(*this, lp);
-  if (rc < 0) {
+  if (rc < 0 && rc != -EINPROGRESS) {
+    closing_ = true;
     CurrentReq.reset();
     http2Session_.reset();
   }
+  if (rc == 0 && !syncBridgeRan_)
+    return 1;
   return rc;
 }
 
@@ -2693,6 +2703,7 @@ void XrdHttpProtocol::Reset() {
 
   DoingLogin = false;
   DoneSetInfo = false;
+  closing_ = false;
 
 #ifdef HAVE_HTTP_KRB5
   krb5Authed = false;
@@ -2730,7 +2741,7 @@ void XrdHttpProtocol::Reset() {
   ssl = 0;
   sbio = 0;
 
-  fileCacheForget();
+  fileCacheForgetAll();
   // The protocol object is pooled. A lock hold from the previous connection
   // otherwise blocks the next one from closing its own read, and fcntl is
   // issued with a handle that is no longer open.
@@ -2743,30 +2754,44 @@ void XrdHttpProtocol::Reset() {
 
 const char *XrdHttpProtocol::fileCacheKey(const XrdHttpReq &req) const
 {
-  return req.resourceplusopaque.c_str();
+  const char *key = req.resourceplusopaque.c_str();
+  return key ? key : "";
+}
+
+XrdHttpProtocol::FileOpenCache *
+XrdHttpProtocol::fileCacheFind(const std::string &key)
+{
+  const auto it = fileCaches_.find(key);
+  return it == fileCaches_.end() ? nullptr : &it->second;
+}
+
+const XrdHttpProtocol::FileOpenCache *
+XrdHttpProtocol::fileCacheFind(const std::string &key) const
+{
+  const auto it = fileCaches_.find(key);
+  return it == fileCaches_.end() ? nullptr : &it->second;
 }
 
 bool XrdHttpProtocol::fileCacheApply(XrdHttpReq &req, bool needWrite)
 {
-  if (!fileCache_.valid || fileCache_.switching)
+  FileOpenCache *ent = fileCacheFind(fileCacheKey(req));
+  if (!ent || !ent->valid || ent->switching)
     return false;
-  if (fileCache_.key != fileCacheKey(req))
+  if (ent->fileflags & kXR_isDir)
     return false;
-  if (fileCache_.fileflags & kXR_isDir)
-    return false;
-  if (needWrite && !fileCache_.writable)
+  if (needWrite && !ent->writable)
     return false;
 
-  memcpy(req.fhandle, fileCache_.fhandle, 4);
+  memcpy(req.fhandle, ent->fhandle, 4);
   req.fopened = true;
-  req.filesize = fileCache_.filesize;
-  req.etagval = fileCache_.etagval;
-  req.fileflags = fileCache_.fileflags;
-  req.filemodtime = fileCache_.filemodtime;
-  req.filectime = fileCache_.filectime;
-  req.filectime_ns = fileCache_.filectime_ns;
-  TRACE(REQ, "Reusing cached " << (fileCache_.writable ? "write " : "")
-        << "open " << fileCache_.key.c_str());
+  req.filesize = ent->filesize;
+  req.etagval = ent->etagval;
+  req.fileflags = ent->fileflags;
+  req.filemodtime = ent->filemodtime;
+  req.filectime = ent->filectime;
+  req.filectime_ns = ent->filectime_ns;
+  TRACE(REQ, "Reusing cached " << (ent->writable ? "write " : "")
+        << "open " << ent->key.c_str());
   return true;
 }
 
@@ -2775,90 +2800,158 @@ void XrdHttpProtocol::fileCacheStore(const XrdHttpReq &req, bool writable)
   if (!req.fopened || (req.fileflags & kXR_isDir))
     return;
 
-  fileCache_.valid = true;
-  fileCache_.switching = false;
-  fileCache_.writable = writable;
-  fileCache_.key = fileCacheKey(req);
-  memcpy(fileCache_.fhandle, req.fhandle, 4);
-  fileCache_.filesize = req.filesize;
-  fileCache_.etagval = req.etagval;
-  fileCache_.fileflags = req.fileflags;
-  fileCache_.filemodtime = req.filemodtime;
-  fileCache_.filectime = req.filectime;
-  fileCache_.filectime_ns = req.filectime_ns;
+  const std::string key = fileCacheKey(req);
+  FileOpenCache &ent = fileCaches_[key];
+  ent.valid = true;
+  ent.switching = false;
+  ent.openInFlight = false;
+  ent.writable = writable;
+  ent.key = key;
+  memcpy(ent.fhandle, req.fhandle, 4);
+  ent.filesize = req.filesize;
+  ent.etagval = req.etagval;
+  ent.fileflags = req.fileflags;
+  ent.filemodtime = req.filemodtime;
+  ent.filectime = req.filectime;
+  ent.filectime_ns = req.filectime_ns;
+  if (fileCacheClosingKey_ == key)
+    fileCacheClosingKey_.clear();
   TRACE(REQ, "Cached " << (writable ? "write " : "")
-        << "open " << fileCache_.key.c_str());
+        << "open " << ent.key.c_str());
 }
 
 bool XrdHttpProtocol::fileCacheKeepOpen(const XrdHttpReq &req) const
 {
-  if (!fileCache_.valid || fileCache_.switching || !req.keepalive)
+  const FileOpenCache *ent = fileCacheFind(fileCacheKey(req));
+  if (!ent || !ent->valid || ent->switching || !req.keepalive)
     return false;
-  return fileCache_.key == fileCacheKey(req);
+  return true;
 }
 
-bool XrdHttpProtocol::fileCacheBeginClose()
+bool XrdHttpProtocol::fileCacheIsWritable() const
 {
-  if (!fileCache_.valid || !Bridge)
+  const FileOpenCache *ent = fileCacheFind(fileCacheKey(CurrentReq));
+  return ent && ent->valid && ent->writable && !ent->switching;
+}
+
+bool XrdHttpProtocol::fileCacheBeginCloseKey(const std::string &key)
+{
+  FileOpenCache *ent = fileCacheFind(key);
+  if (!ent || !ent->valid || !Bridge)
     return false;
-  if (lockHoldHas(fileCache_.key)) {
-    // The handle stays cached. Forgetting it without kXR_close leaks the
-    // writer, and the next LOCK/FLOCK is then "already opened".
-    TRACE(REQ, "Leaving lock-held open " << fileCache_.key.c_str());
+  if (ent->switching) {
+    // The close is already running. Park this stream so its completion,
+    // and every other file's, can still be written to the connection.
+    if (isHttp2() && key == fileCacheKey(CurrentReq))
+      http2Defer_ = true;
+    return true;
+  }
+  if (lockHoldHas(key)) {
+    TRACE(REQ, "Leaving lock-held open " << key.c_str());
     return false;
   }
 
   ClientRequest creq;
   memset(&creq, 0, sizeof(creq));
   creq.close.requestid = htons(kXR_close);
-  memcpy(creq.close.fhandle, fileCache_.fhandle, 4);
+  memcpy(creq.close.fhandle, ent->fhandle, 4);
   CurrentReq.xrdreq = creq;
-  fileCache_.switching = true;
-  TRACE(REQ, "Closing cached open " << fileCache_.key.c_str());
-  if (!Bridge->Run(reinterpret_cast<char *>(&CurrentReq.xrdreq), 0, 0)) {
-    fileCacheForget();
+  ent->switching = true;
+  // Idle close has no request path to recover the key from later.
+  const char *curKey = fileCacheKey(CurrentReq);
+  if (!curKey || !curKey[0])
+    fileCacheClosingKey_ = key;
+  TRACE(REQ, "Closing cached open " << key.c_str());
+  if (!RunBridge(reinterpret_cast<char *>(&CurrentReq.xrdreq), 0, 0)) {
+    ent->switching = false;
+    fileCacheClosingKey_.clear();
+    fileCaches_.erase(key);
     return false;
   }
   return true;
 }
 
+bool XrdHttpProtocol::fileCacheBeginClose()
+{
+  const std::string key = fileCacheKey(CurrentReq);
+  if (!key.empty())
+    return fileCacheBeginCloseKey(key);
+  for (const auto &kv : fileCaches_) {
+    if (kv.second.valid && !kv.second.switching)
+      return fileCacheBeginCloseKey(kv.first);
+  }
+  return !fileCacheClosingKey_.empty();
+}
+
 bool XrdHttpProtocol::fileCacheCloseIfDifferent(const XrdHttpReq &req)
 {
-  if (fileCache_.switching)
-    return true;
-  if (!fileCache_.valid)
-    return false;
-  if (fileCache_.key == fileCacheKey(req))
-    return false;
-  return fileCacheBeginClose();
+  const FileOpenCache *ent = fileCacheFind(fileCacheKey(req));
+  if (ent && ent->switching && isHttp2())
+    http2Defer_ = true;
+  return ent && ent->switching;
 }
 
 bool XrdHttpProtocol::fileCacheCloseIfOpen()
 {
-  // A close is already in flight: callers must wait instead of issuing a
-  // new open (OFS will deny a second writer).
-  if (fileCache_.switching)
-    return true;
-  if (!fileCache_.valid)
+  const std::string key = fileCacheKey(CurrentReq);
+  if (!key.empty()) {
+    const FileOpenCache *ent = fileCacheFind(key);
+    if (!ent || !ent->valid)
+      return false;
+    return fileCacheBeginCloseKey(key);
+  }
+  // No request is current: close one cached file so a later connection can
+  // take the writer. A close already running is a bridge completion away.
+  if (!fileCacheClosingKey_.empty())
     return false;
-  return fileCacheBeginClose();
+  for (const auto &kv : fileCaches_) {
+    if (kv.second.valid && !kv.second.switching)
+      return fileCacheBeginCloseKey(kv.first);
+  }
+  return false;
 }
 
 bool XrdHttpProtocol::fileCacheFinishSwitchClose()
 {
-  if (!fileCache_.switching)
+  const std::string key = fileCacheKey(CurrentReq);
+  if (!key.empty()) {
+    const FileOpenCache *ent = fileCacheFind(key);
+    if (!ent || !ent->switching)
+      return false;
+    fileCaches_.erase(key);
+    if (fileCacheClosingKey_ == key)
+      fileCacheClosingKey_.clear();
+    fileCacheHoldReqstate_ = true;
+    return true;
+  }
+  if (fileCacheClosingKey_.empty())
     return false;
-  fileCacheForget();
+  fileCaches_.erase(fileCacheClosingKey_);
+  fileCacheClosingKey_.clear();
   fileCacheHoldReqstate_ = true;
   return true;
 }
 
 void XrdHttpProtocol::fileCacheForget()
 {
-  fileCache_ = FileOpenCache();
+  const std::string key = fileCacheKey(CurrentReq);
+  if (!key.empty()) {
+    fileCaches_.erase(key);
+    if (fileCacheClosingKey_ == key)
+      fileCacheClosingKey_.clear();
+  } else {
+    fileCacheForgetAll();
+  }
   fileCacheHoldReqstate_ = false;
-  fileCacheVerifyPending_ = false;
-  fileCacheReopenPending_ = false;
+}
+
+void XrdHttpProtocol::fileCacheForgetAll()
+{
+  fileCaches_.clear();
+  fileCacheClosingKey_.clear();
+  fileCacheHoldReqstate_ = false;
+  http2BridgeQueued_ = false;
+  http2Defer_ = false;
 }
 
 void XrdHttpProtocol::lockHoldPut(const std::string &key, const char fh[4])
@@ -2885,28 +2978,126 @@ bool XrdHttpProtocol::lockHoldHas(const std::string &key) const
   return lockHolds_.count(key) != 0;
 }
 
+void XrdHttpProtocol::fileCacheMarkVerifyPending()
+{
+  fileCaches_[fileCacheKey(CurrentReq)].verifyPending = true;
+}
+
 bool XrdHttpProtocol::fileCacheTakeVerifyPending()
 {
-  const bool pending = fileCacheVerifyPending_;
-  fileCacheVerifyPending_ = false;
+  FileOpenCache *ent = fileCacheFind(fileCacheKey(CurrentReq));
+  if (!ent)
+    return false;
+  const bool pending = ent->verifyPending;
+  ent->verifyPending = false;
   return pending;
+}
+
+void XrdHttpProtocol::fileCacheMarkReopenPending()
+{
+  fileCaches_[fileCacheKey(CurrentReq)].reopenPending = true;
 }
 
 bool XrdHttpProtocol::fileCacheTakeReopenPending()
 {
-  const bool pending = fileCacheReopenPending_;
-  fileCacheReopenPending_ = false;
+  FileOpenCache *ent = fileCacheFind(fileCacheKey(CurrentReq));
+  if (!ent)
+    return false;
+  const bool pending = ent->reopenPending;
+  ent->reopenPending = false;
   return pending;
 }
 
 bool XrdHttpProtocol::fileCacheStale(long long filesize, long fileflags,
                                      long filemodtime) const
 {
-  if (!fileCache_.valid)
+  const FileOpenCache *ent = fileCacheFind(fileCacheKey(CurrentReq));
+  if (!ent || !ent->valid)
     return true;
-  return filesize != fileCache_.filesize ||
-         fileflags != fileCache_.fileflags ||
-         filemodtime != fileCache_.filemodtime;
+  return filesize != ent->filesize ||
+         fileflags != ent->fileflags ||
+         filemodtime != ent->filemodtime;
+}
+
+bool XrdHttpProtocol::deferSamePathOpen(const XrdHttpReq &req)
+{
+#ifdef HAVE_NGHTTP2
+  if (wireMode_ != XrdHttpWireMode::kHttp2)
+    return false;
+#else
+  (void)req;
+  return false;
+#endif
+  const FileOpenCache *ent = fileCacheFind(fileCacheKey(req));
+  if (!ent || !ent->openInFlight)
+    return false;
+  http2Defer_ = true;
+  return true;
+}
+
+void XrdHttpProtocol::fileCacheMarkOpen(const XrdHttpReq &req)
+{
+#ifdef HAVE_NGHTTP2
+  if (wireMode_ != XrdHttpWireMode::kHttp2)
+    return;
+#endif
+  fileCaches_[fileCacheKey(req)].openInFlight = true;
+}
+
+void XrdHttpProtocol::fileCacheClearOpen(const XrdHttpReq &req)
+{
+  FileOpenCache *ent = fileCacheFind(fileCacheKey(req));
+  if (!ent)
+    return;
+  ent->openInFlight = false;
+  ent->openWaiters.clear();
+}
+
+void XrdHttpProtocol::fileCacheAddWaiter(int streamId)
+{
+  fileCaches_[fileCacheKey(CurrentReq)].openWaiters.push_back(streamId);
+}
+
+std::vector<int> XrdHttpProtocol::fileCacheTakeOpenWaiters(const XrdHttpReq &req)
+{
+  FileOpenCache *ent = fileCacheFind(fileCacheKey(req));
+  if (!ent)
+    return {};
+  ent->openInFlight = false;
+  std::vector<int> waiters;
+  waiters.swap(ent->openWaiters);
+  return waiters;
+}
+
+bool XrdHttpProtocol::RunBridge(char *xreq, char *xdata, int xdataL)
+{
+  if (!Bridge)
+    return false;
+#ifdef HAVE_NGHTTP2
+  if (wireMode_ == XrdHttpWireMode::kHttp2 &&
+      http2Session_.activeStreamId() >= 0)
+    return http2Session_.submitBridge(*this, xreq, xdata, xdataL);
+#endif
+  syncBridgeRan_ = true;
+  return Bridge->Run(xreq, xdata, xdataL);
+}
+
+int XrdHttpProtocol::resumeBridgedRequest(bool skipBump)
+{
+  if (!skipBump) {
+    bool skipInc = fileCacheHoldReqstate_;
+    fileCacheHoldReqstate_ = false;
+    if (!skipInc && !CurrentReq.headerok && !DoingLogin)
+      skipInc = true;
+    if (!skipInc)
+      CurrentReq.reqstate++;
+  }
+  return processParsedRequest(nullptr);
+}
+
+void XrdHttpProtocol::exchangeRequest(XrdHttpReq &other)
+{
+  CurrentReq.exchange(other);
 }
 
 /******************************************************************************/
@@ -4205,7 +4396,7 @@ int XrdHttpProtocol::doStat(char *fname) {
   CurrentReq.xrdreq.stat.dlen = htonl(l);
 
   if (!Bridge) return -1;
-  b = Bridge->Run((char *) &CurrentReq.xrdreq, fname, l);
+  b = RunBridge((char *) &CurrentReq.xrdreq, fname, l);
   if (!b) {
     return -1;
   }
@@ -4231,7 +4422,7 @@ int XrdHttpProtocol::doChksum(const XrdOucString &fname) {
 
   if (!Bridge) return -1;
 
-  return Bridge->Run(reinterpret_cast<char *>(&CurrentReq.xrdreq), const_cast<char *>(fname.c_str()), length) ? 0 : -1;
+  return RunBridge(reinterpret_cast<char *>(&CurrentReq.xrdreq), const_cast<char *>(fname.c_str()), length) ? 0 : -1;
 }
 
 

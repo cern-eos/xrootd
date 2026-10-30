@@ -463,17 +463,17 @@ private:
   XrdHttpWireMode wireMode_;
 #endif
 
-  /// Connection-local kXR_open cache. One GET Range after another on the
-  /// same path reuses the handle after a kXR_stat confirms size/mtime/flags
-  /// still match. PATCH always closes the writable handle before 204 so a
-  /// later GET on a new connection is not denied. Same-connection --next
-  /// PATCHes wait for that close, then re-open. kXR_close of a read-only
-  /// handle waits until a different path, a truncating PUT, another mutating
-  /// verb, a stale restat, a failed I/O, or the session ending.
+  /// Connection-local kXR_open cache, one entry per path. A GET Range reuses
+  /// that path's handle after a kXR_stat confirms size/mtime/flags still
+  /// match. A handle for a different path stays open. PATCH closes its
+  /// writable handle before 204. One writer per path.
   struct FileOpenCache {
     bool        valid{false};
     bool        switching{false};
     bool        writable{false};
+    bool        verifyPending{false};
+    bool        reopenPending{false};
+    bool        openInFlight{false};
     std::string key;
     char        fhandle[4]{};
     long long   filesize{0};
@@ -482,28 +482,57 @@ private:
     long        filemodtime{0};
     long        filectime{0};
     long        filectime_ns{-1};
-  } fileCache_;
+    std::vector<int> openWaiters;
+  };
+  std::map<std::string, FileOpenCache> fileCaches_;
+  std::string fileCacheClosingKey_;
   std::map<std::string, std::string> lockHolds_;
   bool fileCacheHoldReqstate_{false};
-  bool fileCacheVerifyPending_{false};
-  bool fileCacheReopenPending_{false};
+
+  // Set when an HTTP/2 bridge call was queued instead of run on this thread.
+  bool http2BridgeQueued_{false};
+  // Set when RunBridge() called Bridge::Run() on this link. A 0 return is
+  // then the signal for the transit to execute that request. Any other 0
+  // means "there is async work"; the transit would otherwise spin on it.
+  bool syncBridgeRan_{false};
+  // Set when this connection is being dropped. A DoIt already queued behind
+  // the one that noticed the peer close must not Close() again: Recycle may
+  // have handed this object to a new link.
+  bool closing_{false};
+  // Set when this stream must wait for another stream's open of the same path.
+  bool http2Defer_{false};
 
   const char *fileCacheKey(const XrdHttpReq &req) const;
+  FileOpenCache *fileCacheFind(const std::string &key);
+  const FileOpenCache *fileCacheFind(const std::string &key) const;
   bool fileCacheApply(XrdHttpReq &req, bool needWrite = false);
   void fileCacheStore(const XrdHttpReq &req, bool writable = false);
   bool fileCacheKeepOpen(const XrdHttpReq &req) const;
-  bool fileCacheIsWritable() const { return fileCache_.valid && fileCache_.writable; }
+  bool fileCacheIsWritable() const;
   bool fileCacheBeginClose();
+  bool fileCacheBeginCloseKey(const std::string &key);
   bool fileCacheCloseIfDifferent(const XrdHttpReq &req);
   bool fileCacheCloseIfOpen();
   bool fileCacheFinishSwitchClose();
   void fileCacheForget();
+  void fileCacheForgetAll();
   void fileCacheHoldReqstate() { fileCacheHoldReqstate_ = true; }
-  void fileCacheMarkVerifyPending() { fileCacheVerifyPending_ = true; }
+  void fileCacheMarkVerifyPending();
   bool fileCacheTakeVerifyPending();
-  void fileCacheMarkReopenPending() { fileCacheReopenPending_ = true; }
+  void fileCacheMarkReopenPending();
   bool fileCacheTakeReopenPending();
   bool fileCacheStale(long long filesize, long fileflags, long filemodtime) const;
+  bool deferSamePathOpen(const XrdHttpReq &req);
+  void fileCacheMarkOpen(const XrdHttpReq &req);
+  void fileCacheClearOpen(const XrdHttpReq &req);
+  void fileCacheAddWaiter(int streamId);
+  std::vector<int> fileCacheTakeOpenWaiters(const XrdHttpReq &req);
+
+  /// HTTP/1 runs the bridge on this thread. HTTP/2 queues it on the file's lane.
+  bool RunBridge(char *xreq, char *xdata, int xdataL);
+  /// Continue an HTTP/2 request after its bridge result was applied.
+  int resumeBridgedRequest(bool skipBump);
+  void exchangeRequest(XrdHttpReq &other);
 
   void lockHoldPut(const std::string &key, const char fh[4]);
   bool lockHoldGet(const std::string &key, char fh[4]) const;

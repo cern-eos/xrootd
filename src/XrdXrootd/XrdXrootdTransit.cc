@@ -45,6 +45,7 @@
 #include "XrdXrootd/XrdXrootdStats.hh"
 #include "XrdXrootd/XrdXrootdTrace.hh"
 #include "XrdXrootd/XrdXrootdTransit.hh"
+#include "XrdXrootd/XrdXrootdFile.hh"
 #include "XrdXrootd/XrdXrootdTransPend.hh"
 #include "XrdXrootd/XrdXrootdTransSend.hh"
 
@@ -88,6 +89,118 @@ XrdXrootdTransit *XrdXrootdTransit::Alloc(XrdXrootd::Bridge::Result *rsltP,
    if (!(xp = TranStack.Pop())) xp = new XrdXrootdTransit();
    xp->Init(rsltP, linkP, seceP, nameP, protP);
    return xp;
+}
+
+/******************************************************************************/
+/*                                 S p a w n                                  */
+/******************************************************************************/
+
+XrdXrootdTransit *XrdXrootdTransit::Spawn(XrdXrootdTransit *parent)
+{
+   static XrdSysMutex spawnMu;
+   XrdXrootdTransit *xp = new XrdXrootdTransit();
+
+   XrdSysMutexHelper lock(spawnMu);
+   if (!parent->FTab)
+      parent->FTab = new XrdXrootdFileTable(parent->Monitor.Did);
+
+   xp->FTab     = parent->FTab;
+   xp->Link     = parent->Link;
+   xp->Client   = parent->Client;
+   xp->Status   = parent->Status ? parent->Status : XRD_LOGGEDIN;
+   xp->CapVer   = parent->CapVer;
+   xp->mySID    = parent->mySID;
+   xp->clientPV = parent->clientPV;
+   xp->rdType   = parent->rdType;
+   xp->runWMax  = parent->runWMax;
+   xp->runWCall = false;
+   xp->pName    = parent->pName;
+   // Buffered reads. sendfile() would write raw bytes on the HTTP connection.
+   xp->isTLS    = true;
+   xp->realProt = 0;
+   xp->reInvoke = false;
+   xp->sideExec_ = false;
+   xp->Response.Set(parent->Link);
+   xp->Response.Set(xp);
+   return xp;
+}
+
+/******************************************************************************/
+/*                             R u n S t a g e d                              */
+/******************************************************************************/
+
+int XrdXrootdTransit::RunStaged(XrdXrootd::Bridge::Result *rslt,
+                                const char *xreqP, char *xdataP, int xdataL)
+{
+   int rc;
+
+   respObj = rslt;
+   sideExec_ = true;
+   sideFinished_ = false;
+   sideRc_ = 0;
+   runError = 0;
+   runStatus.store(0, std::memory_order_relaxed);
+
+   if (!Run(xreqP, xdataP, xdataL))
+      {sideExec_ = false;
+       respObj = 0;
+       runStatus.store(0, std::memory_order_release);
+       return -1;
+      }
+
+   if (runError)
+      {rc = Fatal(0);
+       sideExec_ = false;
+       respObj = 0;
+       runStatus.store(0, std::memory_order_release);
+       return rc < 0 ? rc : -1;
+      }
+
+   runDone = false;
+   rc = (Resume ? XrdXrootdProtocol::Process(Link) : Process2());
+   if (rc >= 0 && runWait)
+      {{XrdSysCondVarHelper clk(waitCnd);
+        waitPend = false;
+        waitCnd.Broadcast();
+       }
+       XrdSysCondVarHelper clk(waitCnd);
+       while (!sideFinished_) waitCnd.Wait();
+       rc = sideRc_;
+      }
+
+   sideExec_ = false;
+   respObj = 0;
+   runStatus.store(0, std::memory_order_release);
+   return rc < 0 ? rc : 0;
+}
+
+/******************************************************************************/
+/*                              P o k e L i n k                               */
+/******************************************************************************/
+
+void XrdXrootdTransit::PokeLink()
+{
+   if (Link && Sched)
+      Sched->Schedule(static_cast<XrdJob *>(Link));
+}
+
+/******************************************************************************/
+/*                           R e l e a s e S i d e                            */
+/******************************************************************************/
+
+void XrdXrootdTransit::ReleaseSide()
+{
+   FTab = 0;
+   Client = 0;
+   Link = 0;
+   respObj = 0;
+   Status = XRD_BOUNDPATH;
+   if (argp && BPool)
+      {BPool->Release(argp);
+       argp = 0;
+      }
+   for (int i = 0; i < maxStreams; i++)
+      Stream[i] = 0;
 }
 
 /******************************************************************************/
@@ -147,6 +260,18 @@ int XrdXrootdTransit::AttnCont(XrdXrootdTransPend *tP,  int rcode,
 // Send off the deferred response
 //
    rc = Send(rcode, ioV, ioN, ioL);
+
+// A side transit's worker is blocked in RunStaged until this response
+// arrives. Waking the shared link here loses the result and leaves that
+// worker waiting.
+//
+   if (sideExec_ && (rc < 0 || !runWait))
+      {XrdSysCondVarHelper clk(waitCnd);
+       sideFinished_ = true;
+       sideRc_ = rc;
+       waitCnd.Broadcast();
+       return rc;
+      }
 
 // Handle end based on current state
 //
@@ -545,6 +670,14 @@ void XrdXrootdTransit::Redrive()
 // If the link needs to be terminated, terminate the link. Otherwise, we can
 // enable the link for new requests at this point.
 //
+   if (sideExec_)
+      {XrdSysCondVarHelper clk(waitCnd);
+       sideFinished_ = true;
+       sideRc_ = rc;
+       waitCnd.Broadcast();
+       return;
+      }
+
    if (rc < 0) Link->Close();
       else     Link->Enable();
 }

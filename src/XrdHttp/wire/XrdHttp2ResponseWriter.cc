@@ -343,7 +343,7 @@ int XrdHttp2ResponseWriter::sendSimple(XrdHttpProtocol &prot, int code,
   else if (bodylen <= 0)
     content_length = body ? static_cast<long long>(strlen(body)) : 0;
 
-  const int32_t stream_id = prot.http2Session_.activeStreamId();
+  const int32_t stream_id = prot.http2Session_.useStream(prot.CurrentReq.http2StreamId);
   if (stream_id < 0)
     return -1;
 
@@ -430,7 +430,7 @@ int XrdHttp2ResponseWriter::sendStreamData(XrdHttpProtocol &prot,
     return 0;
 
   XrdHttp2PendingResponse *pendingP = prot.http2Session_.pendingFor(
-      prot.http2Session_.activeStreamId());
+      prot.http2Session_.useStream(prot.CurrentReq.http2StreamId));
   if (!pendingP)
     pendingP = &prot.http2Session_.pendingResponse();
   XrdHttp2PendingResponse &pending = *pendingP;
@@ -501,7 +501,7 @@ int XrdHttp2ResponseWriter::sendStreamData(XrdHttpProtocol &prot,
 int XrdHttp2ResponseWriter::finishStream(XrdHttpProtocol &prot)
 {
   XrdHttp2PendingResponse *pendingP = prot.http2Session_.pendingFor(
-      prot.http2Session_.activeStreamId());
+      prot.http2Session_.useStream(prot.CurrentReq.http2StreamId));
   if (!pendingP)
     pendingP = &prot.http2Session_.pendingResponse();
   XrdHttp2PendingResponse &pending = *pendingP;
@@ -550,12 +550,12 @@ int XrdHttp2ResponseWriter::addTrailers(XrdHttpProtocol &prot,
                                         const char *header_lines)
 {
   XrdHttp2PendingResponse *pending = prot.http2Session_.pendingFor(
-      prot.http2Session_.activeStreamId());
+      prot.http2Session_.useStream(prot.CurrentReq.http2StreamId));
   if (!pending)
     pending = &prot.http2Session_.pendingResponse();
   if (!pending || !pending->active || !pending->streaming) {
     TRACE(ALL, "HTTP/2 addTrailers skipped stream="
-          << prot.http2Session_.activeStreamId()
+          << prot.http2Session_.useStream(prot.CurrentReq.http2StreamId)
           << " pending=" << (pending ? 1 : 0)
           << " active=" << (pending ? pending->active : 0)
           << " streaming=" << (pending ? pending->streaming : 0));

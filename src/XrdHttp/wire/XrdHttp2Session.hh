@@ -6,12 +6,17 @@
 #ifndef XRDHTTP2SESSION_HH
 #define XRDHTTP2SESSION_HH
 
+#include "XrdHttp2Lanes.hh"
+
 #include <cstdint>
 #include <deque>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
+
+class XrdXrootdTransit;
 
 class XrdHttpProtocol;
 class XrdHttpReq;
@@ -123,6 +128,9 @@ public:
   int drive(XrdHttpProtocol &prot, XrdLink *lp);
 
   int32_t activeStreamId() const { return activeStreamId_; }
+  /// Prefer the in-flight stream. If that was cleared, resume the stream the
+  /// request was dispatched on and make it active again.
+  int32_t useStream(int fallback);
 
   XrdHttp2PendingResponse &pendingResponse();
   XrdHttp2PendingResponse *pendingFor(int32_t stream_id);
@@ -173,12 +181,49 @@ public:
 
   int feedRecv(XrdHttpProtocol &prot, const uint8_t *data, size_t len);
 
+  /// Queue one xrootd request on the lane of its file. The link thread applies
+  /// the result later. False if the pool is stopped or there is no stream.
+  bool submitBridge(XrdHttpProtocol &prot, char *xreq, char *xdata, int xdataL);
+
   friend class XrdHttpProtocol;
 
 private:
 
   static const uint32_t kMaxConcurrentStreams = 100;
   static const size_t kRecvBufSize = 16384;
+  static const int kBridgeWorkers = 8;
+
+  struct BridgeEvent {
+    enum Type { kData, kDone, kError, kRedir } type{kDone};
+    std::vector<std::string> parts;
+    int iovL{0};
+    bool final{true};
+    int code{0};
+    std::string text;
+  };
+
+  struct BridgeDone {
+    int32_t streamId{-1};
+    bool failed{false};
+    std::string laneKey;
+    unsigned short reqId{0};
+    bool counted{true};
+    std::vector<BridgeEvent> events;
+  };
+
+  struct ParkedReq {
+    std::unique_ptr<XrdHttpReq> req;
+    bool skipBump{false};
+    bool live{false};
+  };
+
+  void parkActive(XrdHttpProtocol &prot, bool skipBump);
+  int drainCompletions(XrdHttpProtocol &prot);
+  int parkIfSubmitted(XrdHttpProtocol &prot);
+  bool replay(XrdHttpProtocol &prot, XrdHttpReq &req, const BridgeDone &done);
+  void bindHandle(const std::string &laneKey, const char fh[4]);
+  std::string resolveLane(const std::string &key) const;
+  XrdXrootdTransit *transitFor(XrdHttpProtocol &prot, int worker);
 
   XrdHttp2StreamState *findStream(int32_t stream_id);
   bool appInFlight(XrdHttpProtocol &prot) const;
@@ -205,6 +250,15 @@ private:
   std::map<int32_t, XrdHttp2PendingResponse> pendingResponses_;
   XrdHttp2PendingResponse emptyPending_;
   uint8_t recvbuf_[kRecvBufSize];
+
+  XrdHttp2Lanes lanes_{kBridgeWorkers};
+  std::mutex doneMu_;
+  std::deque<BridgeDone> done_;
+  int bridgesInFlight_{0};
+  std::map<int32_t, ParkedReq> parked_;
+  std::map<std::string, std::string> laneAlias_;
+  std::mutex sideMu_;
+  std::vector<XrdXrootdTransit *> side_;
 };
 
 #endif

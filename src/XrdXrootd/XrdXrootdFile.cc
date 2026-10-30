@@ -211,6 +211,7 @@ void XrdXrootdFile::Serialize()
   
 int XrdXrootdFileTable::Add(XrdXrootdFile *fp)
 {
+   XrdSysMutexHelper lock(tableMutex);
    const int allocsz = XRD_FTABSIZE*sizeof(fp);
    XrdXrootdFile **newXTab, **oldXTab;
    int i;
@@ -283,6 +284,7 @@ int XrdXrootdFileTable::Add(XrdXrootdFile *fp)
 XrdXrootdFile *XrdXrootdFileTable::Del(XrdXrootdMonitor *monP, int fnum,
                                        bool dodel)
 {
+   XrdSysMutexHelper lock(tableMutex);
    union {XrdXrootdFile *fp; unsigned long fv;};
    XrdXrootdFile *repVal = (dodel ? 0 : heldSpotP);
    int  fh = fnum;
@@ -338,6 +340,7 @@ XrdXrootdFile *XrdXrootdFileTable::Del(XrdXrootdMonitor *monP, int fnum,
 //
 void XrdXrootdFileTable::Recycle(XrdXrootdMonitor *monP)
 {
+   XrdSysMutexHelper lock(tableMutex);
    int i;
 
 // Delete all objects from the internal table (see warning)

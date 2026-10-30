@@ -35,6 +35,7 @@ endif()
 if(BUILD_HTTP2)
   list(APPEND XRDHTTPUTILS_SRCS
     wire/XrdHttp2Session.cc wire/XrdHttp2Session.hh
+    wire/XrdHttp2Lanes.cc wire/XrdHttp2Lanes.hh
     wire/XrdHttp2ResponseWriter.cc wire/XrdHttp2ResponseWriter.hh)
 endif()
 

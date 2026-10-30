@@ -69,6 +69,34 @@ XrdXrootdTransit *Alloc(XrdXrootd::Bridge::Result *respP,
                        );
 
 //-----------------------------------------------------------------------------
+//! Protocol state for one filesystem operation. Shares the parent's file
+//! table and login, and is not installed on the link.
+//-----------------------------------------------------------------------------
+
+static
+XrdXrootdTransit *Spawn(XrdXrootdTransit *parent);
+
+//-----------------------------------------------------------------------------
+//! Run one request to completion on this transit. Callbacks run here. A
+//! failure does not close the link.
+//-----------------------------------------------------------------------------
+
+int            RunStaged(XrdXrootd::Bridge::Result *rslt,
+                         const char *xreqP, char *xdataP, int xdataL);
+
+//-----------------------------------------------------------------------------
+//! Ask the scheduler to run the link protocol again.
+//-----------------------------------------------------------------------------
+
+void           PokeLink();
+
+//-----------------------------------------------------------------------------
+//! Drop this side transit without disconnecting the shared login or files.
+//-----------------------------------------------------------------------------
+
+void           ReleaseSide();
+
+//-----------------------------------------------------------------------------
 //! Handle attention response (i.e. async response)
 //-----------------------------------------------------------------------------
 
@@ -164,7 +192,10 @@ void          SetWait(int wtime, bool notify=false)
                                            "Transit proceed"),
                                    waitJob(this, &XrdXrootdTransit::Redrive,
                                            "Transit redrive"),
-                                   waitCnd(0)
+                                   waitCnd(0),
+                                   sideExec_(false),
+                                   sideFinished_(false),
+                                   sideRc_(0)
                                  {}
 virtual      ~XrdXrootdTransit() {}
 
@@ -228,5 +259,8 @@ time_t                       cTime;
 // condition variable protecting waitPend and indirectly runWait
 XrdSysCondVar                waitCnd;
 bool                         waitPend;
+bool                         sideExec_;
+bool                         sideFinished_;
+int                          sideRc_;
 };
 #endif

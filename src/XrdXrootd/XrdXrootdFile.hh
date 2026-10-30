@@ -154,9 +154,8 @@ XrdSysMutex               fileMutex;
 //
 #define XRD_FTABSIZE   16
   
-// WARNING! Manipulation (i.e., Add/Del/delete) of this object must be
-//          externally serialized at the link level. Only one thread
-//          may be active w.r.t this object during manipulation!
+// Add/Del/Get/Recycle take tableMutex. Callers must still keep a single
+// thread inside any one XrdXrootdFile; the lock only covers the table.
 //
 class XrdXrootdFileTable
 {
@@ -167,7 +166,8 @@ public:
        XrdXrootdFile *Del(XrdXrootdMonitor *monP, int fnum, bool dodel=true);
 
 inline XrdXrootdFile *Get(int fnum)
-                         {if (fnum >= 0)
+                         {XrdSysMutexHelper lock(tableMutex);
+                          if (fnum >= 0)
                              {if (fnum < XRD_FTABSIZE)
                                  {if (FTab[fnum] != heldSpotP) return FTab[fnum];
                                  } else {
@@ -204,5 +204,6 @@ unsigned int   monID;
 XrdXrootdFile **XTab;
 int             XTnum;
 int             XTfree;
+XrdSysMutex     tableMutex;
 };
 #endif

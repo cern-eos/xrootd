@@ -271,6 +271,9 @@ public:
 
   virtual void reset();
 
+  /// Swap request state with another object bound to the same protocol.
+  void exchange(XrdHttpReq &other);
+
   int getInitialStatusCode() { return initialStatusCode;}
   int getHttpStatusCode() { return httpStatusCode;}
 
@@ -438,8 +441,14 @@ public:
   bool m_propfind_stream_started{false};
   bool isStreamRequested() const;
 
-  /// State machine to talk to the bridge
-  int reqstate;
+  /// State machine to talk to the bridge.
+  /// Must be 0 on a fresh object: parking exchanges it into CurrentReq, and
+  /// a leftover value blocks bridge completions for the life of the connection.
+  int reqstate{0};
+
+  /// HTTP/2 stream this request was dispatched on. Survives parking the
+  /// connection-wide "active stream" so a later response can still be written.
+  int http2StreamId{-1};
 
   /// In a long write, we track where we have arrived
   long long writtenbytes;
