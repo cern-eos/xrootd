@@ -110,6 +110,12 @@ HTTP/2 is available when XRootD is built with nghttp2 (`BUILD_HTTP2`).
 - `http.h2push /path` sends `PUSH_PROMISE` after a successful GET when the
   client advertised `SETTINGS_ENABLE_PUSH=1`, then serves the promised GET
   through the serialized Bridge.
+- `http.zstd on` (default when built with libzstd) compresses HTTP/2 response
+  bodies with `Content-Encoding: zstd` when the client sends
+  `Accept-Encoding: zstd` (or `*`). HEAD, 204/304, 206 Range, and already
+  encoded responses are left uncompressed. Streaming responses omit
+  `Content-Length` (the compressed size is not known up front). Disable with
+  `http.zstd off`.
 - RST_STREAM and GOAWAY drop the affected queued streams; the active request
   is abandoned if the peer resets it. `SendData()` never falls back to a raw
   socket write on an HTTP/2 connection (late Bridge data is dropped instead).
@@ -184,6 +190,7 @@ http.parser llhttp
 |-----------|--------|-------|
 | `http.parser` | `llhttp`, `legacy` | HTTP/1.1 header parsing only |
 | `http.h2push` | path (repeatable) | HTTP/2 PUSH_PROMISE targets after a successful GET |
+| `http.zstd` | `on`, `off` | HTTP/2 `Content-Encoding: zstd` when the client accepts it (default `on` if built with libzstd) |
 | `http.tlsclientauth` | `on`, `off` | TLS client certificate authentication |
 | `http.selfhttps2http` | `yes`, `no` | Signed redirect from HTTPS to HTTP |
 | `http.auth` | `krb5`, `tpc`, … | See feature READMEs |
@@ -199,10 +206,11 @@ pulls this in via `libnghttp2-devel` (RPM) / `libnghttp2-dev` (Debian):
 
 ```bash
 # macOS
-brew install libnghttp2
+brew install libnghttp2 zstd
 
 cmake .. -DENABLE_HTTP=ON
 # HTTP/2 is enabled automatically when libnghttp2 is found (BUILD_HTTP2)
+# zstd response compression is enabled when libzstd is found (BUILD_ZSTD)
 
 make XrdHttpUtils XrdHttp
 ```

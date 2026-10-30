@@ -142,6 +142,10 @@ decltype(XrdHttpProtocol::m_staticheader_map) XrdHttpProtocol::m_staticheader_ma
 decltype(XrdHttpProtocol::m_staticheaders) XrdHttpProtocol::m_staticheaders;
 std::vector<std::string> XrdHttpProtocol::m_h2push_paths;
 
+#ifdef HAVE_ZSTD
+bool XrdHttpProtocol::gZstdEnabled = true;
+#endif
+
 #ifdef HAVE_PARSOCKET
 XrdHttpParsockConfig XrdHttpProtocol::s_parsockConfig;
 XrdHttpParsockListener XrdHttpProtocol::s_parsockListener;
@@ -1178,6 +1182,7 @@ int XrdHttpProtocol::Config(const char *ConfigFN, XrdOucEnv *myEnv) {
       else if TS_Xeq("maxdelay", xmaxdelay);
       else if TS_Xeq("h2push", xh2push);
       else if TS_Xeq("h2", xh2);
+      else if TS_Xeq("zstd", xzstd);
       else if TS_Xeq("parsock", xparsock);
       else {
         eDest.Say("Config warning: ignoring unknown directive '", var, "'.");
@@ -3912,6 +3917,30 @@ int XrdHttpProtocol::xh2push(XrdOucStream &Config) {
   m_h2push_paths.emplace_back(val);
   eDest.Say("Config http.h2push ", val);
   return 0;
+}
+
+int XrdHttpProtocol::xzstd(XrdOucStream &Config) {
+  auto val = Config.GetWord();
+  if (!val || !val[0])
+     {eDest.Emsg("Config", "zstd argument not specified (use 'on' or 'off')"); return 1;}
+
+#ifdef HAVE_ZSTD
+  if (!strcmp(val, "off") || !strcmp(val, "disable")) {
+     gZstdEnabled = false;
+     eDest.Say("Config http.zstd off");
+     return 0;
+  }
+  if (!strcmp(val, "on") || !strcmp(val, "enable")) {
+     gZstdEnabled = true;
+     eDest.Say("Config http.zstd on");
+     return 0;
+  }
+  eDest.Emsg("Config", "invalid zstd parameter -", val);
+  return 1;
+#else
+  eDest.Say("Config warning: http.zstd ignored (not compiled with zstd support)");
+  return 0;
+#endif
 }
 
 int XrdHttpProtocol::xparsock(XrdOucStream &Config) {

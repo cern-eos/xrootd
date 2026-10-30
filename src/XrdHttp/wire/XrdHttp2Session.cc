@@ -8,6 +8,10 @@
 #include "XrdHttpProtocol.hh"
 #include "XrdHttpTrace.hh"
 
+#ifdef HAVE_ZSTD
+#include <zstd.h>
+#endif
+
 #include <nghttp2/nghttp2.h>
 
 #include <algorithm>
@@ -16,6 +20,95 @@
 #include <sys/uio.h>
 #include <utility>
 #include <vector>
+
+void XrdHttp2PendingResponse::cleanupZstd()
+{
+#ifdef HAVE_ZSTD
+  if (zcs) {
+    ZSTD_freeCStream(static_cast<ZSTD_CStream *>(zcs));
+    zcs = nullptr;
+  }
+#endif
+  compress_zstd = false;
+}
+
+XrdHttp2PendingResponse::XrdHttp2PendingResponse() = default;
+
+XrdHttp2PendingResponse::~XrdHttp2PendingResponse()
+{
+  cleanupZstd();
+}
+
+XrdHttp2PendingResponse::XrdHttp2PendingResponse(const XrdHttp2PendingResponse &other)
+  : stream_id(other.stream_id), status_code(other.status_code),
+    body(other.body), body_offset(other.body_offset),
+    view(other.view), view_len(other.view_len), view_off(other.view_off),
+    active(other.active), streaming(other.streaming), finished(other.finished),
+    content_length(other.content_length), bytes_sent(other.bytes_sent),
+    trailers(other.trailers), compress_zstd(other.compress_zstd), zcs(nullptr)
+{
+}
+
+XrdHttp2PendingResponse &XrdHttp2PendingResponse::operator=(const XrdHttp2PendingResponse &other)
+{
+  if (this != &other) {
+    cleanupZstd();
+    stream_id = other.stream_id;
+    status_code = other.status_code;
+    body = other.body;
+    body_offset = other.body_offset;
+    view = other.view;
+    view_len = other.view_len;
+    view_off = other.view_off;
+    active = other.active;
+    streaming = other.streaming;
+    finished = other.finished;
+    content_length = other.content_length;
+    bytes_sent = other.bytes_sent;
+    trailers = other.trailers;
+    compress_zstd = other.compress_zstd;
+    zcs = nullptr;
+  }
+  return *this;
+}
+
+XrdHttp2PendingResponse::XrdHttp2PendingResponse(XrdHttp2PendingResponse &&other) noexcept
+  : stream_id(other.stream_id), status_code(other.status_code),
+    body(std::move(other.body)), body_offset(other.body_offset),
+    view(other.view), view_len(other.view_len), view_off(other.view_off),
+    active(other.active), streaming(other.streaming), finished(other.finished),
+    content_length(other.content_length), bytes_sent(other.bytes_sent),
+    trailers(std::move(other.trailers)), compress_zstd(other.compress_zstd),
+    zcs(other.zcs)
+{
+  other.zcs = nullptr;
+  other.compress_zstd = false;
+}
+
+XrdHttp2PendingResponse &XrdHttp2PendingResponse::operator=(XrdHttp2PendingResponse &&other) noexcept
+{
+  if (this != &other) {
+    cleanupZstd();
+    stream_id = other.stream_id;
+    status_code = other.status_code;
+    body = std::move(other.body);
+    body_offset = other.body_offset;
+    view = other.view;
+    view_len = other.view_len;
+    view_off = other.view_off;
+    active = other.active;
+    streaming = other.streaming;
+    finished = other.finished;
+    content_length = other.content_length;
+    bytes_sent = other.bytes_sent;
+    trailers = std::move(other.trailers);
+    compress_zstd = other.compress_zstd;
+    zcs = other.zcs;
+    other.zcs = nullptr;
+    other.compress_zstd = false;
+  }
+  return *this;
+}
 
 namespace
 {

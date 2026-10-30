@@ -35,6 +35,16 @@ struct XrdHttp2PendingResponse
   long long   content_length{0};
   long long   bytes_sent{0};
   std::vector<std::pair<std::string, std::string>> trailers;
+  bool        compress_zstd{false};
+  void       *zcs{nullptr};
+
+  XrdHttp2PendingResponse();
+  ~XrdHttp2PendingResponse();
+  XrdHttp2PendingResponse(const XrdHttp2PendingResponse &other);
+  XrdHttp2PendingResponse &operator=(const XrdHttp2PendingResponse &other);
+  XrdHttp2PendingResponse(XrdHttp2PendingResponse &&other) noexcept;
+  XrdHttp2PendingResponse &operator=(XrdHttp2PendingResponse &&other) noexcept;
+  void cleanupZstd();
 
   std::size_t unsent() const
   {

@@ -30,7 +30,16 @@ public:
   /// Queue "Name: value\r\n" lines as HTTP/2 trailers for the active stream.
   static int addTrailers(XrdHttpProtocol &prot, const char *header_lines);
 
+  /// True when Accept-Encoding includes zstd (or *) with q > 0.
+  static bool acceptEncodingAllowsZstd(const std::string &accept_encoding);
+
 private:
+
+#ifdef HAVE_ZSTD
+  static bool clientAcceptsZstd(const XrdHttpProtocol &prot);
+  static bool isCompressibleResponse(const XrdHttpProtocol &prot, int code,
+                                     const char *header_to_add);
+#endif
 
   static std::string mergeHeaders(XrdHttpProtocol &prot,
                                   const char *header_to_add);

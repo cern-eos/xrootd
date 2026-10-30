@@ -12,5 +12,10 @@ if(BUILD_HTTP2)
   target_include_directories(xrdhttp-unit-tests PRIVATE ${PROJECT_SOURCE_DIR}/src/XrdXioFS/http)
 endif()
 
+if(BUILD_ZSTD)
+  target_link_libraries(xrdhttp-unit-tests ${ZSTD_LIBRARIES})
+  target_include_directories(xrdhttp-unit-tests PRIVATE ${ZSTD_INCLUDE_DIRS})
+endif()
+
 gtest_discover_tests(xrdhttp-unit-tests
   PROPERTIES DISCOVERY_TIMEOUT 10)

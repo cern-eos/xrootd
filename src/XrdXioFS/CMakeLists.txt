@@ -33,6 +33,12 @@ if(BUILD_PARSOCKET)
   target_link_libraries(XrdXioFS PUBLIC ${PARSOCK_LIBRARIES})
 endif()
 
+if(BUILD_ZSTD)
+  target_compile_definitions(XrdXioFS PUBLIC HAVE_ZSTD)
+  target_include_directories(XrdXioFS PUBLIC ${ZSTD_INCLUDE_DIRS})
+  target_link_libraries(XrdXioFS PUBLIC ${ZSTD_LIBRARIES})
+endif()
+
 if(BUILD_KRB5 AND KERBEROS5_FOUND)
   target_compile_definitions(XrdXioFS PUBLIC HAVE_KRB5)
   target_include_directories(XrdXioFS PUBLIC ${KERBEROS5_INCLUDE_DIR})

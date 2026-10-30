@@ -15,6 +15,10 @@
 
 #include <nghttp2/nghttp2.h>
 
+#ifdef HAVE_ZSTD
+#include <zstd.h>
+#endif
+
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -25,6 +29,7 @@
 namespace
 {
 const char *TraceID = "Http2Resp";
+
 
 bool bodyComplete(const XrdHttp2PendingResponse &resp)
 {
@@ -143,7 +148,7 @@ int submitResponse(XrdHttp2Session &http2Session, XrdHttpProtocol &prot,
                      [](unsigned char c) { return std::tolower(c); });
       if (name == "connection" || name == "keep-alive" ||
           name == "proxy-connection" || name == "transfer-encoding" ||
-          name == "upgrade")
+          name == "upgrade" || name == "content-length")
         continue;
 
       names.push_back(std::move(name));
@@ -188,6 +193,104 @@ int submitResponse(XrdHttp2Session &http2Session, XrdHttpProtocol &prot,
   return 0;
 }
 }
+
+bool XrdHttp2ResponseWriter::acceptEncodingAllowsZstd(
+    const std::string &ae)
+{
+  size_t start = 0;
+  bool zstd_found = false;
+  bool zstd_prohibited = false;
+
+  while (start < ae.size()) {
+    while (start < ae.size() &&
+           (ae[start] == ' ' || ae[start] == ',' || ae[start] == '\t'))
+      start++;
+    if (start >= ae.size())
+      break;
+    size_t end = ae.find(',', start);
+    if (end == std::string::npos)
+      end = ae.size();
+
+    std::string token = ae.substr(start, end - start);
+    start = end + 1;
+
+    while (!token.empty() && (token.front() == ' ' || token.front() == '\t'))
+      token.erase(token.begin());
+    while (!token.empty() && (token.back() == ' ' || token.back() == '\t'))
+      token.pop_back();
+
+    std::string coding = token;
+    double qvalue = 1.0;
+    auto semi = token.find(';');
+    if (semi != std::string::npos) {
+      coding = token.substr(0, semi);
+      while (!coding.empty() && (coding.back() == ' ' || coding.back() == '\t'))
+        coding.pop_back();
+
+      auto qpos = token.find("q=", semi + 1);
+      if (qpos != std::string::npos) {
+        try {
+          qvalue = std::stod(token.substr(qpos + 2));
+        } catch (...) {
+          qvalue = 1.0;
+        }
+      }
+    }
+
+    std::transform(coding.begin(), coding.end(), coding.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+
+    if (coding == "zstd") {
+      if (qvalue <= 0.0001)
+        zstd_prohibited = true;
+      else
+        zstd_found = true;
+    } else if (coding == "*" && qvalue > 0.0001) {
+      zstd_found = true;
+    }
+  }
+
+  return zstd_found && !zstd_prohibited;
+}
+
+#ifdef HAVE_ZSTD
+bool XrdHttp2ResponseWriter::clientAcceptsZstd(const XrdHttpProtocol &prot)
+{
+  auto it = prot.CurrentReq.allheaders.find("accept-encoding");
+  if (it == prot.CurrentReq.allheaders.end())
+    return false;
+  return acceptEncodingAllowsZstd(it->second);
+}
+
+bool XrdHttp2ResponseWriter::isCompressibleResponse(const XrdHttpProtocol &prot,
+                                                    int code,
+                                                    const char *header_to_add)
+{
+  if (!XrdHttpProtocol::isZstdEnabled() || !clientAcceptsZstd(prot))
+    return false;
+
+  if (prot.CurrentReq.request == XrdHttpReq::rtHEAD)
+    return false;
+
+  if (code == 204 || code == 304 || code < 200)
+    return false;
+
+  // 206 Partial Content (Range requests) must not be compressed on-the-fly
+  // as client ranges apply to the uncompressed entity.
+  if (code == 206)
+    return false;
+
+  if (header_to_add && header_to_add[0]) {
+    std::string h(header_to_add);
+    std::transform(h.begin(), h.end(), h.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    if (h.find("content-encoding:") != std::string::npos)
+      return false;
+  }
+
+  return true;
+}
+#endif
 
 std::string XrdHttp2ResponseWriter::mergeHeaders(XrdHttpProtocol &prot,
                                                  const char *header_to_add)
@@ -255,13 +358,47 @@ int XrdHttp2ResponseWriter::sendSimple(XrdHttpProtocol &prot, int code,
   pending.streaming = streaming;
   pending.active = true;
 
+#ifdef HAVE_ZSTD
+  std::string compressed_body;
+  std::string zstd_header;
+  if (body && content_length >= 64 &&
+      isCompressibleResponse(prot, code, header_to_add)) {
+    size_t max_comp = ZSTD_compressBound(static_cast<size_t>(content_length));
+    compressed_body.resize(max_comp);
+    size_t csize = ZSTD_compress(&compressed_body[0], max_comp, body,
+                                 static_cast<size_t>(content_length), 3);
+    if (!ZSTD_isError(csize) && (csize < static_cast<size_t>(content_length) || code == 207)) {
+      compressed_body.resize(csize);
+      body = compressed_body.data();
+      content_length = static_cast<long long>(csize);
+      pending.content_length = content_length;
+      zstd_header = "content-encoding: zstd\r\nvary: accept-encoding\r\n";
+    }
+  } else if (streaming && isCompressibleResponse(prot, code, header_to_add)) {
+    pending.compress_zstd = true;
+    pending.zcs = ZSTD_createCStream();
+    if (pending.zcs) {
+      ZSTD_initCStream(static_cast<ZSTD_CStream *>(pending.zcs), 3);
+      content_length = -1;
+      pending.content_length = -1;
+      zstd_header = "content-encoding: zstd\r\nvary: accept-encoding\r\n";
+    } else {
+      pending.compress_zstd = false;
+    }
+  }
+#endif
+
   if (body && content_length > 0)
     pending.body.assign(body, static_cast<size_t>(content_length));
 
   const bool use_provider =
       (content_length > 0 && body != nullptr) || streaming;
 
-  const std::string merged = mergeHeaders(prot, header_to_add);
+  std::string merged = mergeHeaders(prot, header_to_add);
+#ifdef HAVE_ZSTD
+  if (!zstd_header.empty())
+    merged = zstd_header + merged;
+#endif
   if (submitResponse(prot.http2Session_, prot, pending, code,
                      merged.empty() ? nullptr : merged.c_str(),
                      content_length, use_provider) < 0) {
@@ -300,6 +437,34 @@ int XrdHttp2ResponseWriter::sendStreamData(XrdHttpProtocol &prot,
   if (!pending.active || !pending.streaming)
     return -1;
 
+#ifdef HAVE_ZSTD
+  if (pending.compress_zstd && pending.zcs) {
+    auto *zcs = static_cast<ZSTD_CStream *>(pending.zcs);
+    ZSTD_inBuffer in = {body, static_cast<size_t>(bodylen), 0};
+    char out_buf[32768];
+    while (in.pos < in.size) {
+      ZSTD_outBuffer out = {out_buf, sizeof(out_buf), 0};
+      size_t ret = ZSTD_compressStream2(zcs, &out, &in, ZSTD_e_continue);
+      if (ZSTD_isError(ret)) {
+        TRACE(ALL, "ZSTD_compressStream2 error: " << ZSTD_getErrorName(ret));
+        return -1;
+      }
+      if (out.pos > 0) {
+        pending.body.append(out_buf, out.pos);
+      }
+    }
+    // Flush block so clients can decode streaming chunks incrementally.
+    ZSTD_outBuffer out = {out_buf, sizeof(out_buf), 0};
+    size_t fret = ZSTD_compressStream2(zcs, &out, &in, ZSTD_e_flush);
+    if (ZSTD_isError(fret)) {
+      TRACE(ALL, "ZSTD_compressStream2 flush error: "
+            << ZSTD_getErrorName(fret));
+      return -1;
+    }
+    if (out.pos > 0)
+      pending.body.append(out_buf, out.pos);
+  } else
+#endif
   // Prefer a view of the Bridge buffer so flushSend can writev it without
   // copying into pending.body. If the window cannot drain it, copy the
   // remainder so the pointer is not held after we return.
@@ -342,6 +507,26 @@ int XrdHttp2ResponseWriter::finishStream(XrdHttpProtocol &prot)
   XrdHttp2PendingResponse &pending = *pendingP;
   if (!pending.active || !pending.streaming)
     return 0;
+
+#ifdef HAVE_ZSTD
+  if (pending.compress_zstd && pending.zcs) {
+    auto *zcs = static_cast<ZSTD_CStream *>(pending.zcs);
+    ZSTD_inBuffer in = {nullptr, 0, 0};
+    char out_buf[32768];
+    size_t ret = 0;
+    do {
+      ZSTD_outBuffer out = {out_buf, sizeof(out_buf), 0};
+      ret = ZSTD_compressStream2(zcs, &out, &in, ZSTD_e_end);
+      if (ZSTD_isError(ret))
+        break;
+      if (out.pos > 0)
+        pending.body.append(out_buf, out.pos);
+    } while (ret > 0);
+
+    ZSTD_freeCStream(zcs);
+    pending.zcs = nullptr;
+  }
+#endif
 
   pending.finished = true;
 

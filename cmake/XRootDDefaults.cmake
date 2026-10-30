@@ -12,6 +12,7 @@ option( ENABLE_TESTS     "Enable unit tests."                                   
 cmake_dependent_option( ENABLE_SERVER_TESTS "Enable server tests." TRUE "ENABLE_TESTS" FALSE )
 option( ENABLE_HTTP      "Enable HTTP component."                                         TRUE )
 option( ENABLE_HTTP2     "Enable HTTP/2 support in XrdHttp if nghttp2 is available."     TRUE )
+option( ENABLE_ZSTD      "Enable zstd compression support in XrdHttp if libzstd is available." TRUE )
 option( ENABLE_PARSOCKET "Enable Parsock (parallel TCP / RDMA) support in XrdHttp if libparsocket is available." TRUE )
 option( ENABLE_PYTHON    "Enable python bindings."                                        TRUE )
 option( XRDCL_ONLY       "Build only the client and necessary dependencies"               FALSE )

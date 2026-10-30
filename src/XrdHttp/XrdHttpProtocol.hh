@@ -220,6 +220,15 @@ public:
   /// called via https
   bool isHTTPS() { return ishttps; }
 
+  /// True when HTTP/2 zstd response compression is compiled in and enabled.
+  static bool isZstdEnabled() {
+#ifdef HAVE_ZSTD
+    return gZstdEnabled;
+#else
+    return false;
+#endif
+  }
+
   /// Bytes already decrypted by OpenSSL but not yet consumed from the wire buffer.
   int sslPendingBytes() const
   {
@@ -323,7 +332,12 @@ private:
   static int xmaxdelay(XrdOucStream &Config);
   static int xh2push(XrdOucStream &Config);
   static int xh2(XrdOucStream &Config);
+  static int xzstd(XrdOucStream &Config);
   static int xparsock(XrdOucStream &Config);
+
+#ifdef HAVE_ZSTD
+  static bool gZstdEnabled;
+#endif
 
 #ifdef HAVE_PARSOCKET
   ps_connection_t *parsockConn_{nullptr};

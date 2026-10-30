@@ -5,6 +5,7 @@
 #include "XrdHttp/XrdHttpChecksumHandler.hh"
 #include "XrdHttp/XrdHttpReadRangeHandler.hh"
 #include "XrdHttp/XrdHttpHeaderUtils.hh"
+#include "XrdHttp/wire/XrdHttp2ResponseWriter.hh"
 #include "XrdHttpCors/XrdHttpCorsHandler.hh"
 #include <exception>
 #include <gtest/gtest.h>
@@ -940,6 +941,245 @@ TEST(XrdHttpTests, propfindStreamRequested) {
   req.parseLine(h3, strlen(h3));
   EXPECT_FALSE(req.isStreamRequested());
 }
+
+TEST(XrdHttpTests, acceptEncodingAllowsZstd) {
+  EXPECT_FALSE(XrdHttp2ResponseWriter::acceptEncodingAllowsZstd(""));
+  EXPECT_FALSE(XrdHttp2ResponseWriter::acceptEncodingAllowsZstd("gzip"));
+  EXPECT_FALSE(XrdHttp2ResponseWriter::acceptEncodingAllowsZstd("identity"));
+  EXPECT_TRUE(XrdHttp2ResponseWriter::acceptEncodingAllowsZstd("zstd"));
+  EXPECT_TRUE(XrdHttp2ResponseWriter::acceptEncodingAllowsZstd("ZSTD"));
+  EXPECT_TRUE(XrdHttp2ResponseWriter::acceptEncodingAllowsZstd("gzip, zstd"));
+  EXPECT_TRUE(XrdHttp2ResponseWriter::acceptEncodingAllowsZstd("zstd;q=1.0"));
+  EXPECT_TRUE(XrdHttp2ResponseWriter::acceptEncodingAllowsZstd("zstd, gzip;q=0.8"));
+  EXPECT_TRUE(XrdHttp2ResponseWriter::acceptEncodingAllowsZstd("*"));
+  EXPECT_FALSE(XrdHttp2ResponseWriter::acceptEncodingAllowsZstd("zstd;q=0"));
+  EXPECT_FALSE(XrdHttp2ResponseWriter::acceptEncodingAllowsZstd("zstd;q=0.0"));
+  EXPECT_FALSE(XrdHttp2ResponseWriter::acceptEncodingAllowsZstd("*;q=0"));
+  EXPECT_FALSE(XrdHttp2ResponseWriter::acceptEncodingAllowsZstd("*, zstd;q=0"));
+}
+
+#ifdef HAVE_ZSTD
+#include <zstd.h>
+#include <cstring>
+
+TEST(XrdHttpTests, zstdStreamCompressRoundTrip) {
+  std::string plain(2048, 'A');
+  plain += "hello zstd compression test payload";
+
+  ZSTD_CStream *zcs = ZSTD_createCStream();
+  ASSERT_NE(nullptr, zcs);
+  ZSTD_initCStream(zcs, 3);
+
+  std::string compressed;
+  ZSTD_inBuffer in = {plain.data(), plain.size(), 0};
+  char out_buf[1024];
+  while (in.pos < in.size) {
+    ZSTD_outBuffer out = {out_buf, sizeof(out_buf), 0};
+    size_t ret = ZSTD_compressStream2(zcs, &out, &in, ZSTD_e_continue);
+    ASSERT_FALSE(ZSTD_isError(ret)) << ZSTD_getErrorName(ret);
+    compressed.append(out_buf, out.pos);
+  }
+  size_t ret = 0;
+  do {
+    ZSTD_outBuffer out = {out_buf, sizeof(out_buf), 0};
+    ZSTD_inBuffer empty = {nullptr, 0, 0};
+    ret = ZSTD_compressStream2(zcs, &out, &empty, ZSTD_e_end);
+    ASSERT_FALSE(ZSTD_isError(ret)) << ZSTD_getErrorName(ret);
+    compressed.append(out_buf, out.pos);
+  } while (ret > 0);
+  ZSTD_freeCStream(zcs);
+
+  ASSERT_FALSE(compressed.empty());
+  ASSERT_LT(compressed.size(), plain.size());
+
+  ZSTD_DStream *zds = ZSTD_createDStream();
+  ASSERT_NE(nullptr, zds);
+  ZSTD_initDStream(zds);
+  std::string decoded;
+  ZSTD_inBuffer din = {compressed.data(), compressed.size(), 0};
+  while (din.pos < din.size) {
+    ZSTD_outBuffer out = {out_buf, sizeof(out_buf), 0};
+    ret = ZSTD_decompressStream(zds, &out, &din);
+    ASSERT_FALSE(ZSTD_isError(ret)) << ZSTD_getErrorName(ret);
+    decoded.append(out_buf, out.pos);
+  }
+  ZSTD_freeDStream(zds);
+  EXPECT_EQ(plain, decoded);
+}
+
+#if defined(HAVE_NGHTTP2)
+#include "XioHttp2.hh"
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <thread>
+#include <unistd.h>
+#include <atomic>
+#include <nghttp2/nghttp2.h>
+
+TEST(XrdHttpTests, http2ZstdClientDecompress) {
+  const std::string plain =
+      std::string(128, 'z') + " XrdHttp2 zstd client decode payload";
+
+  int lfd = ::socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_GE(lfd, 0);
+  int one = 1;
+  setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  ASSERT_EQ(0, bind(lfd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)));
+  socklen_t alen = sizeof(addr);
+  ASSERT_EQ(0, getsockname(lfd, reinterpret_cast<sockaddr *>(&addr), &alen));
+  const uint16_t port = ntohs(addr.sin_port);
+  ASSERT_EQ(0, listen(lfd, 1));
+
+  std::string seen_ae;
+  std::atomic<bool> server_ok{false};
+  std::thread srv([&] {
+    int fd = accept(lfd, nullptr, nullptr);
+    if (fd < 0)
+      return;
+
+    size_t bound = ZSTD_compressBound(plain.size());
+    std::string comp(bound, '\0');
+    size_t csz = ZSTD_compress(&comp[0], bound, plain.data(), plain.size(), 3);
+    if (ZSTD_isError(csz)) {
+      close(fd);
+      return;
+    }
+    comp.resize(csz);
+
+    struct Ctx {
+      int fd;
+      std::string *ae;
+      std::string body;
+      size_t off{0};
+      std::string status{"200"};
+      std::string enc{"zstd"};
+    } ctx;
+    ctx.fd = fd;
+    ctx.ae = &seen_ae;
+    ctx.body = std::move(comp);
+
+    nghttp2_session_callbacks *cb = nullptr;
+    nghttp2_session_callbacks_new(&cb);
+    nghttp2_session_callbacks_set_send_callback(
+        cb,
+        [](nghttp2_session *, const uint8_t *data, size_t len, int,
+           void *ud) -> ssize_t {
+          auto *c = static_cast<Ctx *>(ud);
+          size_t off = 0;
+          while (off < len) {
+            ssize_t n = ::send(c->fd, data + off, len - off, 0);
+            if (n <= 0)
+              return NGHTTP2_ERR_CALLBACK_FAILURE;
+            off += static_cast<size_t>(n);
+          }
+          return static_cast<ssize_t>(len);
+        });
+    nghttp2_session_callbacks_set_on_header_callback(
+        cb,
+        [](nghttp2_session *, const nghttp2_frame *, const uint8_t *name,
+           size_t namelen, const uint8_t *value, size_t valuelen, uint8_t,
+           void *ud) -> int {
+          auto *c = static_cast<Ctx *>(ud);
+          std::string n(reinterpret_cast<const char *>(name), namelen);
+          std::string v(reinterpret_cast<const char *>(value), valuelen);
+          if (n == "accept-encoding")
+            *c->ae = v;
+          return 0;
+        });
+    nghttp2_session_callbacks_set_on_frame_recv_callback(
+        cb,
+        [](nghttp2_session *sess, const nghttp2_frame *frame, void *ud) -> int {
+          if (frame->hd.type != NGHTTP2_HEADERS ||
+              frame->headers.cat != NGHTTP2_HCAT_REQUEST)
+            return 0;
+          auto *c = static_cast<Ctx *>(ud);
+          nghttp2_nv nva[2];
+          nva[0] = {reinterpret_cast<uint8_t *>(const_cast<char *>(":status")),
+                    reinterpret_cast<uint8_t *>(c->status.data()), 7,
+                    c->status.size(), NGHTTP2_NV_FLAG_NONE};
+          nva[1] = {reinterpret_cast<uint8_t *>(
+                        const_cast<char *>("content-encoding")),
+                    reinterpret_cast<uint8_t *>(c->enc.data()), 16,
+                    c->enc.size(), NGHTTP2_NV_FLAG_NONE};
+          nghttp2_data_provider prd{};
+          prd.source.ptr = c;
+          prd.read_callback = [](nghttp2_session *, int32_t, uint8_t *buf,
+                                 size_t length, uint32_t *data_flags,
+                                 nghttp2_data_source *source,
+                                 void *) -> ssize_t {
+            auto *b = static_cast<Ctx *>(source->ptr);
+            size_t left = b->body.size() - b->off;
+            size_t n = left < length ? left : length;
+            memcpy(buf, b->body.data() + b->off, n);
+            b->off += n;
+            if (b->off >= b->body.size())
+              *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+            return static_cast<ssize_t>(n);
+          };
+          nghttp2_submit_response(sess, frame->hd.stream_id, nva, 2, &prd);
+          return 0;
+        });
+
+    nghttp2_session *sess = nullptr;
+    nghttp2_session_server_new(&sess, cb, &ctx);
+    nghttp2_session_callbacks_del(cb);
+    nghttp2_submit_settings(sess, NGHTTP2_FLAG_NONE, nullptr, 0);
+
+    uint8_t buf[16384];
+    for (int i = 0; i < 64; ++i) {
+      if (nghttp2_session_send(sess) != 0)
+        break;
+      if (!nghttp2_session_want_read(sess) && !nghttp2_session_want_write(sess))
+        break;
+      ssize_t n = recv(fd, buf, sizeof(buf), 0);
+      if (n <= 0)
+        break;
+      if (nghttp2_session_mem_recv(sess, buf, static_cast<size_t>(n)) < 0)
+        break;
+    }
+    nghttp2_session_del(sess);
+    close(fd);
+    server_ok = true;
+  });
+
+  XioFS::Url u;
+  u.scheme = "http";
+  u.host = "127.0.0.1";
+  u.port = port;
+  u.path = "/";
+  u.authority = "127.0.0.1:" + std::to_string(port);
+  u.tls = false;
+
+  XioFS::Http2Session::Options opt;
+  opt.verify_peer = false;
+  opt.timeout_ms = 5000;
+
+  XioFS::Http2Session sess;
+  std::string err;
+  ASSERT_EQ(0, sess.connect(u, opt, err)) << err;
+
+  XioFS::HttpRequest req;
+  req.method = "GET";
+  req.path = "/zstd";
+  XioFS::HttpResponse resp;
+  ASSERT_EQ(0, sess.request(req, resp, err)) << err;
+  EXPECT_EQ(200, resp.status);
+  EXPECT_EQ(plain, resp.body);
+  EXPECT_TRUE(resp.header("content-encoding").empty());
+  EXPECT_EQ(std::to_string(plain.size()), resp.header("content-length"));
+
+  sess.close();
+  srv.join();
+  close(lfd);
+  EXPECT_NE(std::string::npos, seen_ae.find("zstd"));
+  EXPECT_TRUE(server_ok);
+}
+#endif
+#endif
 
 #ifdef HAVE_PARSOCKET
 #include "wire/XrdHttpParsockListener.hh"

@@ -13,6 +13,9 @@ HTTP/1.1 and HTTP/2 wire-protocol substrate for XrdHTTP.
   application request. `http.h2push` advertises and serves promised GETs
   when the client enables push.
 - `XrdHttp2ResponseWriter` — HTTP/2 response headers and DATA frames.
+  When built with libzstd (`BUILD_ZSTD` / `http.zstd on`), responses are
+  compressed with `Content-Encoding: zstd` if the client sent
+  `Accept-Encoding: zstd`.
 - `XrdHttpParsockListener` — libparsocket listener enabling HTTP/2 over
   parallel TCP or RDMA RC transport (`BUILD_PARSOCKET`). Accepts connections
   on a dedicated SPT port and drives HTTP/2 streaming sessions.

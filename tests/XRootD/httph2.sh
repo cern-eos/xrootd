@@ -55,6 +55,30 @@ function test_httph2() {
 	assert h2 -s -o "${out}" "${HTTPS_HOST}/h2-chunked.txt"
 	assert diff -u "${alphabet}" "${out}"
 
+	echo "Testing zstd Content-Encoding"
+	python3 -c 'print(("hello zstd listing payload " * 80).strip())' \
+		> "${tmpdir}/zstd-src.txt"
+	assert h2 -s -T "${tmpdir}/zstd-src.txt" "${HTTPS_HOST}/h2-zstd.txt"
+	enc=$(h2 -sD - -o /dev/null -H 'Accept-Encoding: zstd' \
+		"${HTTPS_HOST}/h2-zstd.txt" | tr -d '\r' \
+		| awk 'BEGIN{IGNORECASE=1} tolower($1)=="content-encoding:" {print tolower($2); exit}')
+	assert_eq "zstd" "${enc}" \
+		"GET with Accept-Encoding: zstd should return Content-Encoding: zstd"
+	enc=$(h2 -sD - -o /dev/null -H 'Accept-Encoding: zstd' \
+		-H 'range: bytes=0-3' "${HTTPS_HOST}/h2-zstd.txt" | tr -d '\r' \
+		| awk 'BEGIN{IGNORECASE=1} tolower($1)=="content-encoding:" {print tolower($2); exit}')
+	[[ -z "${enc}" ]] || error "Range GET must not set Content-Encoding (got ${enc})"
+	if command -v zstd >/dev/null 2>&1; then
+		h2 -s -H 'Accept-Encoding: zstd' -o "${tmpdir}/zstd.zst" \
+			"${HTTPS_HOST}/h2-zstd.txt"
+		assert zstd -d -q -o "${tmpdir}/zstd.out" "${tmpdir}/zstd.zst"
+		assert diff -u "${tmpdir}/zstd-src.txt" "${tmpdir}/zstd.out"
+	elif curl --version 2>/dev/null | grep -qi zstd; then
+		assert h2 -s --compressed -o "${tmpdir}/zstd.out" \
+			"${HTTPS_HOST}/h2-zstd.txt"
+		assert diff -u "${tmpdir}/zstd-src.txt" "${tmpdir}/zstd.out"
+	fi
+
 	code=$(h2 -s -o /dev/null -w '%{http_code}' \
 		-X DELETE "${HTTPS_HOST}/h2-upload.txt")
 	assert_eq 200 "${code}" "DELETE over HTTP/2 should return 200"

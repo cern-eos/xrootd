@@ -18,6 +18,10 @@ http.cadir /etc/grid-security/certificates
 #http.secxtractor /usr/lib64/libXrdHttpVOMS.so
 #http.selfhttps2http yes
 
+# Compress HTTP/2 responses with zstd when the client sends Accept-Encoding: zstd
+# (default on when XRootD is built with libzstd)
+#http.zstd on
+
 # Enable Secure Parallel Transport (parallel TCP / RDMA)
 #http.parsock port 8443 transport tcp sockets 4 protection confidential
 

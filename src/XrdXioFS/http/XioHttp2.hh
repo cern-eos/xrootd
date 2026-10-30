@@ -90,6 +90,15 @@ private:
     size_t body_off{0};
     Clock::time_point deadline{};
     std::function<int(const uint8_t *data, size_t len)> on_chunk;
+    ~Inflight() { cleanupZstd(); }
+    void cleanupZstd();
+    int deliverBody(const uint8_t *data, size_t len, Http2Session *self);
+#ifdef HAVE_ZSTD
+    void *dstream{nullptr};
+    bool is_zstd{false};
+    int feedZstd(const uint8_t *data, size_t len, Http2Session *self);
+    void noteDecoded();
+#endif
   };
 
   Url url_;

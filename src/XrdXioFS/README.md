@@ -154,7 +154,8 @@ non-FUSE client.
 
 The HTTP/2 session keeps one TLS connection and multiplexes streams on
 an I/O thread, so concurrent FUSE reads and writes do not wait for each
-other to finish.
+other to finish. When built with libzstd it sends `Accept-Encoding: zstd`
+and transparently decodes `Content-Encoding: zstd` response bodies.
 
 ## Apple FileProvider (macOS Apple Silicon & Intel)
 

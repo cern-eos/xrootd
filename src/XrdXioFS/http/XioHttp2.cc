@@ -8,6 +8,10 @@
 #include "parsock.h"
 #endif
 
+#ifdef HAVE_ZSTD
+#include <zstd.h>
+#endif
+
 #include <nghttp2/nghttp2.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -37,6 +41,34 @@ namespace {
 bool ieq(const std::string &a, const char *b)
 {
   return strcasecmp(a.c_str(), b) == 0;
+}
+
+bool encodingHasZstd(const std::string &value)
+{
+  std::string enc = value;
+  std::transform(enc.begin(), enc.end(), enc.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  size_t start = 0;
+  while (start < enc.size()) {
+    while (start < enc.size() &&
+           (enc[start] == ' ' || enc[start] == ',' || enc[start] == '\t'))
+      start++;
+    if (start >= enc.size())
+      break;
+    size_t end = enc.find(',', start);
+    if (end == std::string::npos)
+      end = enc.size();
+    std::string tok = enc.substr(start, end - start);
+    start = end + 1;
+    auto semi = tok.find(';');
+    if (semi != std::string::npos)
+      tok.resize(semi);
+    while (!tok.empty() && (tok.back() == ' ' || tok.back() == '\t'))
+      tok.pop_back();
+    if (tok == "zstd")
+      return true;
+  }
+  return false;
 }
 
 nghttp2_nv makeNv(const char *name, const std::string &value)
@@ -70,6 +102,90 @@ std::string HttpResponse::header(const char *name) const
   }
   return {};
 }
+
+void Http2Session::Inflight::cleanupZstd()
+{
+#ifdef HAVE_ZSTD
+  if (dstream) {
+    ZSTD_freeDStream(static_cast<ZSTD_DStream *>(dstream));
+    dstream = nullptr;
+  }
+  is_zstd = false;
+#endif
+}
+
+int Http2Session::Inflight::deliverBody(const uint8_t *data, size_t len,
+                                        Http2Session *self)
+{
+  if (on_chunk) {
+    int crc = on_chunk(data, len);
+    if (crc < 0) {
+      if (err && err->empty())
+        *err = "Stream callback aborted";
+      rc = crc;
+      return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
+    }
+    return 0;
+  }
+  if (!resp)
+    return 0;
+  if (resp->body.size() + len > self->opt_.max_body) {
+    if (err)
+      *err = "HTTP/2 response exceeded max_body";
+    rc = -EFBIG;
+    return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
+  }
+  resp->body.append(reinterpret_cast<const char *>(data), len);
+  return 0;
+}
+
+#ifdef HAVE_ZSTD
+int Http2Session::Inflight::feedZstd(const uint8_t *data, size_t len,
+                                     Http2Session *self)
+{
+  if (!dstream) {
+    if (err && err->empty())
+      *err = "zstd decoder not initialized";
+    rc = -EPROTO;
+    return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
+  }
+  auto *zds = static_cast<ZSTD_DStream *>(dstream);
+  ZSTD_inBuffer in = {data, len, 0};
+  char out_buf[32768];
+  while (in.pos < in.size) {
+    ZSTD_outBuffer out = {out_buf, sizeof(out_buf), 0};
+    size_t ret = ZSTD_decompressStream(zds, &out, &in);
+    if (ZSTD_isError(ret)) {
+      if (err && err->empty())
+        *err = std::string("zstd decompress: ") + ZSTD_getErrorName(ret);
+      rc = -EPROTO;
+      return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
+    }
+    if (out.pos > 0) {
+      int drc = deliverBody(reinterpret_cast<const uint8_t *>(out_buf),
+                            out.pos, self);
+      if (drc != 0)
+        return drc;
+    }
+  }
+  return 0;
+}
+
+void Http2Session::Inflight::noteDecoded()
+{
+  if (!is_zstd || !resp)
+    return;
+  auto &hdrs = resp->headers;
+  hdrs.erase(std::remove_if(hdrs.begin(), hdrs.end(),
+                            [](const std::pair<std::string, std::string> &h) {
+                              return ieq(h.first, "content-encoding") ||
+                                     ieq(h.first, "content-length");
+                            }),
+             hdrs.end());
+  if (!on_chunk)
+    hdrs.emplace_back("content-length", std::to_string(resp->body.size()));
+}
+#endif
 
 Http2Session::Http2Session() = default;
 
@@ -645,7 +761,25 @@ int Http2Session::connect(const Url &url, const Options &opt, std::string &err)
         if (n == ":status")
           st->resp->status = std::atoi(v.c_str());
         else
-          st->resp->headers.emplace_back(std::move(n), std::move(v));
+          st->resp->headers.emplace_back(n, v);
+        if (ieq(n, "content-encoding") && encodingHasZstd(v)) {
+#ifdef HAVE_ZSTD
+          st->is_zstd = true;
+          if (!st->dstream)
+            st->dstream = ZSTD_createDStream();
+          if (st->dstream)
+            ZSTD_initDStream(static_cast<ZSTD_DStream *>(st->dstream));
+          else {
+            if (st->err && st->err->empty())
+              *st->err = "ZSTD_createDStream failed";
+            st->rc = -ENOMEM;
+          }
+#else
+          if (st->err && st->err->empty())
+            *st->err = "content-encoding: zstd is not supported";
+          st->rc = -EPROTO;
+#endif
+        }
         return 0;
       });
   nghttp2_session_callbacks_set_on_data_chunk_recv_callback(
@@ -657,24 +791,11 @@ int Http2Session::connect(const Url &url, const Options &opt, std::string &err)
             nghttp2_session_get_stream_user_data(sess, stream_id));
         if (!st || !st->resp)
           return 0;
-        if (st->on_chunk) {
-          int rc = st->on_chunk(data, len);
-          if (rc < 0) {
-            if (st->err && st->err->empty())
-              *st->err = "Stream callback aborted";
-            st->rc = rc;
-            return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
-          }
-          return 0;
-        }
-        if (st->resp->body.size() + len > self->opt_.max_body) {
-          if (st->err)
-            *st->err = "HTTP/2 response exceeded max_body";
-          st->rc = -EFBIG;
-          return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
-        }
-        st->resp->body.append(reinterpret_cast<const char *>(data), len);
-        return 0;
+#ifdef HAVE_ZSTD
+        if (st->is_zstd)
+          return st->feedZstd(data, len, self);
+#endif
+        return st->deliverBody(data, len, self);
       });
   nghttp2_session_callbacks_set_on_stream_close_callback(
       cb,
@@ -690,6 +811,10 @@ int Http2Session::connect(const Url &url, const Options &opt, std::string &err)
           if (st->err && st->err->empty())
             *st->err = "HTTP/2 stream closed";
         }
+#ifdef HAVE_ZSTD
+        if (st->rc == 0)
+          st->noteDecoded();
+#endif
         self->inflight_.erase(stream_id);
         st->done = true;
         st->cv.notify_one();
@@ -915,6 +1040,17 @@ int Http2Session::request(const HttpRequest &req, HttpResponse &resp,
   addHdr(":scheme", url_.tls ? "https" : "http");
   addHdr(":authority", url_.authority);
   addHdr("user-agent", "XIOFS/0.1");
+#ifdef HAVE_ZSTD
+  bool has_ae = false;
+  for (const auto &h : req.headers) {
+    if (strcasecmp(h.first.c_str(), "accept-encoding") == 0) {
+      has_ae = true;
+      break;
+    }
+  }
+  if (!has_ae)
+    addHdr("accept-encoding", "zstd");
+#endif
   std::string auth;
   if (!opt_.bearer.empty()) {
     auth = "Bearer " + opt_.bearer;

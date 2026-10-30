@@ -82,6 +82,12 @@ if(BUILD_PARSOCKET)
   target_link_libraries(XrdHttpUtils PUBLIC ${PARSOCK_LIBRARIES})
 endif()
 
+if(BUILD_ZSTD)
+  target_compile_definitions(XrdHttpUtils PUBLIC HAVE_ZSTD)
+  target_include_directories(XrdHttpUtils PUBLIC ${ZSTD_INCLUDE_DIRS})
+  target_link_libraries(XrdHttpUtils PUBLIC ${ZSTD_LIBRARIES})
+endif()
+
 set(XrdHttp XrdHttp-${PLUGIN_VERSION})
 add_library(${XrdHttp} MODULE XrdHttpModule.cc)
 target_link_libraries(${XrdHttp} PRIVATE XrdUtils XrdHttpUtils)
