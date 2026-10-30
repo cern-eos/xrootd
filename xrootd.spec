@@ -698,6 +698,7 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 %{_libdir}/libXrdFileCache-6.so
 %{_libdir}/libXrdHttp-6.so
 %{_libdir}/libXrdHttpTPC-6.so
+%{_libdir}/libXrdHttpParsockTpc-6.so
 %{_libdir}/libXrdHttpCors-6.so
 %{_libdir}/libXrdHttpS3-6.so
 %{_libdir}/libXrdMacaroons-6.so

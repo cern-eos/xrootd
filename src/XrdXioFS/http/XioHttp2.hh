@@ -46,10 +46,14 @@ class Http2Session {
 public:
   struct Options {
     std::string cacert;
+    /// OpenSSL CA directory (SSL_CTX_load_verify_locations path argument).
+    std::string cadir;
     std::string bearer;
     std::string negotiate;
     bool krb5{false};
     std::string principal;
+    /// Idle timeout when the request streams through on_chunk (reset as body
+    /// bytes arrive). Total timeout for a response that is buffered instead.
     int timeout_ms{30000};
     bool verify_peer{true};
     size_t max_body{64ull * 1024ull * 1024ull};
@@ -58,7 +62,13 @@ public:
     int parsock_sockets{4};
     std::string parsock_transport{"tcp"}; // tcp, rdma, quic
     std::string parsock_protection{"confidential"}; // confidential, authenticated
+    /// Invoked on the request() caller thread, without the session lock,
+    /// about every 200 ms while a request is in flight. Must not re-enter
+    /// this session.
+    std::function<void()> on_wait;
   };
+
+  const Options &options() const { return opt_; }
 
   Http2Session();
   ~Http2Session();

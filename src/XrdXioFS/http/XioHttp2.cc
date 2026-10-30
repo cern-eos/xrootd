@@ -182,6 +182,8 @@ int Http2Session::Inflight::deliverBody(const uint8_t *data, size_t len,
                                         Http2Session *self)
 {
   if (on_chunk) {
+    if (self && self->opt_.timeout_ms > 0)
+      deadline = Clock::now() + std::chrono::milliseconds(self->opt_.timeout_ms);
     int crc = on_chunk(data, len);
     if (crc < 0) {
       if (err && err->empty())
@@ -476,10 +478,16 @@ int Http2Session::tlsHandshake(std::string &err)
   SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
   if (opt_.verify_peer) {
     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, nullptr);
-    if (!opt_.cacert.empty()) {
-      if (SSL_CTX_load_verify_locations(ctx, opt_.cacert.c_str(), nullptr) != 1) {
+    const char *file = opt_.cacert.empty() ? nullptr : opt_.cacert.c_str();
+    const char *dir = opt_.cadir.empty() ? nullptr : opt_.cadir.c_str();
+    if (file || dir) {
+      if (SSL_CTX_load_verify_locations(ctx, file, dir) != 1) {
         SSL_CTX_free(ctx);
-        err = "failed to load CA file: " + opt_.cacert;
+        err = "failed to load CA";
+        if (file)
+          err += std::string(" file: ") + file;
+        if (dir)
+          err += std::string(" dir: ") + dir;
         return -EINVAL;
       }
     } else {
@@ -1328,8 +1336,19 @@ int Http2Session::requestOnce(const HttpRequest &req, HttpResponse &resp,
   io_cv_.notify_one();
   wakeIo();
 
-  while (!st.done)
-    st.cv.wait(lock);
+  while (!st.done) {
+    if (!opt_.on_wait) {
+      st.cv.wait(lock);
+      continue;
+    }
+    st.cv.wait_for(lock, std::chrono::milliseconds(200));
+    if (st.done)
+      break;
+    auto cb = opt_.on_wait;
+    lock.unlock();
+    cb();
+    lock.lock();
+  }
 
   if (st.rc)
     return st.rc;

@@ -62,6 +62,24 @@ int XrdHttpExtReq::ChunkResp(const char *body, long long bodylen)
   return prot->ChunkResp(body, bodylen);
 }
 
+int XrdHttpExtReq::PumpResponse()
+{
+  if (!prot || !prot->isHttp2())
+    return 0;
+#ifdef HAVE_NGHTTP2
+  for (int i = 0; i < 8; ++i) {
+    const int n = prot->http2Session_.recvOnce(*prot, 0);
+    if (n < 0)
+      return -1;
+    if (n == 0)
+      break;
+  }
+  return prot->http2Session_.flushSend(*prot);
+#else
+  return 0;
+#endif
+}
+
 int XrdHttpExtReq::BuffgetData(int blen, char **data, bool wait) {
 
   if (!prot) return -1;

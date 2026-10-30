@@ -121,6 +121,7 @@ if( NOT XRDCL_ONLY )
 
   add_subdirectory( XrdHttp )
   add_subdirectory( XrdHttpTpc )
+  add_subdirectory( XrdHttpParsockTpc )
   add_subdirectory( XrdHttpS3 )
 
   add_subdirectory( XrdMacaroons )

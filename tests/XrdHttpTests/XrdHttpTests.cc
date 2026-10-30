@@ -1831,3 +1831,107 @@ TEST(XrdHttpTests, stickyRedirectPinsFileIo) {
 }
 #endif
 #endif
+
+#if defined(HAVE_NGHTTP2)
+#include "XrdHttpParsockTpc.hh"
+
+TEST(XrdHttpTests, parsockTpcClaim) {
+  std::map<std::string, std::string> headers;
+  EXPECT_FALSE(XrdPsTpc::claimsParsockCopy("GET", headers));
+  EXPECT_FALSE(XrdPsTpc::claimsParsockCopy("COPY", headers));
+  headers["source"] = "https://src.example/file";
+  EXPECT_FALSE(XrdPsTpc::claimsParsockCopy("COPY", headers));
+  headers["source"] = "<spt://src.example:8443/file>";
+  EXPECT_TRUE(XrdPsTpc::claimsParsockCopy("COPY", headers));
+  headers["source"] = "https://src.example/file";
+  headers["x-xrd-transport"] = "parsock";
+  EXPECT_TRUE(XrdPsTpc::claimsParsockCopy("COPY", headers));
+  headers["x-xrd-transport"] = "standard";
+  EXPECT_FALSE(XrdPsTpc::claimsParsockCopy("COPY", headers));
+  EXPECT_FALSE(XrdPsTpc::claimsParsockCopy("OPTIONS", headers));
+}
+
+TEST(XrdHttpTests, parsockTpcResumeAndMarker) {
+  const std::string marker = XrdPsTpc::formatMarker(
+      "spt://src.example/file", "\"abc\"", 100);
+  std::string url, etag;
+  int64_t size = -1;
+  ASSERT_TRUE(XrdPsTpc::parseMarker(marker, url, etag, size));
+  EXPECT_EQ("spt://src.example/file", url);
+  EXPECT_EQ("\"abc\"", etag);
+  EXPECT_EQ(100, size);
+
+  XrdPsTpc::ResumeInput in;
+  in.source_url = url;
+  in.remote_etag = etag;
+  in.remote_size = size;
+  in.have_marker = true;
+  in.marker_url = url;
+  in.marker_etag = etag;
+  in.marker_size = size;
+  in.local_size = 40;
+  auto d = XrdPsTpc::decideResume(in);
+  EXPECT_EQ(XrdPsTpc::ResumeAction::Resume, d.action);
+  EXPECT_EQ(40, d.cursor);
+
+  in.local_size = 100;
+  d = XrdPsTpc::decideResume(in);
+  EXPECT_EQ(XrdPsTpc::ResumeAction::Complete, d.action);
+
+  in.local_size = 40;
+  in.overwrite = true;
+  d = XrdPsTpc::decideResume(in);
+  EXPECT_EQ(XrdPsTpc::ResumeAction::Truncate, d.action);
+  EXPECT_EQ(0, d.cursor);
+
+  in.overwrite = false;
+  in.have_marker = false;
+  d = XrdPsTpc::decideResume(in);
+  EXPECT_EQ(XrdPsTpc::ResumeAction::Truncate, d.action);
+
+  in.have_marker = true;
+  in.marker_etag = "\"other\"";
+  d = XrdPsTpc::decideResume(in);
+  EXPECT_EQ(XrdPsTpc::ResumeAction::Truncate, d.action);
+
+  in.marker_etag = etag;
+  in.local_size = 120;
+  d = XrdPsTpc::decideResume(in);
+  EXPECT_EQ(XrdPsTpc::ResumeAction::Truncate, d.action);
+
+  int64_t start = -1;
+  EXPECT_TRUE(XrdPsTpc::contentRangeStart("bytes 40-99/100", start));
+  EXPECT_EQ(40, start);
+  EXPECT_FALSE(XrdPsTpc::contentRangeStart("bytes */100", start));
+}
+
+TEST(XrdHttpTests, parsockTpcTransportHint) {
+  std::string err;
+  XioFS::Url url;
+  ASSERT_TRUE(XioFS::parseUrl("https://src.example/file", url, err)) << err;
+  XioFS::Http2Session::Options opt;
+  ASSERT_TRUE(XrdPsTpc::applyTransport(
+      url, opt, XrdPsTpc::TransportKind::Parsock,
+      "port=8443;transport=rdma;protection=authenticated;sockets=4", err))
+      << err;
+  EXPECT_TRUE(url.parsock);
+  EXPECT_TRUE(opt.parsock);
+  EXPECT_EQ(8443, url.port);
+  EXPECT_EQ("src.example", url.host);
+  EXPECT_EQ("rdma", opt.parsock_transport);
+  EXPECT_EQ("authenticated", opt.parsock_protection);
+  EXPECT_EQ(4, opt.parsock_sockets);
+  EXPECT_EQ("spt", url.scheme);
+
+  ASSERT_FALSE(XrdPsTpc::applyTransport(
+      url, opt, XrdPsTpc::TransportKind::Parsock, "transport=tcp", err));
+
+  ASSERT_TRUE(XioFS::parseUrl("spt://src.example:8443/file", url, err)) << err;
+  ASSERT_TRUE(XrdPsTpc::applyTransport(
+      url, opt, XrdPsTpc::TransportKind::Standard, "", err))
+      << err;
+  EXPECT_FALSE(url.parsock);
+  EXPECT_FALSE(opt.parsock);
+  EXPECT_EQ("https", url.scheme);
+}
+#endif

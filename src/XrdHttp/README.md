@@ -119,6 +119,13 @@ HTTP/2 is available when XRootD is built with nghttp2 (`BUILD_HTTP2`).
 - `http.sticky on` adds `X-Xrd-Sticky: 1` to those redirects. A client then
   keeps file I/O and `HEAD` for that path on the redirected URL, and sends
   other metadata back to the URL it started from. Default is `off`.
+- Parsock third-party copy is `libXrdHttpParsockTpc`. It claims `COPY` when
+  `Source` is `spt://` or `parsock://`, or the request has
+  `X-Xrd-Transport: parsock`. A normal `https` COPY stays with `XrdHttpTPC`.
+  The disk server pulls the object with one HTTP/2 session (libparsocket's
+  own lanes; no curl). A `.xrdtpc` file beside the object stores the source
+  URL, ETag, and size. A later COPY of the same source resumes from the bytes
+  already written, unless `Overwrite: T`.
 - `http.zstd on` (default when built with libzstd) compresses HTTP/2 response
   bodies with `Content-Encoding: zstd` when the client sends
   `Accept-Encoding: zstd` (or `*`). HEAD, 204/304, 206 Range, and already
@@ -192,6 +199,7 @@ http.parser llhttp
 
 # Optional feature modules
 # http.exthandler xrdtpc libXrdHttpTPC.so
+# http.exthandler xrdps libXrdHttpParsockTpc.so
 # http.auth krb5
 ```
 

@@ -93,6 +93,11 @@ public:
   /// Send a (potentially partial) body in a chunked response; invoking with NULL body
   //  indicates that this is the last chunk in the response.
   int ChunkResp(const char *body, long long bodylen);
+
+  /// While ProcessReq is blocked, read client HTTP/2 frames (window updates)
+  /// and flush queued response DATA. No-op on HTTP/1. Does not dispatch a
+  /// new request.
+  int PumpResponse();
 };
 
 

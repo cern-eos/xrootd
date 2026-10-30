@@ -9,7 +9,9 @@ target_link_libraries(xrdhttp-unit-tests XrdHttpUtils GTest::gtest GTest::gtest_
 
 if(BUILD_HTTP2)
   target_link_libraries(xrdhttp-unit-tests XrdXioFS)
-  target_include_directories(xrdhttp-unit-tests PRIVATE ${PROJECT_SOURCE_DIR}/src/XrdXioFS/http)
+  target_include_directories(xrdhttp-unit-tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/XrdXioFS/http
+    ${PROJECT_SOURCE_DIR}/src/XrdHttpParsockTpc)
 endif()
 
 if(BUILD_ZSTD)
