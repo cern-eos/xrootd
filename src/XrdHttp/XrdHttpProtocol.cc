@@ -23,6 +23,8 @@
 
 #include "XrdVersion.hh"
 
+#include <cstdio>
+
 #include "Xrd/XrdBuffer.hh"
 #include "Xrd/XrdLink.hh"
 #include "XProtocol/XProtocol.hh"
@@ -145,6 +147,7 @@ std::vector<std::string> XrdHttpProtocol::m_h2push_paths;
 #ifdef HAVE_ZSTD
 bool XrdHttpProtocol::gZstdEnabled = true;
 #endif
+bool XrdHttpProtocol::gStickyRedirect = false;
 
 #ifdef HAVE_PARSOCKET
 XrdHttpParsockConfig XrdHttpProtocol::s_parsockConfig;
@@ -1183,6 +1186,7 @@ int XrdHttpProtocol::Config(const char *ConfigFN, XrdOucEnv *myEnv) {
       else if TS_Xeq("h2push", xh2push);
       else if TS_Xeq("h2", xh2);
       else if TS_Xeq("zstd", xzstd);
+      else if TS_Xeq("sticky", xsticky);
       else if TS_Xeq("parsock", xparsock);
       else {
         eDest.Say("Config warning: ignoring unknown directive '", var, "'.");
@@ -2035,6 +2039,26 @@ void XrdHttpProtocol::detachParsock()
   parsockClientIP_.clear();
 }
 #endif
+
+void XrdHttpProtocol::appendRedirectTransport(XrdOucString &hdr) const
+{
+  hdr += "\r\nX-Xrd-Transport: ";
+#ifdef HAVE_PARSOCKET
+  if (isParsock() && s_parsockConfig.enabled && s_parsockConfig.port > 0) {
+    char line[512];
+    snprintf(line, sizeof(line),
+             "parsock\r\nX-Xrd-Parsock: port=%d;transport=%s;protection=%s;sockets=%d",
+             s_parsockConfig.port,
+             s_parsockConfig.transport.c_str(),
+             s_parsockConfig.protection.c_str(),
+             s_parsockConfig.initial_sockets);
+    hdr += line;
+  } else
+#endif
+    hdr += "standard";
+  if (gStickyRedirect)
+    hdr += "\r\nX-Xrd-Sticky: 1";
+}
 
 #ifdef HAVE_NGHTTP2
 int XrdHttpProtocol::feedHttp2Wire(const char *data, size_t len)
@@ -3941,6 +3965,26 @@ int XrdHttpProtocol::xzstd(XrdOucStream &Config) {
   eDest.Say("Config warning: http.zstd ignored (not compiled with zstd support)");
   return 0;
 #endif
+}
+
+int XrdHttpProtocol::xsticky(XrdOucStream &Config) {
+  auto val = Config.GetWord();
+  if (!val || !val[0]) {
+    eDest.Emsg("Config", "sticky argument not specified (use 'on' or 'off')");
+    return 1;
+  }
+  if (!strcmp(val, "off") || !strcmp(val, "disable")) {
+    gStickyRedirect = false;
+    eDest.Say("Config http.sticky off");
+    return 0;
+  }
+  if (!strcmp(val, "on") || !strcmp(val, "enable")) {
+    gStickyRedirect = true;
+    eDest.Say("Config http.sticky on");
+    return 0;
+  }
+  eDest.Emsg("Config", "invalid sticky parameter -", val);
+  return 1;
 }
 
 int XrdHttpProtocol::xparsock(XrdOucStream &Config) {

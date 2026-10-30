@@ -156,6 +156,15 @@ The HTTP/2 session keeps one TLS connection and multiplexes streams on
 an I/O thread, so concurrent FUSE reads and writes do not wait for each
 other to finish. When built with libzstd it sends `Accept-Encoding: zstd`
 and transparently decodes `Content-Encoding: zstd` response bodies.
+`301`/`302`/`303`/`307`/`308` responses are followed (at most eight hops).
+`X-Xrd-Transport: parsock` reconnects with `ps_connect` to the
+`X-Xrd-Parsock` port on the `Location` host; `standard`, or a missing
+hint, follows the `Location` URL on a normal HTTP socket. Credentials are
+not forwarded to a different host. `X-Xrd-Sticky: 1` pins later `GET`,
+`PUT`, `PATCH`, and `HEAD` for that path to the redirected URL. Other
+metadata (`PROPFIND`, `DELETE`, xattrs, locks, and so on) keeps using the
+original URL. The origin connection is left in place; data servers are
+separate sessions.
 
 ## Apple FileProvider (macOS Apple Silicon & Intel)
 

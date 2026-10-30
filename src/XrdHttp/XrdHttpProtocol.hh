@@ -195,6 +195,11 @@ public:
   bool isParsock() const { return false; }
 #endif
 
+  /// Hint whether the next hop should be opened as libparsocket or as a
+  /// normal HTTP socket. Parsock parameters are this server's http.parsock
+  /// settings and are sent only when the request itself arrived on parsocket.
+  void appendRedirectTransport(XrdOucString &hdr) const;
+
   /// Ctor, dtors and copy ctor
   XrdHttpProtocol(const XrdHttpProtocol&) = delete;
   XrdHttpProtocol &operator =(const XrdHttpProtocol &rhs);
@@ -333,11 +338,13 @@ private:
   static int xh2push(XrdOucStream &Config);
   static int xh2(XrdOucStream &Config);
   static int xzstd(XrdOucStream &Config);
+  static int xsticky(XrdOucStream &Config);
   static int xparsock(XrdOucStream &Config);
 
 #ifdef HAVE_ZSTD
   static bool gZstdEnabled;
 #endif
+  static bool gStickyRedirect;
 
 #ifdef HAVE_PARSOCKET
   ps_connection_t *parsockConn_{nullptr};

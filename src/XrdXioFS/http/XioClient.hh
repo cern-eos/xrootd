@@ -12,6 +12,9 @@
 
 #include <cstdint>
 #include <ctime>
+#include <functional>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <sys/stat.h>
@@ -104,11 +107,30 @@ private:
   Http2Session::Options opt_;
   std::mutex mu_;
 
+  struct Affinity {
+    Url data;
+    Http2Session::Options opt;
+  };
+  struct DataLink {
+    std::unique_ptr<Http2Session> sess;
+    Http2Session::Options opt;
+    Url url;
+  };
+
   std::string absPath(const std::string &rel) const;
   int ensure(std::string &err);
   int doReq(const char *method, const std::string &rel,
             const std::vector<std::pair<std::string, std::string>> &hdrs,
             const std::string &body, HttpResponse &resp, std::string &err);
+  int invoke(const char *method, const std::string &rel,
+             const std::vector<std::pair<std::string, std::string>> &hdrs,
+             const std::string &body, HttpResponse &resp, std::string &err,
+             const std::function<int(const uint8_t *data, size_t len)> &on_chunk);
+  int sessionFor(const Url &url, const Http2Session::Options &opt, bool origin,
+                 Http2Session *&out, std::string &err);
+
+  std::map<std::string, Affinity> sticky_;
+  std::map<std::string, DataLink> data_;
   int proppatch(const std::string &relpath, const std::string &body,
                 std::string &err);
 };

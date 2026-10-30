@@ -1287,6 +1287,12 @@ TEST(XrdHttpTests, parsockHttp2PrefaceExchange) {
 
 #if defined(HAVE_NGHTTP2)
 #include "XioHttp2.hh"
+#include "XioClient.hh"
+#include <nghttp2/nghttp2.h>
+#include <atomic>
+#include <cstring>
+#include <thread>
+#include <vector>
 
 TEST(XrdHttpTests, parsockXioHttp2ClientSession) {
   XrdHttpParsockListener listener;
@@ -1363,6 +1369,465 @@ TEST(XrdHttpTests, parsockXioHttp2AuthenticatedProtection) {
   sess.close();
   EXPECT_FALSE(sess.connected());
   listener.Stop();
+}
+
+TEST(XrdHttpTests, planRedirectTransportHint) {
+  std::string err;
+  XioFS::Url cur;
+  ASSERT_TRUE(XioFS::parseUrl("https://redirector.example:7097/file", cur, err)) << err;
+
+  XioFS::Http2Session::Options opt;
+  opt.parsock = true;
+  opt.bearer = "secret";
+
+  XioFS::HttpRequest req;
+  req.method = "GET";
+  req.path = "/file";
+  req.headers.push_back({"authorization", "Bearer secret"});
+
+  XioFS::HttpResponse resp;
+  resp.status = 302;
+  resp.headers.push_back({"location", "https://data.example:7097/file?authz=1"});
+  resp.headers.push_back({"x-xrd-transport", "standard"});
+
+  XioFS::RedirectPlan plan;
+  ASSERT_EQ(1, XioFS::planRedirect(cur, opt, req, resp, plan, err)) << err;
+  EXPECT_FALSE(plan.sticky);
+  EXPECT_TRUE(plan.reconnect);
+  EXPECT_FALSE(plan.url.parsock);
+  EXPECT_FALSE(plan.opt.parsock);
+  EXPECT_FALSE(plan.send_credentials);
+  EXPECT_EQ("data.example", plan.url.host);
+  EXPECT_EQ(7097, plan.url.port);
+  EXPECT_EQ("/file?authz=1", plan.request.path);
+  EXPECT_TRUE(plan.request.headers.empty());
+
+  resp.headers.clear();
+  resp.headers.push_back({"location", "https://data.example:7097/file"});
+  resp.headers.push_back({"x-xrd-transport", "parsock"});
+  resp.headers.push_back({"x-xrd-parsock",
+                          "port=8443;transport=rdma;protection=authenticated;sockets=4"});
+  ASSERT_EQ(1, XioFS::planRedirect(cur, opt, req, resp, plan, err)) << err;
+  EXPECT_TRUE(plan.url.parsock);
+  EXPECT_TRUE(plan.opt.parsock);
+  EXPECT_EQ(8443, plan.url.port);
+  EXPECT_EQ("data.example", plan.url.host);
+  EXPECT_EQ("/file", plan.request.path);
+  EXPECT_EQ("rdma", plan.opt.parsock_transport);
+  EXPECT_EQ("authenticated", plan.opt.parsock_protection);
+  EXPECT_EQ(4, plan.opt.parsock_sockets);
+  EXPECT_FALSE(plan.sticky);
+
+  resp.headers.push_back({"x-xrd-sticky", "1"});
+  ASSERT_EQ(1, XioFS::planRedirect(cur, opt, req, resp, plan, err)) << err;
+  EXPECT_TRUE(plan.sticky);
+
+  req.method = "PUT";
+  req.body = "abc";
+  resp.status = 307;
+  resp.headers[0].second = "https://redirector.example:7097/file2";
+  ASSERT_EQ(1, XioFS::planRedirect(cur, opt, req, resp, plan, err)) << err;
+  EXPECT_EQ("PUT", plan.request.method);
+  EXPECT_EQ("abc", plan.request.body);
+  EXPECT_TRUE(plan.send_credentials);
+  EXPECT_EQ(8443, plan.url.port);
+
+  resp.status = 302;
+  ASSERT_EQ(1, XioFS::planRedirect(cur, opt, req, resp, plan, err)) << err;
+  EXPECT_EQ("GET", plan.request.method);
+  EXPECT_TRUE(plan.request.body.empty());
+
+  resp.status = 200;
+  EXPECT_EQ(0, XioFS::planRedirect(cur, opt, req, resp, plan, err));
+
+  resp.status = 302;
+  resp.headers.clear();
+  EXPECT_EQ(-EPROTO, XioFS::planRedirect(cur, opt, req, resp, plan, err));
+}
+
+TEST(XrdHttpTests, http2FollowStandardRedirect) {
+  auto listenOn = [](uint16_t &port) {
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    EXPECT_GE(fd, 0);
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    EXPECT_EQ(0, bind(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)));
+    socklen_t alen = sizeof(addr);
+    EXPECT_EQ(0, getsockname(fd, reinterpret_cast<sockaddr *>(&addr), &alen));
+    port = ntohs(addr.sin_port);
+    EXPECT_EQ(0, listen(fd, 1));
+    return fd;
+  };
+
+  uint16_t port_a = 0, port_b = 0;
+  int fd_a = listenOn(port_a);
+  int fd_b = listenOn(port_b);
+  ASSERT_GT(port_a, 0);
+  ASSERT_GT(port_b, 0);
+
+  const std::string location =
+      "http://127.0.0.1:" + std::to_string(port_b) + "/final";
+  const std::string body = "redirect-ok";
+
+  auto serve = [](int lfd, int status, const std::string &loc,
+                  const std::string &payload) {
+    int fd = accept(lfd, nullptr, nullptr);
+    if (fd < 0)
+      return;
+    struct Ctx {
+      int fd;
+      std::string status;
+      std::string location;
+      std::string transport{"standard"};
+      std::string body;
+      size_t off{0};
+    } ctx;
+    ctx.fd = fd;
+    ctx.status = std::to_string(status);
+    ctx.location = loc;
+    ctx.body = payload;
+
+    nghttp2_session_callbacks *cb = nullptr;
+    nghttp2_session_callbacks_new(&cb);
+    nghttp2_session_callbacks_set_send_callback(
+        cb,
+        [](nghttp2_session *, const uint8_t *data, size_t len, int,
+           void *ud) -> ssize_t {
+          auto *c = static_cast<Ctx *>(ud);
+          size_t off = 0;
+          while (off < len) {
+            ssize_t n = ::send(c->fd, data + off, len - off, 0);
+            if (n <= 0)
+              return NGHTTP2_ERR_CALLBACK_FAILURE;
+            off += static_cast<size_t>(n);
+          }
+          return static_cast<ssize_t>(len);
+        });
+    nghttp2_session_callbacks_set_on_frame_recv_callback(
+        cb,
+        [](nghttp2_session *sess, const nghttp2_frame *frame, void *ud) -> int {
+          if (frame->hd.type != NGHTTP2_HEADERS ||
+              frame->headers.cat != NGHTTP2_HCAT_REQUEST)
+            return 0;
+          auto *c = static_cast<Ctx *>(ud);
+          std::vector<nghttp2_nv> nva;
+          nva.push_back({reinterpret_cast<uint8_t *>(const_cast<char *>(":status")),
+                         reinterpret_cast<uint8_t *>(c->status.data()), 7,
+                         c->status.size(), NGHTTP2_NV_FLAG_NONE});
+          std::string loc_name = "location";
+          std::string tr_name = "x-xrd-transport";
+          if (!c->location.empty()) {
+            nva.push_back({reinterpret_cast<uint8_t *>(loc_name.data()),
+                           reinterpret_cast<uint8_t *>(c->location.data()),
+                           loc_name.size(), c->location.size(),
+                           NGHTTP2_NV_FLAG_NONE});
+            nva.push_back({reinterpret_cast<uint8_t *>(tr_name.data()),
+                           reinterpret_cast<uint8_t *>(c->transport.data()),
+                           tr_name.size(), c->transport.size(),
+                           NGHTTP2_NV_FLAG_NONE});
+          }
+          nghttp2_data_provider prd{};
+          nghttp2_data_provider *prdptr = nullptr;
+          if (!c->body.empty()) {
+            prd.source.ptr = c;
+            prd.read_callback = [](nghttp2_session *, int32_t, uint8_t *buf,
+                                   size_t length, uint32_t *data_flags,
+                                   nghttp2_data_source *source,
+                                   void *) -> ssize_t {
+              auto *b = static_cast<Ctx *>(source->ptr);
+              size_t left = b->body.size() - b->off;
+              size_t n = left < length ? left : length;
+              memcpy(buf, b->body.data() + b->off, n);
+              b->off += n;
+              if (b->off >= b->body.size())
+                *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+              return static_cast<ssize_t>(n);
+            };
+            prdptr = &prd;
+          }
+          nghttp2_submit_response(sess, frame->hd.stream_id, nva.data(),
+                                  nva.size(), prdptr);
+          return 0;
+        });
+
+    nghttp2_session *sess = nullptr;
+    nghttp2_session_server_new(&sess, cb, &ctx);
+    nghttp2_session_callbacks_del(cb);
+    nghttp2_submit_settings(sess, NGHTTP2_FLAG_NONE, nullptr, 0);
+    uint8_t buf[16384];
+    for (int i = 0; i < 64; ++i) {
+      if (nghttp2_session_send(sess) != 0)
+        break;
+      if (!nghttp2_session_want_read(sess) && !nghttp2_session_want_write(sess))
+        break;
+      ssize_t n = recv(fd, buf, sizeof(buf), 0);
+      if (n <= 0)
+        break;
+      if (nghttp2_session_mem_recv(sess, buf, static_cast<size_t>(n)) < 0)
+        break;
+    }
+    nghttp2_session_del(sess);
+    close(fd);
+  };
+
+  std::thread srv_a(serve, fd_a, 302, location, std::string());
+  std::thread srv_b(serve, fd_b, 200, std::string(), body);
+
+  XioFS::Url u;
+  u.scheme = "http";
+  u.host = "127.0.0.1";
+  u.port = port_a;
+  u.path = "/start";
+  u.authority = "127.0.0.1:" + std::to_string(port_a);
+  u.tls = false;
+
+  XioFS::Http2Session::Options opt;
+  opt.verify_peer = false;
+  opt.timeout_ms = 5000;
+
+  XioFS::Http2Session sess;
+  std::string err;
+  ASSERT_EQ(0, sess.connect(u, opt, err)) << err;
+
+  XioFS::HttpRequest req;
+  req.method = "GET";
+  req.path = "/start";
+  XioFS::HttpResponse resp;
+  ASSERT_EQ(0, sess.request(req, resp, err)) << err;
+  EXPECT_EQ(200, resp.status);
+  EXPECT_EQ(body, resp.body);
+
+  sess.close();
+  srv_a.join();
+  srv_b.join();
+  close(fd_a);
+  close(fd_b);
+}
+
+TEST(XrdHttpTests, stickyRedirectPinsFileIo) {
+  auto listenOn = [](uint16_t &port) {
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    EXPECT_GE(fd, 0);
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    EXPECT_EQ(0, bind(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)));
+    socklen_t alen = sizeof(addr);
+    EXPECT_EQ(0, getsockname(fd, reinterpret_cast<sockaddr *>(&addr), &alen));
+    port = ntohs(addr.sin_port);
+    EXPECT_EQ(0, listen(fd, 1));
+    return fd;
+  };
+
+  uint16_t port_origin = 0, port_data = 0;
+  int fd_origin = listenOn(port_origin);
+  int fd_data = listenOn(port_data);
+  ASSERT_GT(port_origin, 0);
+  ASSERT_GT(port_data, 0);
+
+  const std::string payload = "hello-sticky";
+  const std::string location =
+      "http://127.0.0.1:" + std::to_string(port_data) + "/obj";
+  std::atomic<int> origin_get{0}, origin_propfind{0}, data_get{0}, data_head{0};
+
+  auto serve = [&](int lfd, bool origin) {
+    int fd = accept(lfd, nullptr, nullptr);
+    if (fd < 0)
+      return;
+    struct Ctx {
+      int fd;
+      bool origin;
+      std::string method;
+      std::string path;
+      std::string location;
+      std::string body;
+      size_t off{0};
+      std::atomic<int> *origin_get;
+      std::atomic<int> *origin_propfind;
+      std::atomic<int> *data_get;
+      std::atomic<int> *data_head;
+    } ctx;
+    ctx.fd = fd;
+    ctx.origin = origin;
+    ctx.location = location;
+    ctx.body = payload;
+    ctx.origin_get = &origin_get;
+    ctx.origin_propfind = &origin_propfind;
+    ctx.data_get = &data_get;
+    ctx.data_head = &data_head;
+
+    nghttp2_session_callbacks *cb = nullptr;
+    nghttp2_session_callbacks_new(&cb);
+    nghttp2_session_callbacks_set_send_callback(
+        cb,
+        [](nghttp2_session *, const uint8_t *data, size_t len, int,
+           void *ud) -> ssize_t {
+          auto *c = static_cast<Ctx *>(ud);
+          size_t off = 0;
+          while (off < len) {
+            ssize_t n = ::send(c->fd, data + off, len - off, 0);
+            if (n <= 0)
+              return NGHTTP2_ERR_CALLBACK_FAILURE;
+            off += static_cast<size_t>(n);
+          }
+          return static_cast<ssize_t>(len);
+        });
+    nghttp2_session_callbacks_set_on_header_callback(
+        cb,
+        [](nghttp2_session *, const nghttp2_frame *frame, const uint8_t *name,
+           size_t namelen, const uint8_t *value, size_t valuelen, uint8_t,
+           void *ud) -> int {
+          if (frame->hd.type != NGHTTP2_HEADERS)
+            return 0;
+          auto *c = static_cast<Ctx *>(ud);
+          std::string n(reinterpret_cast<const char *>(name), namelen);
+          std::string v(reinterpret_cast<const char *>(value), valuelen);
+          if (n == ":method")
+            c->method = v;
+          else if (n == ":path")
+            c->path = v;
+          return 0;
+        });
+    nghttp2_session_callbacks_set_on_frame_recv_callback(
+        cb,
+        [](nghttp2_session *sess, const nghttp2_frame *frame, void *ud) -> int {
+          if (frame->hd.type != NGHTTP2_HEADERS ||
+              frame->headers.cat != NGHTTP2_HCAT_REQUEST)
+            return 0;
+          auto *c = static_cast<Ctx *>(ud);
+          std::string status = "200";
+          std::string extra_name;
+          std::string extra_value;
+          bool send_body = false;
+          c->off = 0;
+          if (c->origin && c->method == "GET") {
+            c->origin_get->fetch_add(1);
+            status = "302";
+            extra_name = "location";
+            extra_value = c->location;
+          } else if (c->origin && c->method == "PROPFIND") {
+            c->origin_propfind->fetch_add(1);
+            status = "404";
+          } else if (!c->origin && c->method == "GET") {
+            c->data_get->fetch_add(1);
+            status = "200";
+            send_body = true;
+          } else if (!c->origin && c->method == "HEAD") {
+            c->data_head->fetch_add(1);
+            status = "200";
+            extra_name = "content-length";
+            extra_value = std::to_string(c->body.size());
+          } else {
+            status = "404";
+          }
+
+          std::string sticky_name = "x-xrd-sticky";
+          std::string sticky_value = "1";
+          std::string transport_name = "x-xrd-transport";
+          std::string transport_value = "standard";
+          std::vector<nghttp2_nv> nva;
+          nva.push_back({reinterpret_cast<uint8_t *>(const_cast<char *>(":status")),
+                         reinterpret_cast<uint8_t *>(status.data()), 7,
+                         status.size(), NGHTTP2_NV_FLAG_NONE});
+          if (!extra_name.empty()) {
+            nva.push_back({reinterpret_cast<uint8_t *>(extra_name.data()),
+                           reinterpret_cast<uint8_t *>(extra_value.data()),
+                           extra_name.size(), extra_value.size(),
+                           NGHTTP2_NV_FLAG_NONE});
+          }
+          if (status == "302") {
+            nva.push_back({reinterpret_cast<uint8_t *>(sticky_name.data()),
+                           reinterpret_cast<uint8_t *>(sticky_value.data()),
+                           sticky_name.size(), sticky_value.size(),
+                           NGHTTP2_NV_FLAG_NONE});
+            nva.push_back({reinterpret_cast<uint8_t *>(transport_name.data()),
+                           reinterpret_cast<uint8_t *>(transport_value.data()),
+                           transport_name.size(), transport_value.size(),
+                           NGHTTP2_NV_FLAG_NONE});
+          }
+          nghttp2_data_provider prd{};
+          nghttp2_data_provider *prdptr = nullptr;
+          if (send_body) {
+            prd.source.ptr = c;
+            prd.read_callback = [](nghttp2_session *, int32_t, uint8_t *buf,
+                                   size_t length, uint32_t *data_flags,
+                                   nghttp2_data_source *source,
+                                   void *) -> ssize_t {
+              auto *b = static_cast<Ctx *>(source->ptr);
+              size_t left = b->body.size() - b->off;
+              size_t n = left < length ? left : length;
+              memcpy(buf, b->body.data() + b->off, n);
+              b->off += n;
+              if (b->off >= b->body.size())
+                *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+              return static_cast<ssize_t>(n);
+            };
+            prdptr = &prd;
+          }
+          nghttp2_submit_response(sess, frame->hd.stream_id, nva.data(),
+                                  nva.size(), prdptr);
+          c->method.clear();
+          c->path.clear();
+          return 0;
+        });
+
+    nghttp2_session *sess = nullptr;
+    nghttp2_session_server_new(&sess, cb, &ctx);
+    nghttp2_session_callbacks_del(cb);
+    nghttp2_submit_settings(sess, NGHTTP2_FLAG_NONE, nullptr, 0);
+    uint8_t buf[16384];
+    for (int i = 0; i < 64; ++i) {
+      if (nghttp2_session_send(sess) != 0)
+        break;
+      if (!nghttp2_session_want_read(sess) && !nghttp2_session_want_write(sess))
+        break;
+      ssize_t n = recv(fd, buf, sizeof(buf), 0);
+      if (n <= 0)
+        break;
+      if (nghttp2_session_mem_recv(sess, buf, static_cast<size_t>(n)) < 0)
+        break;
+    }
+    nghttp2_session_del(sess);
+    close(fd);
+  };
+
+  std::thread origin_thr(serve, fd_origin, true);
+  std::thread data_thr(serve, fd_data, false);
+
+  XioFS::Client client;
+  XioFS::Http2Session::Options opt;
+  opt.verify_peer = false;
+  opt.timeout_ms = 5000;
+  std::string err;
+  ASSERT_EQ(0, client.open("http://127.0.0.1:" + std::to_string(port_origin) + "/",
+                           opt, err))
+      << err;
+
+  std::string body;
+  ASSERT_EQ(0, client.read("obj", 0, payload.size(), body, err)) << err;
+  EXPECT_EQ(payload, body);
+  ASSERT_EQ(0, client.read("obj", 0, payload.size(), body, err)) << err;
+  EXPECT_EQ(payload, body);
+
+  XioFS::Attr attr;
+  ASSERT_EQ(0, client.getattr("obj", attr, err)) << err;
+  EXPECT_EQ(static_cast<int64_t>(payload.size()), attr.size);
+
+  EXPECT_EQ(1, origin_get.load());
+  EXPECT_EQ(1, origin_propfind.load());
+  EXPECT_EQ(2, data_get.load());
+  EXPECT_EQ(1, data_head.load());
+
+  client.close();
+  close(fd_origin);
+  close(fd_data);
+  origin_thr.join();
+  data_thr.join();
 }
 #endif
 #endif

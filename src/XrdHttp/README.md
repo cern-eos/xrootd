@@ -110,6 +110,15 @@ HTTP/2 is available when XRootD is built with nghttp2 (`BUILD_HTTP2`).
 - `http.h2push /path` sends `PUSH_PROMISE` after a successful GET when the
   client advertised `SETTINGS_ENABLE_PUSH=1`, then serves the promised GET
   through the serialized Bridge.
+- Cluster redirects (`302`/`307`) include `X-Xrd-Transport: parsock` or
+  `standard`. `parsock` is sent only when the request arrived on libparsocket,
+  together with `X-Xrd-Parsock: port=...;transport=...;protection=...;sockets=...`
+  taken from this server's `http.parsock` settings. The client applies that
+  port to the host in `Location`. A normal HTTP request is told `standard` and
+  follows `Location` as `http` or `https`.
+- `http.sticky on` adds `X-Xrd-Sticky: 1` to those redirects. A client then
+  keeps file I/O and `HEAD` for that path on the redirected URL, and sends
+  other metadata back to the URL it started from. Default is `off`.
 - `http.zstd on` (default when built with libzstd) compresses HTTP/2 response
   bodies with `Content-Encoding: zstd` when the client sends
   `Accept-Encoding: zstd` (or `*`). HEAD, 204/304, 206 Range, and already
@@ -191,6 +200,7 @@ http.parser llhttp
 | `http.parser` | `llhttp`, `legacy` | HTTP/1.1 header parsing only |
 | `http.h2push` | path (repeatable) | HTTP/2 PUSH_PROMISE targets after a successful GET |
 | `http.zstd` | `on`, `off` | HTTP/2 `Content-Encoding: zstd` when the client accepts it (default `on` if built with libzstd) |
+| `http.sticky` | `on`, `off` | Add `X-Xrd-Sticky: 1` on redirects (default `off`) |
 | `http.tlsclientauth` | `on`, `off` | TLS client certificate authentication |
 | `http.selfhttps2http` | `yes`, `no` | Signed redirect from HTTPS to HTTP |
 | `http.auth` | `krb5`, `tpc`, … | See feature READMEs |

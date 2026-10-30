@@ -1598,6 +1598,8 @@ bool XrdHttpReq::Redir(XrdXrootd::Bridge::Context &info, //!< the result context
     stripCgi(redirdest, prot->strp_cgi_params); /* appendOpaque() may have added credentials */
   }
   
+  prot->appendRedirectTransport(redirdest);
+
   TRACE(REQ, " XrdHttpReq::Redir Redirecting to " << redirdest.c_str());
 
   if (request != rtGET)

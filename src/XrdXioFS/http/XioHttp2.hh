@@ -75,10 +75,17 @@ public:
 
   int request(const HttpRequest &req, HttpResponse &resp, std::string &err);
 
+  /// One HTTP/2 exchange on this connection. Does not follow redirects.
+  int exchange(const HttpRequest &req, HttpResponse &resp, std::string &err,
+               bool send_credentials = true);
+
   const Url &peer() const { return url_; }
 
 private:
   using Clock = std::chrono::steady_clock;
+
+  int requestOnce(const HttpRequest &req, HttpResponse &resp, std::string &err,
+                  bool send_credentials);
 
   struct Inflight {
     HttpResponse *resp{nullptr};
@@ -132,6 +139,21 @@ private:
   int nextPollTimeoutMsLocked() const;
   static int setNonBlocking(int fd);
 };
+
+struct RedirectPlan {
+  HttpRequest request;
+  Url url;
+  Http2Session::Options opt;
+  bool reconnect{false};
+  bool send_credentials{true};
+  /// X-Xrd-Sticky was set. File I/O for this path stays on url.
+  bool sticky{false};
+};
+
+/// 1 when resp should be followed, 0 when it is not a redirect, <0 on error.
+int planRedirect(const Url &current, const Http2Session::Options &opt,
+                 const HttpRequest &req, const HttpResponse &resp,
+                 RedirectPlan &plan, std::string &err);
 
 } // namespace XioFS
 

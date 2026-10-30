@@ -22,6 +22,10 @@ http.cadir /etc/grid-security/certificates
 # (default on when XRootD is built with libzstd)
 #http.zstd on
 
+# Pin file I/O after a redirect to the data URL. Metadata except HEAD stays
+# on the URL the client started from.
+#http.sticky on
+
 # Enable Secure Parallel Transport (parallel TCP / RDMA)
 #http.parsock port 8443 transport tcp sockets 4 protection confidential
 

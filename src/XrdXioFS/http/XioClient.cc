@@ -9,6 +9,7 @@
 #include <ctime>
 #include <functional>
 #include <sstream>
+#include <strings.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #ifdef __linux__
@@ -139,6 +140,12 @@ int Client::open(const std::string &url, Http2Session::Options opt, std::string 
   std::lock_guard<std::mutex> lock(mu_);
   if (!parseUrl(url, base_, err))
     return -EINVAL;
+  for (auto &kv : data_) {
+    if (kv.second.sess)
+      kv.second.sess->close();
+  }
+  data_.clear();
+  sticky_.clear();
   opt_ = std::move(opt);
   return sess_.connect(base_, opt_, err);
 }
@@ -147,6 +154,12 @@ void Client::close()
 {
   std::lock_guard<std::mutex> lock(mu_);
   sess_.close();
+  for (auto &kv : data_) {
+    if (kv.second.sess)
+      kv.second.sess->close();
+  }
+  data_.clear();
+  sticky_.clear();
 }
 
 std::string Client::absPath(const std::string &rel) const
@@ -161,32 +174,180 @@ int Client::ensure(std::string &err)
   return sess_.connect(base_, opt_, err);
 }
 
+namespace {
+
+std::string fileKey(const std::string &abs)
+{
+  std::string k = abs.empty() ? "/" : abs;
+  while (k.size() > 1 && k.back() == '/')
+    k.pop_back();
+  return k;
+}
+
+bool sameEndpoint(const Url &a, const Url &b)
+{
+  if (a.port != b.port || a.parsock != b.parsock || a.tls != b.tls)
+    return false;
+  return strcasecmp(a.host.c_str(), b.host.c_str()) == 0;
+}
+
+std::string endpointKey(const Url &u, const Http2Session::Options &opt)
+{
+  std::string k = u.parsock ? "spt://" : (u.tls ? "https://" : "http://");
+  k += u.host;
+  k += ":";
+  k += std::to_string(u.port);
+  if (u.parsock) {
+    k += "/";
+    k += opt.parsock_transport;
+    k += "/";
+    k += opt.parsock_protection;
+  }
+  return k;
+}
+
+bool isDataOperation(const char *method,
+                     const std::vector<std::pair<std::string, std::string>> &hdrs)
+{
+  if (!method)
+    return false;
+  if (!strcasecmp(method, "HEAD") || !strcasecmp(method, "PUT") ||
+      !strcasecmp(method, "PATCH"))
+    return true;
+  if (strcasecmp(method, "GET"))
+    return false;
+  for (const auto &h : hdrs) {
+    if (!strcasecmp(h.first.c_str(), "xrd-readlink") ||
+        !strcasecmp(h.first.c_str(), "xrd-xattr") ||
+        !strcasecmp(h.first.c_str(), "xrd-xattr-list"))
+      return false;
+  }
+  return true;
+}
+
+} // namespace
+
+int Client::sessionFor(const Url &url, const Http2Session::Options &opt,
+                       bool origin, Http2Session *&out, std::string &err)
+{
+  out = nullptr;
+  if (origin || sameEndpoint(url, base_)) {
+    int rc = ensure(err);
+    if (rc)
+      return rc;
+    out = &sess_;
+    return 0;
+  }
+  const std::string key = endpointKey(url, opt);
+  DataLink &link = data_[key];
+  if (!link.sess)
+    link.sess = std::make_unique<Http2Session>();
+  if (!link.sess->connected()) {
+    link.url = url;
+    link.opt = opt;
+    int rc = link.sess->connect(url, opt, err);
+    if (rc)
+      return rc;
+  }
+  out = link.sess.get();
+  return 0;
+}
+
+int Client::invoke(const char *method, const std::string &rel,
+                   const std::vector<std::pair<std::string, std::string>> &hdrs,
+                   const std::string &body, HttpResponse &resp, std::string &err,
+                   const std::function<int(const uint8_t *, size_t)> &on_chunk)
+{
+  const std::string key = fileKey(absPath(rel));
+  const bool data_op = isDataOperation(method, hdrs);
+
+  HttpRequest req;
+  req.method = method ? method : "GET";
+  req.headers = hdrs;
+  req.body = body;
+  req.on_chunk = on_chunk;
+
+  Url target;
+  Http2Session::Options target_opt;
+  bool origin = true;
+  bool saw_sticky = false;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    target = base_;
+    target.path = key;
+    target_opt = opt_;
+    if (data_op) {
+      auto it = sticky_.find(key);
+      if (it != sticky_.end()) {
+        target = it->second.data;
+        target_opt = it->second.opt;
+        origin = false;
+      }
+    }
+  }
+  req.path = target.path.empty() ? "/" : target.path;
+
+  bool send_cred = true;
+  for (int hop = 0; hop < 9; ++hop) {
+    Http2Session *sess = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      int src = sessionFor(target, target_opt, origin, sess, err);
+      if (src)
+        return src;
+    }
+    int rc = sess->exchange(req, resp, err, send_cred);
+    if (rc) {
+      std::lock_guard<std::mutex> lock(mu_);
+      sess->close();
+      const Url &reconnect_to = origin ? base_ : target;
+      const Http2Session::Options &reconnect_opt = origin ? opt_ : target_opt;
+      if (sess->connect(reconnect_to, reconnect_opt, err))
+        return rc;
+    }
+    if (rc)
+      rc = sess->exchange(req, resp, err, send_cred);
+    if (rc)
+      return rc;
+
+    RedirectPlan plan;
+    int prc = planRedirect(sess->peer(), target_opt, req, resp, plan, err);
+    if (prc < 0)
+      return prc;
+    if (prc == 0) {
+      if (saw_sticky) {
+        std::lock_guard<std::mutex> lock(mu_);
+        Affinity aff;
+        aff.data = target;
+        aff.data.path = req.path;
+        aff.opt = target_opt;
+        sticky_[key] = std::move(aff);
+      }
+      return 0;
+    }
+    if (hop == 8) {
+      err = "too many HTTP redirects";
+      return -ELOOP;
+    }
+    if (plan.sticky)
+      saw_sticky = true;
+    const auto chunk = req.on_chunk;
+    req = std::move(plan.request);
+    req.on_chunk = chunk;
+    send_cred = plan.send_credentials;
+    target = plan.url;
+    target_opt = plan.opt;
+    origin = sameEndpoint(target, base_);
+  }
+  err = "too many HTTP redirects";
+  return -ELOOP;
+}
+
 int Client::doReq(const char *method, const std::string &rel,
                   const std::vector<std::pair<std::string, std::string>> &hdrs,
                   const std::string &body, HttpResponse &resp, std::string &err)
 {
-  {
-    std::lock_guard<std::mutex> lock(mu_);
-    int rc = ensure(err);
-    if (rc)
-      return rc;
-  }
-  HttpRequest req;
-  req.method = method;
-  req.path = absPath(rel);
-  req.headers = hdrs;
-  req.body = body;
-  int rc = sess_.request(req, resp, err);
-  if (rc) {
-    std::lock_guard<std::mutex> lock(mu_);
-    sess_.close();
-    int rc2 = sess_.connect(base_, opt_, err);
-    if (rc2)
-      return rc2;
-  } else {
-    return 0;
-  }
-  return sess_.request(req, resp, err);
+  return invoke(method, rel, hdrs, body, resp, err, {});
 }
 
 int Client::getattr(const std::string &relpath, Attr &out, std::string &err)
@@ -269,30 +430,10 @@ int Client::readdir(const std::string &relpath,
 
   std::vector<std::pair<std::string, std::string>> hdrs{{"depth", "1"}};
 
-  HttpRequest req;
-  req.method = "PROPFIND";
-  req.path = absPath(relpath);
-  req.headers = hdrs;
-
   HttpResponse resp;
-  int rc = 0;
-  {
-    std::lock_guard<std::mutex> lock(mu_);
-    rc = ensure(err);
-    if (rc)
-      return rc;
-  }
-  rc = sess_.request(req, resp, err);
-  if (rc) {
-    std::lock_guard<std::mutex> lock(mu_);
-    sess_.close();
-    int rc2 = sess_.connect(base_, opt_, err);
-    if (rc2)
-      return rc2;
-    rc = sess_.request(req, resp, err);
-    if (rc)
-      return rc;
-  }
+  int rc = doReq("PROPFIND", relpath, hdrs, {}, resp, err);
+  if (rc)
+    return rc;
 
   if (resp.status != 207 && resp.status != 200) {
     err = "PROPFIND status " + std::to_string(resp.status);
@@ -392,15 +533,10 @@ int Client::readDevice(const std::string &relpath, uint64_t offset, uint64_t len
                       std::to_string(offset + length - 1);
   std::vector<std::pair<std::string, std::string>> hdrs{{"range", range}};
 
-  HttpRequest req;
-  req.method = "GET";
-  req.path = absPath(relpath);
-  req.headers = hdrs;
-
   uint8_t *dst = static_cast<uint8_t *>(dev_ptr);
   size_t written = 0;
 
-  req.on_chunk = [&](const uint8_t *data, size_t len) -> int {
+  auto on_chunk = [&](const uint8_t *data, size_t len) -> int {
     if (written + len > length) {
       size_t avail = length - written;
       if (avail > 0) {
@@ -415,24 +551,9 @@ int Client::readDevice(const std::string &relpath, uint64_t offset, uint64_t len
   };
 
   HttpResponse resp;
-  int rc = 0;
-  {
-    std::lock_guard<std::mutex> lock(mu_);
-    rc = ensure(err);
-    if (rc)
-      return rc;
-  }
-  rc = sess_.request(req, resp, err);
-  if (rc) {
-    std::lock_guard<std::mutex> lock(mu_);
-    sess_.close();
-    int rc2 = sess_.connect(base_, opt_, err);
-    if (rc2)
-      return rc2;
-    rc = sess_.request(req, resp, err);
-    if (rc)
-      return rc;
-  }
+  int rc = invoke("GET", relpath, hdrs, {}, resp, err, on_chunk);
+  if (rc)
+    return rc;
 
   if (resp.status == 416) {
     bytes_read = 0;

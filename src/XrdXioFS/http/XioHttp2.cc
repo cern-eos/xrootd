@@ -43,6 +43,70 @@ bool ieq(const std::string &a, const char *b)
   return strcasecmp(a.c_str(), b) == 0;
 }
 
+bool isRedirectStatus(int status)
+{
+  return status == 301 || status == 302 || status == 303 ||
+         status == 307 || status == 308;
+}
+
+std::string lowerCopy(std::string s)
+{
+  std::transform(s.begin(), s.end(), s.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  return s;
+}
+
+void refreshAuthority(Url &u)
+{
+  const bool v6 = u.host.find(':') != std::string::npos;
+  const std::string h = v6 ? "[" + u.host + "]" : u.host;
+  if ((u.tls && !u.parsock && u.port == 443) ||
+      (!u.tls && !u.parsock && u.port == 80))
+    u.authority = h;
+  else
+    u.authority = h + ":" + std::to_string(u.port);
+  u.hops.clear();
+  Hop hop;
+  hop.host = u.host;
+  hop.port = u.port;
+  u.hops.push_back(hop);
+}
+
+bool sameHost(const std::string &a, const std::string &b)
+{
+  return lowerCopy(a) == lowerCopy(b);
+}
+
+bool headerFlag(const std::string &params, const char *key, std::string &value)
+{
+  size_t start = 0;
+  const std::string want = lowerCopy(key);
+  while (start < params.size()) {
+    while (start < params.size() &&
+           (params[start] == ';' || params[start] == ' ' || params[start] == '\t'))
+      start++;
+    if (start >= params.size())
+      break;
+    size_t end = params.find(';', start);
+    if (end == std::string::npos)
+      end = params.size();
+    std::string tok = params.substr(start, end - start);
+    start = end + 1;
+    while (!tok.empty() && (tok.front() == ' ' || tok.front() == '\t'))
+      tok.erase(tok.begin());
+    while (!tok.empty() && (tok.back() == ' ' || tok.back() == '\t'))
+      tok.pop_back();
+    auto eq = tok.find('=');
+    if (eq == std::string::npos)
+      continue;
+    if (lowerCopy(tok.substr(0, eq)) != want)
+      continue;
+    value = tok.substr(eq + 1);
+    return true;
+  }
+  return false;
+}
+
 bool encodingHasZstd(const std::string &value)
 {
   std::string enc = value;
@@ -791,6 +855,8 @@ int Http2Session::connect(const Url &url, const Options &opt, std::string &err)
             nghttp2_session_get_stream_user_data(sess, stream_id));
         if (!st || !st->resp)
           return 0;
+        if (isRedirectStatus(st->resp->status))
+          return 0;
 #ifdef HAVE_ZSTD
         if (st->is_zstd)
           return st->feedZstd(data, len, self);
@@ -999,8 +1065,164 @@ void Http2Session::ioLoop()
     failInflight(-ENOTCONN, "HTTP/2 I/O thread exiting");
 }
 
+int planRedirect(const Url &current, const Http2Session::Options &opt,
+                 const HttpRequest &req, const HttpResponse &resp,
+                 RedirectPlan &plan, std::string &err)
+{
+  plan = RedirectPlan{};
+  if (!isRedirectStatus(resp.status))
+    return 0;
+
+  const std::string location = resp.header("location");
+  if (location.empty()) {
+    err = "redirect missing Location";
+    return -EPROTO;
+  }
+
+  std::string absolute = location;
+  if (location.front() == '/') {
+    absolute = (current.tls ? "https://" : "http://");
+    if (current.host.find(':') != std::string::npos)
+      absolute += "[" + current.host + "]";
+    else
+      absolute += current.host;
+    if (!((current.tls && current.port == 443) ||
+          (!current.tls && current.port == 80)))
+      absolute += ":" + std::to_string(current.port);
+    absolute += location;
+  } else if (location.find("://") == std::string::npos) {
+    err = "redirect Location is not an absolute URL";
+    return -EPROTO;
+  }
+
+  Url next;
+  if (!parseUrl(absolute, next, err))
+    return -EPROTO;
+
+  std::string transport = lowerCopy(resp.header("x-xrd-transport"));
+  Http2Session::Options next_opt = opt;
+  if (transport.empty()) {
+    next_opt.parsock = next.parsock;
+  } else if (transport == "standard") {
+    next.parsock = false;
+    if (next.scheme == "spt" || next.scheme == "parsock") {
+      next.scheme = "https";
+      next.tls = true;
+    }
+    next_opt.parsock = false;
+    refreshAuthority(next);
+  } else if (transport == "parsock") {
+    const std::string hint = resp.header("x-xrd-parsock");
+    std::string port_s;
+    if (!headerFlag(hint, "port", port_s)) {
+      err = "parsock redirect missing X-Xrd-Parsock port";
+      return -EPROTO;
+    }
+    int port = std::atoi(port_s.c_str());
+    if (port <= 0 || port > 65535) {
+      err = "parsock redirect has an invalid port";
+      return -EPROTO;
+    }
+    next.parsock = true;
+    next.tls = true;
+    next.scheme = "spt";
+    next.port = port;
+    refreshAuthority(next);
+    next_opt.parsock = true;
+    std::string sockets;
+    if (headerFlag(hint, "sockets", sockets)) {
+      int n = std::atoi(sockets.c_str());
+      if (n > 0)
+        next_opt.parsock_sockets = n;
+    }
+    std::string tr;
+    if (headerFlag(hint, "transport", tr) && !tr.empty())
+      next_opt.parsock_transport = tr;
+    std::string prot;
+    if (headerFlag(hint, "protection", prot) && !prot.empty())
+      next_opt.parsock_protection = prot;
+  } else {
+    err = "unsupported X-Xrd-Transport value: " + transport;
+    return -EPROTO;
+  }
+
+  HttpRequest next_req = req;
+  const bool rewrite_get =
+      resp.status == 303 ||
+      ((resp.status == 301 || resp.status == 302) &&
+       req.method != "GET" && req.method != "HEAD");
+  if (rewrite_get) {
+    next_req.method = "GET";
+    next_req.body.clear();
+  }
+  next_req.path = next.path.empty() ? "/" : next.path;
+  next_req.headers.erase(
+      std::remove_if(next_req.headers.begin(), next_req.headers.end(),
+                     [&](const std::pair<std::string, std::string> &h) {
+                       if (ieq(h.first, "content-length") || ieq(h.first, "host"))
+                         return true;
+                       return rewrite_get && ieq(h.first, "content-type");
+                     }),
+      next_req.headers.end());
+
+  const bool same_host = sameHost(current.host, next.host);
+  if (!same_host) {
+    next_req.headers.erase(
+        std::remove_if(next_req.headers.begin(), next_req.headers.end(),
+                       [](const std::pair<std::string, std::string> &h) {
+                         return ieq(h.first, "authorization");
+                       }),
+        next_req.headers.end());
+  }
+
+  plan.request = std::move(next_req);
+  plan.url = next;
+  plan.opt = next_opt;
+  plan.send_credentials = same_host;
+  plan.reconnect = !sameHost(current.host, next.host) || current.port != next.port ||
+                   current.parsock != next.parsock || current.tls != next.tls;
+  const std::string sticky = lowerCopy(resp.header("x-xrd-sticky"));
+  plan.sticky = sticky == "1" || sticky == "true" || sticky == "yes" || sticky == "on";
+  return 1;
+}
+
+int Http2Session::exchange(const HttpRequest &req, HttpResponse &resp,
+                           std::string &err, bool send_credentials)
+{
+  return requestOnce(req, resp, err, send_credentials);
+}
+
 int Http2Session::request(const HttpRequest &req, HttpResponse &resp,
                           std::string &err)
+{
+  HttpRequest cur = req;
+  bool send_credentials = true;
+  for (int followed = 0;; ++followed) {
+    int rc = requestOnce(cur, resp, err, send_credentials);
+    if (rc)
+      return rc;
+    RedirectPlan plan;
+    int prc = planRedirect(url_, opt_, cur, resp, plan, err);
+    if (prc <= 0)
+      return prc;
+    if (followed >= 8) {
+      err = "too many HTTP redirects";
+      return -ELOOP;
+    }
+    cur = std::move(plan.request);
+    send_credentials = plan.send_credentials;
+    if (!plan.reconnect) {
+      url_.path = plan.url.path;
+      continue;
+    }
+    rc = connect(plan.url, plan.opt, err);
+    if (rc)
+      return rc;
+  }
+}
+
+int Http2Session::requestOnce(const HttpRequest &req, HttpResponse &resp,
+                              std::string &err, bool send_credentials)
 {
   Inflight st;
   st.resp = &resp;
@@ -1052,17 +1274,21 @@ int Http2Session::request(const HttpRequest &req, HttpResponse &resp,
     addHdr("accept-encoding", "zstd");
 #endif
   std::string auth;
-  if (!opt_.bearer.empty()) {
-    auth = "Bearer " + opt_.bearer;
-    addHdr("authorization", auth);
-  } else if (!opt_.negotiate.empty()) {
-    auth = "Negotiate " + opt_.negotiate;
-    addHdr("authorization", auth);
+  if (send_credentials) {
+    if (!opt_.bearer.empty()) {
+      auth = "Bearer " + opt_.bearer;
+      addHdr("authorization", auth);
+    } else if (!opt_.negotiate.empty()) {
+      auth = "Negotiate " + opt_.negotiate;
+      addHdr("authorization", auth);
+    }
   }
   for (const auto &h : req.headers) {
     std::string name = h.first;
     for (char &c : name)
       c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (!send_credentials && name == "authorization")
+      continue;
     addHdr(name.c_str(), h.second);
   }
 

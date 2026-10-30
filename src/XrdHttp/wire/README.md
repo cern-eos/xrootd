@@ -43,6 +43,13 @@ pairs, or QUIC:
 http.parsock port 8443 [bind <addr>] [transport tcp|rdma|quic] [sockets <n>] [protection confidential|authenticated]
 ```
 
+A redirect from a parsocket request adds `X-Xrd-Transport: parsock` and
+`X-Xrd-Parsock` (this server's port, transport, protection, and socket
+count). Any other request is told `X-Xrd-Transport: standard`. The
+`Location` URL itself stays `http://` or `https://`. `http.sticky on` adds
+`X-Xrd-Sticky: 1`, which tells the client to keep file I/O and `HEAD` for
+that path on the redirected URL.
+
 ## Build
 
 HTTP/2 requires the **libnghttp2** development library (not the Homebrew
