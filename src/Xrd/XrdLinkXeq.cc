@@ -294,6 +294,20 @@ void XrdLinkXeq::DoIt()
 {
    int rc;
 
+// One scheduler thread owns the link for the whole Process/Enable/Close
+// sequence. A second Schedule (HTTP/2 PokeLink while a bridge worker is
+// still inside this DoIt) only sets doDoItAgain. Overlapping DoIt corrupts
+// the nghttp2 session and closes the link out from under the other thread.
+//
+   LinkInfo.opMutex.Lock();
+   if (LinkInfo.inDoIt)
+      {LinkInfo.doDoItAgain = 1;
+       LinkInfo.opMutex.UnLock();
+       return;
+      }
+   LinkInfo.inDoIt = 1;
+   LinkInfo.opMutex.UnLock();
+
 // The Process() return code tells us what to do:
 // < 0 -> Stop getting requests, 
 //        -EINPROGRESS leave link disabled but otherwise all is well
@@ -301,11 +315,16 @@ void XrdLinkXeq::DoIt()
 // = 0 -> OK, get next request, if allowed, o/w enable the link
 // > 0 -> Slow link, stop getting requests  and enable the link
 //
-   if (Protocol)
-      do {rc = Protocol->Process(this);} while (!rc && Sched.canStick());
-      else {Log.Emsg("Link", "Dispatch on closed link", ID);
-            return;
-           }
+   if (!Protocol)
+      {Log.Emsg("Link", "Dispatch on closed link", ID);
+       LinkInfo.opMutex.Lock();
+       LinkInfo.inDoIt = 0;
+       LinkInfo.doDoItAgain = 0;
+       LinkInfo.opMutex.UnLock();
+       return;
+      }
+
+   do {rc = Protocol->Process(this);} while (!rc && Sched.canStick());
 
 // Either re-enable the link and cycle back waiting for a new request, leave
 // disabled, or terminate the connection.
@@ -317,11 +336,34 @@ void XrdLinkXeq::DoIt()
 
    if (doCl)
       {if (CloseRequestCb)
-         {const bool res = CloseRequestCb(CloseRequestCbArg);
-          if (!res) return;
-         }
+          {const bool res = CloseRequestCb(CloseRequestCbArg);
+           if (!res)
+              {LinkInfo.opMutex.Lock();
+               const int again = LinkInfo.doDoItAgain && Protocol;
+               LinkInfo.doDoItAgain = 0;
+               LinkInfo.inDoIt = 0;
+               LinkInfo.opMutex.UnLock();
+               if (again) Sched.Schedule((XrdJob *)this);
+               return;
+              }
+          }
        Close();
+       LinkInfo.opMutex.Lock();
+       LinkInfo.inDoIt = 0;
+       LinkInfo.doDoItAgain = 0;
+       LinkInfo.opMutex.UnLock();
+       return;
       }
+
+// The job was dequeued before DoIt ran, so a follow-up Schedule is a new
+// queue node. Clear inDoIt first so that Schedule does not overlap Process.
+//
+   LinkInfo.opMutex.Lock();
+   const int again = LinkInfo.doDoItAgain && Protocol;
+   LinkInfo.doDoItAgain = 0;
+   LinkInfo.inDoIt = 0;
+   LinkInfo.opMutex.UnLock();
+   if (again) Sched.Schedule((XrdJob *)this);
 }
 
 /******************************************************************************/

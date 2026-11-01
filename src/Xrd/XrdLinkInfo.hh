@@ -46,6 +46,8 @@ char           *Etext;        // -> error text, if nil then no error.
 XrdSysRecMutex  opMutex;      // Serialization mutex
 int             InUse;        // Number of threads using this object
 int             doPost;       // Number of threads waiting for serialization
+int             inDoIt;       // 1 while DoIt owns this link
+int             doDoItAgain;  // 1 if another DoIt arrived while inDoIt
 int             FD;           // File descriptor for link use (may be negative)
 char            KillCnt;      // Number of times a kill has been attempted
 
@@ -55,6 +57,8 @@ void            Reset()
                       if (Etext)    {free(Etext); Etext = 0;}
                       InUse    =  1;
                       doPost   =  0;
+                      inDoIt   =  0;
+                      doDoItAgain = 0;
                       FD       = -1;
                       KillCnt  =  0;
                      }
