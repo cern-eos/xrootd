@@ -118,6 +118,14 @@ public:
 
   const Url &peer() const { return url_; }
 
+  /// Concurrent streams this session will run. Starts at Options::max_streams
+  /// and drops if the peer's SETTINGS_MAX_CONCURRENT_STREAMS is lower.
+  uint32_t maxStreams() const
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    return max_concurrent_;
+  }
+
 private:
   using Clock = std::chrono::steady_clock;
 

@@ -114,6 +114,23 @@ TEST(URLTest, RemoteURLs)
   EXPECT_EQ(params["mgm.replicahead"], "1");
 }
 
+TEST(URLTest, XioDefaultPorts)
+{
+  XrdCl::URL clear("xio://example.org/data/file");
+  EXPECT_TRUE(clear.IsValid());
+  EXPECT_EQ(clear.GetPort(), 80);
+  EXPECT_FALSE(clear.IsSecure());
+
+  XrdCl::URL tls("xios://example.org/data/file");
+  EXPECT_TRUE(tls.IsValid());
+  EXPECT_EQ(tls.GetPort(), 443);
+  EXPECT_TRUE(tls.IsSecure());
+
+  XrdCl::URL explicit_port("xios://example.org:8443/data/file");
+  EXPECT_EQ(explicit_port.GetPort(), 8443);
+  EXPECT_TRUE(explicit_port.IsSecure());
+}
+
 TEST(URLTest, InvalidURLs)
 {
   const char *invalid_urls[] = {

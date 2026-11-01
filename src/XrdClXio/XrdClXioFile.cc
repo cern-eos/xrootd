@@ -120,6 +120,10 @@ XrdCl::XRootDStatus File::Open(const std::string &url,
       std::lock_guard<std::mutex> lock(state->mu);
       state->open = true;
       state->props["LastURL"] = XioFS::formatUrl(sess->peer());
+      // ROOT queries this URL for readv limits. https:// belongs to the
+      // curl plugin, so keep the xio/xios scheme the file was opened with.
+      state->props["DataServer"] =
+          std::string(endpoint.tls ? "xios://" : "xio://") + endpoint.authority;
     }
     deliver(handler, XrdCl::XRootDStatus(), nullptr);
   };
@@ -182,6 +186,15 @@ XrdCl::XRootDStatus File::Close(XrdCl::ResponseHandler *handler, time_t)
     st_->open = false;
     st_->sess.reset();
   }
+  deliver(handler, XrdCl::XRootDStatus(), nullptr);
+  return XrdCl::XRootDStatus();
+}
+
+XrdCl::XRootDStatus File::Sync(XrdCl::ResponseHandler *handler, time_t)
+{
+  if (!IsOpen())
+    return XrdCl::XRootDStatus(XrdCl::stError, XrdCl::errInvalidOp, 0,
+                               "file is not open");
   deliver(handler, XrdCl::XRootDStatus(), nullptr);
   return XrdCl::XRootDStatus();
 }

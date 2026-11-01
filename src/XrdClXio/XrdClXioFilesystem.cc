@@ -12,6 +12,7 @@
 #include <cctype>
 #include <ctime>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -385,6 +386,33 @@ XrdCl::XRootDStatus Filesystem::Query(XrdCl::QueryCode::Code queryCode,
                                       XrdCl::ResponseHandler *handler,
                                       time_t timeout)
 {
+  if (queryCode == XrdCl::QueryCode::Config) {
+    std::string err;
+    auto sess = session(timeout, err);
+    if (!sess)
+      return XrdCl::XRootDStatus(XrdCl::stError, XrdCl::errConnectionError, 0,
+                                 err);
+    // One value per line, in the order of the requested keys. ROOT reads
+    // readv_ior_max then readv_iov_max. An unknown key keeps its blank line
+    // so later values stay in place.
+    std::string out;
+    std::istringstream keys(arg.ToString());
+    std::string key;
+    while (keys >> key) {
+      if (key == "readv_iov_max")
+        out += std::to_string(sess->maxStreams());
+      else if (key == "readv_ior_max")
+        out += "2097136";
+      out.push_back('\n');
+    }
+    auto *buf = new XrdCl::Buffer();
+    buf->FromString(out);
+    auto *obj = new XrdCl::AnyObject();
+    obj->Set(buf);
+    deliver(handler, XrdCl::XRootDStatus(), obj);
+    return XrdCl::XRootDStatus();
+  }
+
   if (queryCode != XrdCl::QueryCode::Checksum) {
     if (handler)
       return XrdCl::XRootDStatus(XrdCl::stError, XrdCl::errQueryNotSupported, 0,

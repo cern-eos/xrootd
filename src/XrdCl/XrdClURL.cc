@@ -102,10 +102,10 @@ namespace XrdCl
     //--------------------------------------------------------------------------
     // If the protocol is HTTP(S) or DAV(S), change the default port number
     //--------------------------------------------------------------------------
-    if (pProtocol == "http" || pProtocol == "dav") {
+    if (pProtocol == "http" || pProtocol == "dav" || pProtocol == "xio") {
       pPort = 80;
     }
-    if (pProtocol == "https" || pProtocol == "davs") {
+    if (pProtocol == "https" || pProtocol == "davs" || pProtocol == "xios") {
       pPort = 443;
     }
 
@@ -481,7 +481,8 @@ namespace XrdCl
   //------------------------------------------------------------------------
   bool URL::IsSecure() const
   {
-    return ( pProtocol == "roots" || pProtocol == "xroots" );
+    return ( pProtocol == "roots" || pProtocol == "xroots" ||
+             pProtocol == "xios" );
   }
 
   //------------------------------------------------------------------------

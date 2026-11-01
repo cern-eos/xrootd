@@ -33,6 +33,9 @@ public:
   XrdCl::XRootDStatus Close(XrdCl::ResponseHandler *handler,
                             time_t timeout) override;
 
+  XrdCl::XRootDStatus Sync(XrdCl::ResponseHandler *handler,
+                           time_t timeout) override;
+
   XrdCl::XRootDStatus Stat(bool force, XrdCl::ResponseHandler *handler,
                            time_t timeout) override;
 

@@ -16,7 +16,11 @@ namespace XrdClXio {
 bool parseTarget(const std::string &url, XioFS::Url &out, std::string &path,
                  std::string &err);
 
-XioFS::Http2Session::Options sessionOptions(time_t timeout);
+// Fills CA, bearer, and Kerberos options. Returns false when a bearer file
+// exists but cannot be used; err explains why. A missing token file is not
+// an error.
+bool sessionOptions(time_t timeout, XioFS::Http2Session::Options &opt,
+                    std::string &err);
 
 void applyTimeout(XioFS::HttpRequest &req, time_t timeout);
 

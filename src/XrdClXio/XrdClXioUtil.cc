@@ -3,12 +3,14 @@
 //------------------------------------------------------------------------------
 #include "XrdClXioUtil.hh"
 
+#include "XioBearer.hh"
 #include "XioUrl.hh"
 
 #include <XrdCl/XrdClURL.hh>
 
 #include <cerrno>
 #include <cstdlib>
+#include <unistd.h>
 
 namespace XrdClXio {
 
@@ -49,9 +51,10 @@ bool parseTarget(const std::string &url, XioFS::Url &out, std::string &path,
   return true;
 }
 
-XioFS::Http2Session::Options sessionOptions(time_t timeout)
+bool sessionOptions(time_t timeout, XioFS::Http2Session::Options &opt,
+                    std::string &err)
 {
-  XioFS::Http2Session::Options opt;
+  opt = {};
   opt.timeout_ms = timeout > 0 ? static_cast<int>(timeout) * 1000 : 30000;
   if (const char *c = std::getenv("SSL_CERT_FILE"))
     opt.cacert = c;
@@ -61,7 +64,27 @@ XioFS::Http2Session::Options sessionOptions(time_t timeout)
     opt.cadir = c;
   if (std::getenv("XRD_XIO_INSECURE"))
     opt.verify_peer = false;
-  return opt;
+
+  // Bearer wins over Kerberos, same as xiofsd. An explicit token skips the
+  // bt_u<uid> files. A missing file is normal; any other read failure is not.
+  if (const char *b = std::getenv("XRD_XIO_BEARER"))
+    opt.bearer = b;
+  else {
+    std::string tok, berr;
+    bool missing = false;
+    if (XioFS::loadBearerToken(geteuid(), tok, berr, &missing))
+      opt.bearer = std::move(tok);
+    else if (!missing) {
+      err = berr.empty() ? "bearer token could not be read" : berr;
+      return false;
+    }
+  }
+  if (opt.bearer.empty() && std::getenv("XRD_XIO_KRB5")) {
+    opt.krb5 = true;
+    if (const char *p = std::getenv("XRD_XIO_KRB5_PRINCIPAL"))
+      opt.principal = p;
+  }
+  return true;
 }
 
 void applyTimeout(XioFS::HttpRequest &req, time_t timeout)
@@ -74,8 +97,11 @@ std::shared_ptr<XioFS::Http2Session> connectTarget(const XioFS::Url &url,
                                                    time_t timeout,
                                                    std::string &err)
 {
+  XioFS::Http2Session::Options opt;
+  if (!sessionOptions(timeout, opt, err))
+    return {};
   auto sess = std::make_shared<XioFS::Http2Session>();
-  if (sess->connect(url, sessionOptions(timeout), err))
+  if (sess->connect(url, opt, err))
     return {};
   return sess;
 }
