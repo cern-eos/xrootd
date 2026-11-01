@@ -111,6 +111,8 @@ override_dh_auto_install:
 	    debian/tmp/etc/xrootd/client.plugins.d/http.conf
 	install -m 644 -p config/client.plugins.d/s3.conf \
 	    debian/tmp/etc/xrootd/client.plugins.d/s3.conf
+	install -m 644 -p config/client.plugins.d/xio.conf \
+	    debian/tmp/etc/xrootd/client.plugins.d/xio.conf
 
 	chmod 644 debian/tmp/usr/share/xrootd/utils/XrdCmsNotify.pm
 	sed 's!/usr/bin/env perl!/usr/bin/perl!' -i \

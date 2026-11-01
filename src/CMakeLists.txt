@@ -75,6 +75,7 @@ add_subdirectory( XrdCl )
 add_subdirectory( XrdClHttp )
 add_subdirectory( XrdClS3 )
 add_subdirectory( XrdXioFS )
+add_subdirectory( XrdClXio )
 add_subdirectory( XrdEc )
 
 if( NOT XRDCL_ONLY )

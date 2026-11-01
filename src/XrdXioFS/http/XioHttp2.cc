@@ -32,9 +32,67 @@
 #include <strings.h>
 #include <algorithm>
 #include <cctype>
+#include <deque>
 #include <vector>
 
 namespace XioFS {
+
+namespace {
+
+struct Completer {
+  Completer() : thr_([this] { run(); }) {}
+  ~Completer()
+  {
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      stop_ = true;
+    }
+    cv_.notify_one();
+    if (thr_.joinable())
+      thr_.join();
+  }
+
+  void post(std::function<void()> cb)
+  {
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      q_.push_back(std::move(cb));
+    }
+    cv_.notify_one();
+  }
+
+  void run()
+  {
+    std::unique_lock<std::mutex> lock(mu_);
+    for (;;) {
+      if (q_.empty()) {
+        if (stop_)
+          return;
+        cv_.wait(lock);
+        continue;
+      }
+      auto cb = std::move(q_.front());
+      q_.pop_front();
+      lock.unlock();
+      cb();
+      lock.lock();
+    }
+  }
+
+  std::mutex mu_;
+  std::condition_variable cv_;
+  std::deque<std::function<void()>> q_;
+  bool stop_{false};
+  std::thread thr_;
+};
+
+Completer &completer()
+{
+  static Completer c;
+  return c;
+}
+
+} // namespace
 
 namespace {
 
@@ -367,20 +425,32 @@ void Http2Session::drainWake()
   }
 }
 
+void Http2Session::finish(const std::shared_ptr<Inflight> &st)
+{
+  if (!st || st->done)
+    return;
+  st->done = true;
+  st->cv.notify_all();
+  slot_cv_.notify_all();
+  if (st->on_done)
+    completer().post(std::move(st->on_done));
+}
+
 void Http2Session::failInflight(int rc, const std::string &msg)
 {
-  for (auto &p : inflight_) {
-    Inflight *st = p.second;
+  std::vector<std::shared_ptr<Inflight>> doomed;
+  doomed.reserve(inflight_.size());
+  for (auto &p : inflight_)
+    doomed.push_back(p.second);
+  inflight_.clear();
+  for (auto &st : doomed) {
     if (!st || st->done)
       continue;
     st->rc = rc;
     if (st->err && st->err->empty())
       *st->err = msg;
-    st->done = true;
-    st->cv.notify_one();
+    finish(st);
   }
-  inflight_.clear();
-  slot_cv_.notify_all();
 }
 
 void Http2Session::close()
@@ -889,10 +959,13 @@ int Http2Session::connect(const Url &url, const Options &opt, std::string &err)
         if (st->rc == 0)
           st->noteDecoded();
 #endif
-        self->inflight_.erase(stream_id);
-        st->done = true;
-        st->cv.notify_one();
-        self->slot_cv_.notify_all();
+        auto it = self->inflight_.find(stream_id);
+        if (it == self->inflight_.end())
+          return 0;
+        auto held = it->second;
+        self->inflight_.erase(it);
+        nghttp2_session_set_stream_user_data(sess, stream_id, nullptr);
+        self->finish(held);
         return 0;
       });
   nghttp2_session_callbacks_set_on_frame_recv_callback(
@@ -988,14 +1061,13 @@ void Http2Session::ioLoop()
       auto it = inflight_.find(sid);
       if (it == inflight_.end())
         continue;
-      Inflight *st = it->second;
+      auto st = it->second;
       inflight_.erase(it);
+      nghttp2_session_set_stream_user_data(sess, sid, nullptr);
       st->rc = -ETIMEDOUT;
       if (st->err && st->err->empty())
         *st->err = "HTTP/2 request timed out";
-      st->done = true;
-      st->cv.notify_one();
-      slot_cv_.notify_all();
+      finish(st);
     }
     if (!timedout.empty())
       continue;
@@ -1162,6 +1234,8 @@ int planRedirect(const Url &current, const Http2Session::Options &opt,
   if (rewrite_get) {
     next_req.method = "GET";
     next_req.body.clear();
+    next_req.pull = nullptr;
+    next_req.content_length = -1;
   }
   next_req.path = next.path.empty() ? "/" : next.path;
   next_req.headers.erase(
@@ -1229,36 +1303,50 @@ int Http2Session::request(const HttpRequest &req, HttpResponse &resp,
   }
 }
 
-int Http2Session::requestOnce(const HttpRequest &req, HttpResponse &resp,
-                              std::string &err, bool send_credentials)
-{
-  Inflight st;
-  st.resp = &resp;
-  st.err = &err;
-  st.body = req.body;
-  st.deadline = Clock::now() + std::chrono::milliseconds(opt_.timeout_ms);
-  st.on_chunk = req.on_chunk;
+struct Http2Session::Follow {
+  HttpRequest req;
+  HttpCallback cb;
+  bool send_credentials{true};
+  int followed{0};
+};
 
-  std::unique_lock<std::mutex> lock(mu_);
+int Http2Session::submit(std::unique_lock<std::mutex> &lock,
+                         const std::shared_ptr<Inflight> &st,
+                         bool send_credentials)
+{
   if ((fd_ < 0
 #ifdef HAVE_PARSOCKET
        && !parsock_
 #endif
       ) || !session_ || !io_.joinable() || stop_) {
-    err = "not connected";
+    if (st->err)
+      *st->err = "not connected";
     return -ENOTCONN;
   }
 
   while (inflight_.size() >= max_concurrent_ && !stop_)
     slot_cv_.wait(lock);
   if (stop_ || !session_) {
-    err = "not connected";
+    if (st->err)
+      *st->err = "not connected";
     return -ENOTCONN;
   }
 
-  resp = HttpResponse{};
-  err.clear();
+  if (st->deadline.time_since_epoch().count() == 0) {
+    int ms = st->req.timeout_ms > 0 ? st->req.timeout_ms : opt_.timeout_ms;
+    if (ms <= 0)
+      ms = 30000;
+    st->deadline = Clock::now() + std::chrono::milliseconds(ms);
+  }
+  if (!st->on_chunk)
+    st->on_chunk = st->req.on_chunk;
 
+  if (st->resp)
+    *st->resp = HttpResponse{};
+  if (st->err)
+    st->err->clear();
+
+  const HttpRequest &req = st->req;
   // nghttp2_nv stores pointers; every name/value must outlive submit_request().
   std::vector<std::string> hdrstore;
   auto addHdr = [&](const char *name, const std::string &value) {
@@ -1291,33 +1379,78 @@ int Http2Session::requestOnce(const HttpRequest &req, HttpResponse &resp,
       addHdr("authorization", auth);
     }
   }
+  bool has_cl = false;
   for (const auto &h : req.headers) {
     std::string name = h.first;
     for (char &c : name)
       c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     if (!send_credentials && name == "authorization")
       continue;
+    if (name == "content-length")
+      has_cl = true;
     addHdr(name.c_str(), h.second);
   }
 
+  const bool upload = static_cast<bool>(req.pull) || !req.body.empty() ||
+                      req.content_length >= 0;
   nghttp2_data_provider prd{};
   nghttp2_data_provider *prdptr = nullptr;
-  if (!st.body.empty()) {
-    prd.source.ptr = &st;
+  if (upload) {
+    int64_t length = req.content_length;
+    if (length < 0 && !req.body.empty())
+      length = static_cast<int64_t>(req.body.size());
+    if (!has_cl && length >= 0)
+      addHdr("content-length", std::to_string(length));
+    prd.source.ptr = st.get();
     prd.read_callback = [](nghttp2_session *, int32_t, uint8_t *buf,
-                           size_t length, uint32_t *data_flags,
+                           size_t cap, uint32_t *data_flags,
                            nghttp2_data_source *source, void *) -> ssize_t {
       auto *b = static_cast<Inflight *>(source->ptr);
-      size_t left = b->body.size() - b->body_off;
-      size_t n = left < length ? left : length;
-      memcpy(buf, b->body.data() + b->body_off, n);
-      b->body_off += n;
-      if (b->body_off >= b->body.size())
+      uint64_t limit = cap;
+      if (b->req.content_length >= 0) {
+        if (b->body_off >= static_cast<uint64_t>(b->req.content_length)) {
+          *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+          return 0;
+        }
+        uint64_t left =
+            static_cast<uint64_t>(b->req.content_length) - b->body_off;
+        if (limit > left)
+          limit = left;
+      }
+      ssize_t n = 0;
+      if (b->req.pull) {
+        n = b->req.pull(b->body_off, buf, static_cast<size_t>(limit));
+        if (n < 0) {
+          b->rc = static_cast<int>(n);
+          if (b->err && b->err->empty())
+            *b->err = "request body read failed";
+          return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
+        }
+      } else if (!b->req.body.empty()) {
+        if (b->body_off >= b->req.body.size())
+          n = 0;
+        else {
+          size_t left = b->req.body.size() - static_cast<size_t>(b->body_off);
+          if (limit < left)
+            left = static_cast<size_t>(limit);
+          memcpy(buf, b->req.body.data() + static_cast<size_t>(b->body_off),
+                 left);
+          n = static_cast<ssize_t>(left);
+        }
+      }
+      if (n == 0) {
         *data_flags |= NGHTTP2_DATA_FLAG_EOF;
-      return static_cast<ssize_t>(n);
+        return 0;
+      }
+      b->body_off += static_cast<uint64_t>(n);
+      if (b->req.content_length >= 0 &&
+          b->body_off >= static_cast<uint64_t>(b->req.content_length))
+        *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+      else if (!b->req.pull && b->body_off >= b->req.body.size())
+        *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+      return n;
     };
     prdptr = &prd;
-    addHdr("content-length", std::to_string(st.body.size()));
   }
 
   std::vector<nghttp2_nv> nva;
@@ -1327,22 +1460,39 @@ int Http2Session::requestOnce(const HttpRequest &req, HttpResponse &resp,
 
   auto *sess = static_cast<nghttp2_session *>(session_);
   int32_t sid = nghttp2_submit_request(sess, nullptr, nva.data(), nva.size(),
-                                       prdptr, &st);
+                                       prdptr, st.get());
   if (sid < 0) {
-    err = nghttp2_strerror(sid);
+    if (st->err)
+      *st->err = nghttp2_strerror(sid);
     return -EIO;
   }
-  inflight_[sid] = &st;
+  inflight_[sid] = st;
   io_cv_.notify_one();
   wakeIo();
+  return 0;
+}
 
-  while (!st.done) {
+int Http2Session::requestOnce(const HttpRequest &req, HttpResponse &resp,
+                              std::string &err, bool send_credentials)
+{
+  auto st = std::make_shared<Inflight>();
+  st->resp = &resp;
+  st->err = &err;
+  st->req = req;
+  st->on_chunk = req.on_chunk;
+
+  std::unique_lock<std::mutex> lock(mu_);
+  int rc = submit(lock, st, send_credentials);
+  if (rc)
+    return rc;
+
+  while (!st->done) {
     if (!opt_.on_wait) {
-      st.cv.wait(lock);
+      st->cv.wait(lock);
       continue;
     }
-    st.cv.wait_for(lock, std::chrono::milliseconds(200));
-    if (st.done)
+    st->cv.wait_for(lock, std::chrono::milliseconds(200));
+    if (st->done)
       break;
     auto cb = opt_.on_wait;
     lock.unlock();
@@ -1350,13 +1500,77 @@ int Http2Session::requestOnce(const HttpRequest &req, HttpResponse &resp,
     lock.lock();
   }
 
-  if (st.rc)
-    return st.rc;
+  if (st->rc)
+    return st->rc;
   if (resp.status == 0) {
     err = "HTTP/2 response missing :status";
     return -EPROTO;
   }
   return 0;
+}
+
+int Http2Session::follow(const std::shared_ptr<Follow> &f, bool report)
+{
+  auto st = std::make_shared<Inflight>();
+  st->resp = &st->owned;
+  st->err = &st->owned_err;
+  st->req = f->req;
+  st->on_chunk = f->req.on_chunk;
+  st->on_done = [this, f, st] {
+    if (st->rc) {
+      f->cb(st->rc, std::move(st->owned), std::move(st->owned_err));
+      return;
+    }
+    RedirectPlan plan;
+    std::string err;
+    int prc = planRedirect(url_, opt_, f->req, st->owned, plan, err);
+    if (prc < 0) {
+      f->cb(prc, std::move(st->owned), err);
+      return;
+    }
+    if (prc == 0) {
+      f->cb(0, std::move(st->owned), std::move(st->owned_err));
+      return;
+    }
+    if (f->followed >= 8) {
+      f->cb(-ELOOP, std::move(st->owned), "too many HTTP redirects");
+      return;
+    }
+    ++f->followed;
+    f->req = std::move(plan.request);
+    f->send_credentials = plan.send_credentials;
+    if (plan.reconnect) {
+      int rc = connect(plan.url, plan.opt, err);
+      if (rc) {
+        f->cb(rc, HttpResponse{}, err);
+        return;
+      }
+    } else {
+      std::lock_guard<std::mutex> lock(mu_);
+      url_.path = plan.url.path;
+    }
+    follow(f, true);
+  };
+
+  std::unique_lock<std::mutex> lock(mu_);
+  int rc = submit(lock, st, f->send_credentials);
+  if (rc && report) {
+    std::string e = st->owned_err.empty() ? "HTTP/2 request was not queued"
+                                          : st->owned_err;
+    lock.unlock();
+    f->cb(rc, HttpResponse{}, e);
+  }
+  return rc;
+}
+
+int Http2Session::start(HttpRequest req, HttpCallback cb)
+{
+  if (!cb)
+    return -EINVAL;
+  auto f = std::make_shared<Follow>();
+  f->req = std::move(req);
+  f->cb = std::move(cb);
+  return follow(f, false);
 }
 
 } // namespace XioFS

@@ -2,6 +2,8 @@
 /usr/lib/*/libXrdClProxyPlugin-6.so
 /usr/lib/*/libXrdClRecorder-6.so
 /usr/lib/*/libXrdClS3-6.so
+/usr/lib/*/libXrdClXio-6.so
 /etc/xrootd/client.plugins.d/http.conf
 /etc/xrootd/client.plugins.d/recorder.conf
 /etc/xrootd/client.plugins.d/s3.conf
+/etc/xrootd/client.plugins.d/xio.conf

@@ -2108,7 +2108,13 @@ int XrdHttpProtocol::processHttp2(XrdLink *lp)
     CurrentReq.reset();
     http2Session_.reset();
   }
-  if (rc == 0 && !syncBridgeRan_)
+  // A 0 here means "run Process again". Login sets that so the user-agent
+  // step and the request itself run without waiting for another socket
+  // event. Waiting instead leaves the stream idle until the client resets
+  // it, and the late response is then dropped. Async bridge work must not
+  // use this path: the worker wakes the link when it finishes, and a 0
+  // would busy-loop the scheduler.
+  if (rc == 0 && !syncBridgeRan_ && !DoingLogin)
     return 1;
   return rc;
 }

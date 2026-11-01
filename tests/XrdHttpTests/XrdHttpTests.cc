@@ -1010,6 +1010,10 @@ TEST(XrdHttpTests, zstdStreamCompressRoundTrip) {
 #if defined(HAVE_NGHTTP2)
 #include "XioHttp2.hh"
 #include <arpa/inet.h>
+#include <cerrno>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <thread>
@@ -1424,11 +1428,15 @@ TEST(XrdHttpTests, planRedirectTransportHint) {
 
   req.method = "PUT";
   req.body = "abc";
+  req.content_length = 3;
+  req.pull = [](uint64_t, uint8_t *, size_t) -> ssize_t { return 0; };
   resp.status = 307;
   resp.headers[0].second = "https://redirector.example:7097/file2";
   ASSERT_EQ(1, XioFS::planRedirect(cur, opt, req, resp, plan, err)) << err;
   EXPECT_EQ("PUT", plan.request.method);
   EXPECT_EQ("abc", plan.request.body);
+  EXPECT_EQ(3, plan.request.content_length);
+  EXPECT_TRUE(static_cast<bool>(plan.request.pull));
   EXPECT_TRUE(plan.send_credentials);
   EXPECT_EQ(8443, plan.url.port);
 
@@ -1436,6 +1444,8 @@ TEST(XrdHttpTests, planRedirectTransportHint) {
   ASSERT_EQ(1, XioFS::planRedirect(cur, opt, req, resp, plan, err)) << err;
   EXPECT_EQ("GET", plan.request.method);
   EXPECT_TRUE(plan.request.body.empty());
+  EXPECT_FALSE(static_cast<bool>(plan.request.pull));
+  EXPECT_EQ(-1, plan.request.content_length);
 
   resp.status = 200;
   EXPECT_EQ(0, XioFS::planRedirect(cur, opt, req, resp, plan, err));
@@ -1443,6 +1453,151 @@ TEST(XrdHttpTests, planRedirectTransportHint) {
   resp.status = 302;
   resp.headers.clear();
   EXPECT_EQ(-EPROTO, XioFS::planRedirect(cur, opt, req, resp, plan, err));
+}
+
+TEST(XrdHttpTests, http2StartRequiresConnection) {
+  XioFS::Http2Session sess;
+  XioFS::HttpRequest req;
+  bool called = false;
+  int rc = sess.start(std::move(req), [&](int, XioFS::HttpResponse, std::string) {
+    called = true;
+  });
+  EXPECT_EQ(-ENOTCONN, rc);
+  EXPECT_FALSE(called);
+}
+
+TEST(XrdHttpTests, http2StartPullsRequestBody) {
+  int lfd = ::socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_GE(lfd, 0);
+  int one = 1;
+  setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  ASSERT_EQ(0, bind(lfd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)));
+  socklen_t alen = sizeof(addr);
+  ASSERT_EQ(0, getsockname(lfd, reinterpret_cast<sockaddr *>(&addr), &alen));
+  uint16_t port = ntohs(addr.sin_port);
+  ASSERT_EQ(0, listen(lfd, 1));
+
+  const std::string payload = "hello-xio";
+  std::string uploaded;
+  std::thread srv([&] {
+    int fd = accept(lfd, nullptr, nullptr);
+    if (fd < 0)
+      return;
+    struct Ctx {
+      int fd;
+      std::string *body;
+    } ctx{fd, &uploaded};
+    nghttp2_session_callbacks *cb = nullptr;
+    nghttp2_session_callbacks_new(&cb);
+    nghttp2_session_callbacks_set_send_callback(
+        cb,
+        [](nghttp2_session *, const uint8_t *data, size_t len, int,
+           void *ud) -> ssize_t {
+          auto *c = static_cast<Ctx *>(ud);
+          size_t off = 0;
+          while (off < len) {
+            ssize_t n = ::send(c->fd, data + off, len - off, 0);
+            if (n <= 0)
+              return NGHTTP2_ERR_CALLBACK_FAILURE;
+            off += static_cast<size_t>(n);
+          }
+          return static_cast<ssize_t>(len);
+        });
+    nghttp2_session_callbacks_set_on_data_chunk_recv_callback(
+        cb,
+        [](nghttp2_session *, uint8_t, int32_t, const uint8_t *data, size_t len,
+           void *ud) -> int {
+          auto *c = static_cast<Ctx *>(ud);
+          c->body->append(reinterpret_cast<const char *>(data), len);
+          return 0;
+        });
+    nghttp2_session_callbacks_set_on_frame_recv_callback(
+        cb,
+        [](nghttp2_session *sess, const nghttp2_frame *frame, void *) -> int {
+          if (frame->hd.type != NGHTTP2_HEADERS ||
+              frame->headers.cat != NGHTTP2_HCAT_REQUEST)
+            return 0;
+          nghttp2_nv status[] = {
+              {reinterpret_cast<uint8_t *>(const_cast<char *>(":status")),
+               reinterpret_cast<uint8_t *>(const_cast<char *>("204")), 7, 3,
+               NGHTTP2_NV_FLAG_NONE}};
+          nghttp2_submit_response(sess, frame->hd.stream_id, status, 1, nullptr);
+          return 0;
+        });
+    nghttp2_session *sess = nullptr;
+    nghttp2_session_server_new(&sess, cb, &ctx);
+    nghttp2_session_callbacks_del(cb);
+    nghttp2_submit_settings(sess, NGHTTP2_FLAG_NONE, nullptr, 0);
+    uint8_t buf[16384];
+    for (int i = 0; i < 64; ++i) {
+      if (nghttp2_session_send(sess) != 0)
+        break;
+      if (!nghttp2_session_want_read(sess) && !nghttp2_session_want_write(sess))
+        break;
+      ssize_t n = recv(fd, buf, sizeof(buf), 0);
+      if (n <= 0)
+        break;
+      if (nghttp2_session_mem_recv(sess, buf, static_cast<size_t>(n)) < 0)
+        break;
+    }
+    nghttp2_session_del(sess);
+    close(fd);
+  });
+
+  XioFS::Url u;
+  u.scheme = "http";
+  u.host = "127.0.0.1";
+  u.port = port;
+  u.path = "/obj";
+  u.authority = "127.0.0.1:" + std::to_string(port);
+  u.tls = false;
+  XioFS::Http2Session::Options opt;
+  opt.verify_peer = false;
+  opt.timeout_ms = 5000;
+  XioFS::Http2Session sess;
+  std::string err;
+  ASSERT_EQ(0, sess.connect(u, opt, err)) << err;
+
+  XioFS::HttpRequest req;
+  req.method = "PUT";
+  req.path = "/obj";
+  req.content_length = static_cast<int64_t>(payload.size());
+  req.pull = [&payload](uint64_t off, uint8_t *dst, size_t n) -> ssize_t {
+    if (off >= payload.size())
+      return 0;
+    size_t c = n;
+    if (c > payload.size() - static_cast<size_t>(off))
+      c = payload.size() - static_cast<size_t>(off);
+    memcpy(dst, payload.data() + static_cast<size_t>(off), c);
+    return static_cast<ssize_t>(c);
+  };
+
+  std::mutex mu;
+  std::condition_variable cv;
+  bool done = false;
+  int rc = -1;
+  int status = 0;
+  ASSERT_EQ(0, sess.start(std::move(req),
+                          [&](int c, XioFS::HttpResponse resp, std::string) {
+                            std::lock_guard<std::mutex> lock(mu);
+                            rc = c;
+                            status = resp.status;
+                            done = true;
+                            cv.notify_one();
+                          }));
+  {
+    std::unique_lock<std::mutex> lock(mu);
+    ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5), [&] { return done; }));
+  }
+  EXPECT_EQ(0, rc);
+  EXPECT_EQ(204, status);
+  sess.close();
+  srv.join();
+  close(lfd);
+  EXPECT_EQ(payload, uploaded);
 }
 
 TEST(XrdHttpTests, http2FollowStandardRedirect) {

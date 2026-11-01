@@ -264,8 +264,21 @@ int Client::invoke(const char *method, const std::string &rel,
   HttpRequest req;
   req.method = method ? method : "GET";
   req.headers = hdrs;
-  req.body = body;
   req.on_chunk = on_chunk;
+  // Read the caller's buffer in place. request() blocks for the whole
+  // transfer, including redirects, so `body` outlives every pull().
+  if (!body.empty()) {
+    req.content_length = static_cast<int64_t>(body.size());
+    req.pull = [&body](uint64_t off, uint8_t *dst, size_t n) -> ssize_t {
+      if (off >= body.size())
+        return 0;
+      size_t c = n;
+      if (c > body.size() - static_cast<size_t>(off))
+        c = body.size() - static_cast<size_t>(off);
+      memcpy(dst, body.data() + static_cast<size_t>(off), c);
+      return static_cast<ssize_t>(c);
+    };
+  }
 
   Url target;
   Http2Session::Options target_opt;

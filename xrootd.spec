@@ -458,6 +458,8 @@ install -m 644 -p config/client.plugins.d/http.conf \
 	%{buildroot}%{_sysconfdir}/%{name}/client.plugins.d/http.conf
 install -m 644 -p config/client.plugins.d/s3.conf \
 	%{buildroot}%{_sysconfdir}/%{name}/client.plugins.d/s3.conf
+install -m 644 -p config/client.plugins.d/xio.conf \
+	%{buildroot}%{_sysconfdir}/%{name}/client.plugins.d/xio.conf
 
 chmod 644 %{buildroot}%{_datadir}/%{name}/utils/XrdCmsNotify.pm
 
@@ -667,6 +669,7 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 %{_libdir}/libXrdSsiShMap.so.*
 # Plugins
 %{_libdir}/libXrdClHttp-6.so
+%{_libdir}/libXrdClXio-6.so
 %{_libdir}/libXrdClS3-6.so
 %{_libdir}/libXrdClProxyPlugin-6.so
 %{_libdir}/libXrdClRecorder-6.so
@@ -676,6 +679,7 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 %config(noreplace) %{_sysconfdir}/%{name}/client.plugins.d/http.conf
 %config(noreplace) %{_sysconfdir}/%{name}/client.plugins.d/recorder.conf
 %config(noreplace) %{_sysconfdir}/%{name}/client.plugins.d/s3.conf
+%config(noreplace) %{_sysconfdir}/%{name}/client.plugins.d/xio.conf
 
 %files client-devel
 %{_includedir}/%{name}/XrdCl
