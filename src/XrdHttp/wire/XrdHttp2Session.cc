@@ -254,15 +254,20 @@ struct SessionCtx
 
   int flushSendBuf()
   {
-    if (!send_used)
-      return 0;
-    const int sent = prot->SendWireData(reinterpret_cast<const char *>(sendbuf),
-                                         static_cast<int>(send_used));
-    if (sent < 0)
-      return -1;
-    if (sent == 0)
-      return 1;
-    send_used = 0;
+    while (send_used) {
+      const int sent = prot->SendWireData(reinterpret_cast<const char *>(sendbuf),
+                                           static_cast<int>(send_used));
+      if (sent < 0)
+        return -1;
+      if (sent == 0)
+        return 1;
+      if (static_cast<size_t>(sent) < send_used) {
+        memmove(sendbuf, sendbuf + sent, send_used - static_cast<size_t>(sent));
+        send_used -= static_cast<size_t>(sent);
+        continue;
+      }
+      send_used = 0;
+    }
     return 0;
   }
 
@@ -288,12 +293,17 @@ struct SessionCtx
     if (n >= kFlushBytes) {
       if (flushSendBuf() != 0)
         return -1;
-      const int sent = prot->SendWireData(static_cast<const char *>(p),
-                                           static_cast<int>(n));
-      if (sent < 0)
-        return -1;
-      if (sent == 0)
-        return 1;
+      const char *q = static_cast<const char *>(p);
+      size_t left = n;
+      while (left) {
+        const int sent = prot->SendWireData(q, static_cast<int>(left));
+        if (sent < 0)
+          return -1;
+        if (sent == 0)
+          return 1;
+        q += sent;
+        left -= static_cast<size_t>(sent);
+      }
       return 0;
     }
     if (send_used + n > kFlushBytes && flushSendBuf() != 0)

@@ -2734,14 +2734,26 @@ int XrdHttpReq::ProcessHTTPReq() {
       if (m_poststat_pending)
         return runPostWriteStat();
       if (patchOffset < 0) {
-        prot->SendSimpleResp(400, NULL, NULL,
+        if (prot->SendSimpleResp(400, NULL, NULL,
             (char *) "PATCH requires Content-Range: bytes first-last/complete",
-            0, false);
+            0, false) < 0)
+          return -1;
+        // The status is already queued. Returning -1 makes Process() destroy
+        // the HTTP/2 session while the client is still sending the body.
+        if (prot->isHttp2()) {
+          reset();
+          return 1;
+        }
         return -1;
       }
       if (length_seen && patchLength >= 0 && length != patchLength) {
-        prot->SendSimpleResp(400, NULL, NULL,
-            (char *) "Content-Length does not match Content-Range", 0, false);
+        if (prot->SendSimpleResp(400, NULL, NULL,
+            (char *) "Content-Length does not match Content-Range", 0, false) < 0)
+          return -1;
+        if (prot->isHttp2()) {
+          reset();
+          return 1;
+        }
         return -1;
       }
 
@@ -2760,8 +2772,13 @@ int XrdHttpReq::ProcessHTTPReq() {
 
           if (!prot->RunBridge((char *) &xrdreq,
                                  (char *) resourceplusopaque.c_str(), l)) {
-            prot->SendSimpleResp(404, NULL, NULL,
-                                 (char *) "Could not run request.", 0, keepalive);
+            if (prot->SendSimpleResp(404, NULL, NULL,
+                                 (char *) "Could not run request.", 0, keepalive) < 0)
+              return -1;
+            if (prot->isHttp2()) {
+              reset();
+              return 1;
+            }
             return -1;
           }
 
@@ -2772,8 +2789,13 @@ int XrdHttpReq::ProcessHTTPReq() {
       }
       int pc = evaluatePreconditions(true, false);
       if (pc) {
-        prot->SendSimpleResp(pc, NULL, NULL, (char *) "Precondition Failed", 0,
-                             false);
+        if (prot->SendSimpleResp(pc, NULL, NULL, (char *) "Precondition Failed", 0,
+                             false) < 0)
+          return -1;
+        if (prot->isHttp2()) {
+          reset();
+          return 1;
+        }
         return -1;
       }
       return processWritePayload();

@@ -391,8 +391,14 @@ int XrdHttp2ResponseWriter::sendSimple(XrdHttpProtocol &prot, int code,
   if (body && content_length > 0)
     pending.body.assign(body, static_cast<size_t>(content_length));
 
+  // HEAD carries no payload, so a NULL provider sets END_STREAM on HEADERS
+  // and sends no DATA. curl before 7.78 (CI is 7.76.1) then waits for a DATA
+  // frame when Content-Length is nonzero, and --max-time does not fire.
+  // An empty provider makes readResponse EOF immediately: a zero-length DATA
+  // frame with END_STREAM. Content-Length stays the represented length.
   const bool use_provider =
-      (content_length > 0 && body != nullptr) || streaming;
+      (content_length > 0 && body != nullptr) || streaming ||
+      (is_head && content_length > 0);
 
   std::string merged = mergeHeaders(prot, header_to_add);
 #ifdef HAVE_ZSTD

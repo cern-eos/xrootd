@@ -1821,6 +1821,37 @@ int XrdHttpProtocol::SendData(const char *body, int bodylen) {
   return r <= 0 ? -1 : 0;
 }
 
+// The link poller only watches readable events, so a TLS write that stops on
+// SSL_ERROR_WANT_WRITE is never resumed if we hand it back to the caller. An
+// HTTP/2 HEAD response then sits in the send buffer and curl waits until the
+// test harness kills the process. Finish the write here.
+namespace {
+int WaitTlsSocket(XrdLink *link, int ssl_err)
+{
+  if (!link || link->FDnum() < 0)
+    return -1;
+  struct pollfd pfd;
+  pfd.fd = link->FDnum();
+  pfd.events = (ssl_err == SSL_ERROR_WANT_READ)
+                 ? static_cast<short>(POLLIN | POLLRDNORM)
+                 : static_cast<short>(POLLOUT | POLLWRNORM);
+  pfd.revents = 0;
+  int prc;
+  do { prc = poll(&pfd, 1, 50); } while (prc < 0 && errno == EINTR);
+  if (prc < 0)
+    return -1;
+  if (prc == 0)
+    return 0;
+  if (pfd.revents & (POLLERR | POLLNVAL))
+    return -1;
+  if (pfd.revents & pfd.events)
+    return 1;
+  if (pfd.revents & POLLHUP)
+    return -1;
+  return 0;
+}
+}
+
 int XrdHttpProtocol::SendWireData(const char *body, int bodylen, bool is_data_payload)
 {
   if (!body || bodylen <= 0)
@@ -1847,18 +1878,45 @@ int XrdHttpProtocol::SendWireData(const char *body, int bodylen, bool is_data_pa
 #endif
 
   int total = 0;
+  int waits = 0;
+  int spins = 0;
   while (total < bodylen) {
     int r = 0;
     if (ishttps) {
+      ERR_clear_error();
       r = SSL_write(ssl, body + total, bodylen - total);
       if (r <= 0) {
         const int err = SSL_get_error(ssl, r);
-        if (r < 0 && (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE))
-          return total > 0 ? total : 0;
+        const bool again =
+          err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE ||
+          (err == SSL_ERROR_SYSCALL &&
+           (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR));
+        if (again) {
+          const int wr = WaitTlsSocket(Link, err == SSL_ERROR_WANT_READ
+                                               ? SSL_ERROR_WANT_READ
+                                               : SSL_ERROR_WANT_WRITE);
+          if (wr < 0) {
+            CurrentReq.monState = XrdHttpMonState::ERR_NET;
+            return -1;
+          }
+          if (wr == 0) {
+            if (++waits > 100) {
+              CurrentReq.monState = XrdHttpMonState::ERR_NET;
+              return -1;
+            }
+            continue;
+          }
+          if (++spins > 32) {
+            CurrentReq.monState = XrdHttpMonState::ERR_NET;
+            return -1;
+          }
+          continue;
+        }
         ERR_print_errors(sslbio_err);
         CurrentReq.monState = XrdHttpMonState::ERR_NET;
         return -1;
       }
+      spins = 0;
     } else if (Link) {
       r = Link->Send(body + total, bodylen - total);
       if (r <= 0) {
@@ -1894,9 +1952,15 @@ int XrdHttpProtocol::SendWirev(const struct iovec *iov, int iocnt, int bytes)
 #endif
   if (ishttps) {
     for (int i = 0; i < iocnt; i++) {
-      if (SendWireData(static_cast<const char *>(iov[i].iov_base),
-                       static_cast<int>(iov[i].iov_len)) < 0)
-        return -1;
+      const char *p = static_cast<const char *>(iov[i].iov_base);
+      int left = static_cast<int>(iov[i].iov_len);
+      while (left > 0) {
+        const int sent = SendWireData(p, left);
+        if (sent <= 0)
+          return -1;
+        p += sent;
+        left -= sent;
+      }
     }
     return bytes;
   }
@@ -1947,24 +2011,44 @@ int XrdHttpProtocol::RecvWireData(char *buf, int buflen, int timeout_ms)
         return 0;
       if (prc < 0)
         return -1;
-      if (!(pfd.revents & (POLLIN | POLLRDNORM)))
+      if (pfd.revents & (POLLERR | POLLNVAL))
+        return -1;
+      if (!(pfd.revents & (POLLIN | POLLRDNORM))) {
+        // A hangup with nothing left to read stays level-triggered. Returning
+        // 0 re-arms the link and DoIt spins until the test harness gives up.
+        if (pfd.revents & POLLHUP)
+          return -1;
         return timeout_ms > 0 ? -1 : 0;
+      }
     }
-    const int r = SSL_read(ssl, buf, buflen);
-    if (r <= 0) {
+    int spins = 0;
+    for (;;) {
+      ERR_clear_error();
+      const int r = SSL_read(ssl, buf, buflen);
+      if (r > 0)
+        return r;
       const int err = SSL_get_error(ssl, r);
-      if (r < 0 && (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE))
+      if (r < 0 && err == SSL_ERROR_WANT_WRITE) {
+        const int wr = WaitTlsSocket(Link, SSL_ERROR_WANT_WRITE);
+        if (wr < 0)
+          return -1;
+        if (wr == 0 || ++spins > 32)
+          return wr == 0 ? 0 : -1;
+        continue;
+      }
+      if (r < 0 && err == SSL_ERROR_WANT_READ)
         return 0;
       if (r < 0 && err == SSL_ERROR_SYSCALL &&
           (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
         return 0;
+      // Clean peer shutdown. Returning 0 leaves EPOLLIN/EPOLLHUP armed and
+      // DoIt runs again on every closed HTTP/2 connection.
       if (r == 0 && err == SSL_ERROR_ZERO_RETURN)
-        return 0;
+        return -1;
       ERR_print_errors(sslbio_err);
       CurrentReq.monState = XrdHttpMonState::ERR_NET;
       return -1;
     }
-    return r;
   }
 
   if (!Link)
