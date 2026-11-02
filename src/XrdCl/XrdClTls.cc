@@ -120,9 +120,18 @@ namespace XrdCl
     const mode_t camode = S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
 
     if (cadir && (msg = XrdOucUtils::ValPath(cadir, camode, true))) {
-      log->Error(XrdCl::TlsMsg, "Failed to initialize TLS context: CA directory %s", msg);
-      env->PutInt("NoTlsOK", 1);
-      return false;
+      // A missing or too-open directory must not discard a usable CA file.
+      // Doing so sets NoTlsOK, the client omits kXR_ableTLS, and a server
+      // with "xrootd.tls all" then offers ztn on a clear socket.
+      if (cafile) {
+        log->Warning(XrdCl::TlsMsg, "Ignoring CA directory %s (%s); using CA file",
+                     cadir, msg);
+        cadir = nullptr;
+      } else {
+        log->Error(XrdCl::TlsMsg, "Failed to initialize TLS context: CA directory %s", msg);
+        env->PutInt("NoTlsOK", 1);
+        return false;
+      }
     }
 
     std::string emsg = "unknown error";
