@@ -373,6 +373,14 @@ char *XrdHttpProtocol::GetClientIPStr() {
 }
 
 // Various routines for handling XrdLink as BIO objects within OpenSSL.
+//
+// BIO_set_nbio() sets BIO_FLAGS_NONCLEAR_RST (same bit OpenSSL's socket BIO
+// uses). When set, BIO_XrdLink_read uses Recv(..., 0) so SSL_read can return
+// WANT_READ instead of stalling on a blocking Link->Recv.
+#ifndef BIO_FLAGS_NONCLEAR_RST
+#define BIO_FLAGS_NONCLEAR_RST 0x20
+#endif
+
 int BIO_XrdLink_write(BIO *bio, const char *data, int datal)
 {
   if (!data || !bio) {
@@ -408,9 +416,20 @@ static int BIO_XrdLink_read(BIO *bio, char *data, int datal)
     errno = EIO;
     return -1;
   }
-  int ret = lp->Recv(data, datal);
+
+  // Non-blocking: poll once and take whatever is queued (0 = nothing yet).
+  // Blocking: single read() until SO_RCVTIMEO / peer close.
+  const bool nbio = (BIO_get_flags(bio) & BIO_FLAGS_NONCLEAR_RST) != 0;
+  int ret = nbio ? lp->Recv(data, datal, 0) : lp->Recv(data, datal);
   BIO_clear_retry_flags(bio);
-  if (ret <= 0) {
+  if (nbio && ret == 0) {
+    errno = EAGAIN;
+    BIO_set_retry_read(bio);
+    return -1;
+  }
+  if (ret < 0) {
+    // Recv(..., timeout) returns -ENOMSG when the peer closed after poll.
+    if (ret == -ENOMSG) return 0;
     if ((errno == EINTR) || (errno == EINPROGRESS) || (errno == EAGAIN) || (errno == EWOULDBLOCK))
       BIO_set_retry_read(bio);
   }
@@ -447,7 +466,16 @@ static long BIO_XrdLink_ctrl(BIO *bio, int cmd, long num, void * ptr)
     break;
   case BIO_CTRL_SET_CLOSE:
     BIO_set_shutdown(bio, (int)num);
-    break;  
+    break;
+  case BIO_C_SET_NBIO:
+    // BIO_set_nbio() — without this, the call is a no-op and SSL_read
+    // can stall forever on a blocking Link->Recv (HTTP/2 post-accept GET).
+    if (num)
+      BIO_set_flags(bio, BIO_FLAGS_NONCLEAR_RST);
+    else
+      BIO_clear_flags(bio, BIO_FLAGS_NONCLEAR_RST);
+    ret = 1;
+    break;
   case BIO_CTRL_DUP:
   case BIO_CTRL_FLUSH:
     ret = 1;
@@ -528,25 +556,28 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
             TRACEI(DEBUG, " CreateBIO returned NULL");
             return -1;
           }
-          BIO_set_nbio(sbio, 1);
+          // Keep the BIO blocking through SSL_accept: SO_RCVTIMEO below
+          // bounds the wait, and BIO_set_nbio before accept used to be a
+          // no-op (BIO_C_SET_NBIO was unimplemented). Enabling nbio here
+          // makes WANT_READ common; re-running SSL_set_accept_state on the
+          // next Process then resets the handshake ("unexpected message").
           ssl = (SSL*)xrdctx->Session();
+          if (!ssl) {
+              TRACEI(DEBUG, " SSL_new returned NULL");
+              ERR_print_errors(sslbio_err);
+              return -1;
+          }
+
+          // If a secxtractor has been loaded
+          // maybe it wants to add its own initialization bits
+          if (secxtractor)
+            secxtractor->InitSSL(ssl, sslcadir);
+
+          SSL_set_bio(ssl, sbio, sbio);
+          SSL_set_accept_state(ssl);
+          // ALPN is installed once in InitTLS() on this context. Do not reset
+          // the shared SSL_CTX callback on every handshake.
         }
-
-      if (!ssl) {
-          TRACEI(DEBUG, " SSL_new returned NULL");
-          ERR_print_errors(sslbio_err);
-          return -1;
-        }
-
-      // If a secxtractor has been loaded
-      // maybe it wants to add its own initialization bits
-      if (secxtractor)
-        secxtractor->InitSSL(ssl, sslcadir);
-
-      SSL_set_bio(ssl, sbio, sbio);
-      SSL_set_accept_state(ssl);
-      // ALPN is installed once in InitTLS() on this context. Do not reset
-      // the shared SSL_CTX callback on every handshake.
 
       //SSL_set_fd(ssl, Link->FDnum());
       struct timeval tv;
@@ -576,6 +607,8 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
           }
       }
 
+      // Non-blocking after accept so SSL_read/SSL_write return WANT_* instead
+      // of stalling forever on a blocking Link->Recv (HTTP/2 post-accept GET).
       BIO_set_nbio(sbio, 1);
 
       strcpy(SecEntity.prot, "https");
