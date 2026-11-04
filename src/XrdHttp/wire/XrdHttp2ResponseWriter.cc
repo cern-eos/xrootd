@@ -391,14 +391,16 @@ int XrdHttp2ResponseWriter::sendSimple(XrdHttpProtocol &prot, int code,
   if (body && content_length > 0)
     pending.body.assign(body, static_cast<size_t>(content_length));
 
-  // HEAD carries no payload, so a NULL provider sets END_STREAM on HEADERS
-  // and sends no DATA. curl before 7.78 (CI is 7.76.1) then waits for a DATA
-  // frame when Content-Length is nonzero, and --max-time does not fire.
-  // An empty provider makes readResponse EOF immediately: a zero-length DATA
-  // frame with END_STREAM. Content-Length stays the represented length.
+  // HEAD carries no payload: END_STREAM belongs on HEADERS, with no DATA
+  // (RFC 9113). curl before ~8.x (CI Alma is 7.76.1) hangs when a nonzero
+  // Content-Length is present — it waits for that many body bytes even after
+  // END_STREAM, and an empty DATA frame does not unblock it (--max-time never
+  // fires). Omit Content-Length on the wire for HTTP/2 HEAD only; the
+  // representation size stays available via GET. Digests and ETag are enough
+  // for the httph2 HEAD checks.
   const bool use_provider =
-      (content_length > 0 && body != nullptr) || streaming ||
-      (is_head && content_length > 0);
+      (content_length > 0 && body != nullptr) || streaming;
+  const long long wire_content_length = is_head ? -1 : content_length;
 
   std::string merged = mergeHeaders(prot, header_to_add);
 #ifdef HAVE_ZSTD
@@ -407,7 +409,7 @@ int XrdHttp2ResponseWriter::sendSimple(XrdHttpProtocol &prot, int code,
 #endif
   if (submitResponse(prot.http2Session_, prot, pending, code,
                      merged.empty() ? nullptr : merged.c_str(),
-                     content_length, use_provider) < 0) {
+                     wire_content_length, use_provider) < 0) {
     XrdHttpMon::Record(prot.CurrentReq, code);
     return -1;
   }

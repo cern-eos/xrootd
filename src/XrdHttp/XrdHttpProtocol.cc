@@ -488,7 +488,12 @@ int XrdHttpProtocol::Process(XrdLink *lp) // We ignore the argument here
   // A second DoIt can still be queued when the peer's close_notify makes us
   // drop the connection. By the time it runs, this object may already belong
   // to a new link. Leave that DoIt disabled instead of closing again.
-  if (closing_ || (lp && Link != lp))
+  // closing_ must not return -EINPROGRESS: that leaves the link disabled with
+  // no guaranteed wake, and a follow-up PokeLink/DoIt can spin the scheduler
+  // while new roots:// handshakes starve (scitokens third xrdcp).
+  if (closing_)
+    return -1;
+  if (lp && Link != lp)
     return -EINPROGRESS;
 
   TRACEI(DEBUG, " Process. lp:"<<(void *)lp<<" reqstate: "<<CurrentReq.reqstate);

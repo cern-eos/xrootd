@@ -234,10 +234,14 @@ function test_httph2() {
 	expectedDigest="Digest: adler32=${alphabetadler32}"
 	receivedDigest=$(grep -i "Digest" "${outputFilePath}")
 	assert_ieq "${expectedDigest}" "${receivedDigest}" "HEAD request test failed (adler32)"
-	expectedContentLength="Content-Length: $(wc -c < "${alphabet}" | sed 's/^ *//')"
-	receivedContentLength=$(grep -i 'Content-Length' "${outputFilePath}")
-	assert_ieq "${expectedContentLength}" "${receivedContentLength}" \
-		"HEAD request test failed (Content-Length)"
+	# HTTP/2 HEAD omits Content-Length so curl <8 does not hang waiting for a
+	# body that will never arrive. Size remains available via GET.
+	if grep -qi 'Content-Length' "${outputFilePath}"; then
+		expectedContentLength="Content-Length: $(wc -c < "${alphabet}" | sed 's/^ *//')"
+		receivedContentLength=$(grep -i 'Content-Length' "${outputFilePath}")
+		assert_ieq "${expectedContentLength}" "${receivedContentLength}" \
+			"HEAD request test failed (Content-Length)"
+	fi
 
 	h2 -s -I -H 'Want-Digest: adler' "${HTTPS_HOST}/h2-alphabet.txt" \
 		| tr -d '\r' > "${outputFilePath}"

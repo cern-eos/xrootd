@@ -137,6 +137,21 @@ namespace XrdCl
     std::string emsg = "unknown error";
     tlsContext = std::make_unique<XrdTlsContext>(nullptr, nullptr, cadir, cafile, 0ul, &emsg);
 
+    // A directory that passes ValPath can still be empty or unusable (common
+    // on CI images with a stub /etc/grid-security/certificates). Prefer the
+    // explicit CA file over setting NoTlsOK, which makes root:// omit
+    // kXR_ableTLS and then fail ztn on a clear socket.
+    if ((!tlsContext || !tlsContext->isOK()) && cadir && cafile) {
+      log->Warning(XrdCl::TlsMsg,
+                   "Ignoring CA directory %s after context failure (%s); using CA file",
+                   cadir, emsg.c_str());
+      tlsContext.reset(nullptr);
+      cadir = nullptr;
+      emsg = "unknown error";
+      tlsContext = std::make_unique<XrdTlsContext>(nullptr, nullptr, cadir, cafile,
+                                                   0ul, &emsg);
+    }
+
     if (!tlsContext || !tlsContext->isOK()) {
       tlsContext.reset(nullptr);
       log->Error(XrdCl::TlsMsg, "Failed to initialize TLS context: %s", emsg.c_str());
