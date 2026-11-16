@@ -18,6 +18,20 @@ function test_httph2() {
 		curl --http2 --connect-timeout 10 --max-time 60 --cacert "${CURL_CA}" "$@"
 	}
 
+	# curl < 8 can hang forever on HTTP/2 HEAD (--max-time never fires) even
+	# when Content-Length is omitted. Keep GET/PUT/PATCH on h2; use HTTP/1.1
+	# for HEAD until curl is new enough.
+	h2_head() {
+		local maj ver
+		ver=$(curl -V 2>/dev/null | awk '{print $2; exit}')
+		maj=${ver%%.*}
+		if [[ "${maj:-0}" -ge 8 ]]; then
+			curl --http2 --connect-timeout 10 --max-time 60 --cacert "${CURL_CA}" "$@"
+		else
+			curl --http1.1 --connect-timeout 10 --max-time 60 --cacert "${CURL_CA}" "$@"
+		fi
+	}
+
 	# HTTP/2 responses lowercase field names; compare headers case-insensitively.
 	assert_ieq() {
 		local exp recv msg
@@ -39,8 +53,8 @@ function test_httph2() {
 	assert h2 -s -o "${out}" "${HTTPS_HOST}/h2-upload.txt"
 	assert diff -u "${body}" "${out}"
 
-	code=$(h2 -s -o /dev/null -w '%{http_code}' -I "${HTTPS_HOST}/h2-upload.txt")
-	assert_eq 200 "${code}" "HEAD over HTTP/2 should return 200"
+	code=$(h2_head -s -o /dev/null -w '%{http_code}' -I "${HTTPS_HOST}/h2-upload.txt")
+	assert_eq 200 "${code}" "HEAD should return 200"
 
 	read -r code1 code2 <<< "$(h2 -s \
 		-o /dev/null -w '%{http_code} ' "${HTTPS_HOST}/h2-upload.txt" \
@@ -193,7 +207,7 @@ function test_httph2() {
 	echo "Testing If-Match / If-None-Match"
 	printf 'abcdefghijklmnopqrstuvwxyz' > "${tmpdir}/precond-src"
 	assert h2 -s -T "${tmpdir}/precond-src" "${HTTPS_HOST}/h2-precond.bin"
-	etag=$(h2 -sI "${HTTPS_HOST}/h2-precond.bin" | extract_etag)
+	etag=$(h2_head -sI "${HTTPS_HOST}/h2-precond.bin" | extract_etag)
 	[ -n "${etag}" ] || error "HEAD should return an ETag"
 	code=$(h2 -s -o /dev/null -w '%{http_code}' -X PATCH \
 		-H "If-Match: ${etag}" -H 'Content-Range: bytes 4-7/*' \
@@ -204,7 +218,7 @@ function test_httph2() {
 		--data-binary 'ZZZZ' "${HTTPS_HOST}/h2-precond.bin")
 	assert_eq 412 "${code}" "PATCH with stale If-Match should return 412"
 	# Versioned ETag: the PATCH changed it; re-read before the 304 check.
-	newetag=$(h2 -sI "${HTTPS_HOST}/h2-precond.bin" | extract_etag)
+	newetag=$(h2_head -sI "${HTTPS_HOST}/h2-precond.bin" | extract_etag)
 	[ "${newetag}" != "${etag}" ] || error "ETag should change after PATCH"
 	code=$(h2 -s -o /dev/null -w '%{http_code}' -H "If-None-Match: ${newetag}" \
 		"${HTTPS_HOST}/h2-precond.bin")
@@ -227,7 +241,7 @@ function test_httph2() {
 	alphabetadlerb64='jwQKXQ=='
 
 	echo "Testing HEAD Want-Digest / Want-Repr-Digest"
-	h2 -s -I -H 'Want-Digest: adler32' "${HTTPS_HOST}/h2-alphabet.txt" \
+	h2_head -s -I -H 'Want-Digest: adler32' "${HTTPS_HOST}/h2-alphabet.txt" \
 		| tr -d '\r' > "${outputFilePath}"
 	grep '200' "${outputFilePath}" >/dev/null \
 		|| error "HEAD request test failed: Failed to perform HEAD on h2-alphabet.txt"
@@ -243,53 +257,53 @@ function test_httph2() {
 			"HEAD request test failed (Content-Length)"
 	fi
 
-	h2 -s -I -H 'Want-Digest: adler' "${HTTPS_HOST}/h2-alphabet.txt" \
+	h2_head -s -I -H 'Want-Digest: adler' "${HTTPS_HOST}/h2-alphabet.txt" \
 		| tr -d '\r' > "${outputFilePath}"
 	expectedDigest="Digest: adler=${alphabetadler32}"
 	receivedDigest=$(grep -i "Digest" "${outputFilePath}")
 	assert_ieq "${expectedDigest}" "${receivedDigest}" "HEAD request test failed (adler)"
 
-	h2 -s -I -H 'Want-Digest: crc32c' "${HTTPS_HOST}/h2-alphabet.txt" \
+	h2_head -s -I -H 'Want-Digest: crc32c' "${HTTPS_HOST}/h2-alphabet.txt" \
 		| tr -d '\r' > "${outputFilePath}"
 	expectedDigest="Digest: crc32c=${alphabetcrc32c}"
 	receivedDigest=$(grep -i "Digest" "${outputFilePath}")
 	assert_ieq "${expectedDigest}" "${receivedDigest}" "HEAD request test failed (crc32c)"
 
-	h2 -s -I -H 'Want-Digest: md5' "${HTTPS_HOST}/h2-alphabet.txt" \
+	h2_head -s -I -H 'Want-Digest: md5' "${HTTPS_HOST}/h2-alphabet.txt" \
 		| tr -d '\r' > "${outputFilePath}"
 	expectedDigest="Digest: md5=${alphabetmd5sumb64}"
 	receivedDigest=$(grep -i "Digest" "${outputFilePath}")
 	assert_ieq "${expectedDigest}" "${receivedDigest}" "HEAD request test failed (md5)"
 
-	h2 -s -I -H 'Want-Digest: NotSupported, adler32, crc32c' \
+	h2_head -s -I -H 'Want-Digest: NotSupported, adler32, crc32c' \
 		"${HTTPS_HOST}/h2-alphabet.txt" | tr -d '\r' > "${outputFilePath}"
 	expectedDigest="Digest: adler32=${alphabetadler32}"
 	receivedDigest=$(grep -i "Digest" "${outputFilePath}")
 	assert_ieq "${expectedDigest}" "${receivedDigest}" \
 		"HEAD request test failed (digest not supported)"
 
-	h2 -s -I -H 'Want-Repr-Digest: adler=1' "${HTTPS_HOST}/h2-alphabet.txt" \
+	h2_head -s -I -H 'Want-Repr-Digest: adler=1' "${HTTPS_HOST}/h2-alphabet.txt" \
 		| tr -d '\r' > "${outputFilePath}"
 	expectedDigest="Repr-Digest: adler=:${alphabetadlerb64}:"
 	receivedDigest=$(grep -i "Repr-Digest" "${outputFilePath}")
 	assert_ieq "${expectedDigest}" "${receivedDigest}" \
 		"HEAD request test failed (Want-Repr-Digest)"
 
-	h2 -s -I -H 'Want-Repr-Digest: adler=1,md5=5' \
+	h2_head -s -I -H 'Want-Repr-Digest: adler=1,md5=5' \
 		"${HTTPS_HOST}/h2-alphabet.txt" | tr -d '\r' > "${outputFilePath}"
 	expectedDigest="Repr-Digest: md5=:${alphabetmd5sumb64}:"
 	receivedDigest=$(grep -i "Repr-Digest" "${outputFilePath}")
 	assert_ieq "${expectedDigest}" "${receivedDigest}" \
 		"HEAD request test failed (Want-Repr-Digest multiple digests requested)"
 
-	h2 -s -I -H 'Want-Digest: adler32' -H 'Want-Repr-Digest: md5=1' \
+	h2_head -s -I -H 'Want-Digest: adler32' -H 'Want-Repr-Digest: md5=1' \
 		"${HTTPS_HOST}/h2-alphabet.txt" | tr -d '\r' > "${outputFilePath}"
 	expectedDigest="Digest: adler32=${alphabetadler32}"
 	receivedDigest=$(grep -i "Digest" "${outputFilePath}")
 	assert_ieq "${expectedDigest}" "${receivedDigest}" \
 		"HEAD request test failed (Want-Digest prior to Want-Repr-Digest)"
 
-	h2 -s -I -H 'Want-Repr-Digest: adler32' "${HTTPS_HOST}/h2-alphabet.txt" \
+	h2_head -s -I -H 'Want-Repr-Digest: adler32' "${HTTPS_HOST}/h2-alphabet.txt" \
 		| tr -d '\r' > "${outputFilePath}"
 	receivedDigest=$(grep -c "Digest" "${outputFilePath}")
 	assert_eq 0 "${receivedDigest}" \
@@ -331,7 +345,7 @@ function test_httph2() {
 	assert_eq "1" "$(grep -ci 'test: 1' "${outputFilePath}")" \
 		"Incorrect number of 'Test' header values"
 
-	h2 -I -s --raw "${HTTPS_HOST}/h2-alphabet.txt" 2>&1 \
+	h2_head -I -s --raw "${HTTPS_HOST}/h2-alphabet.txt" 2>&1 \
 		| tr -d '\r' > "${outputFilePath}"
 	grep -qi 'test: 1' "${outputFilePath}" \
 		|| error "HEAD is missing statically-defined Test header"

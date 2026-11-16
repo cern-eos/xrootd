@@ -9,7 +9,7 @@ set -e
 : ${CURL:=$(command -v curl)}
 
 # Parallel arrays for compatibility with Bash < 4
-host_names=(metaman man1 man2 srv1 srv2 srv3 srv6)
+host_names=(metaman man1 man2 srv1 srv2 srv3 srv4)
 host_ports=(10970 10971 10972 10973 10974 10975 10976)
 host_roots=()
 host_https=()
@@ -90,12 +90,16 @@ upload_file_to_host() {
     local http_url
     http_url=$(get_http_url_for_host "$host")
 
-    echo -e "\nUploading '$file_path' to '${http_url}/$RMTDATADIR/$remote_name'"
+    # Avoid "//srvdata" (RMTDATADIR has a leading slash): Acc is_subdirectory
+    # fails on the unsanitized opaque path and falls back to authdb read-only.
+    local dest="${http_url}${RMTDATADIR}/${remote_name}"
+    echo -e "\nUploading '$file_path' to '${dest}'"
+    # -f fails on HTTP 4xx/5xx so a 403 after 307 is not mistaken for success.
     # --retry-connrefused covers a leftover race after fixture start; Alma 8
     # curl 7.61 already supports it (added in 7.52).
-    if ! ${CURL} --location-trusted -v -L -s --retry 5 --retry-delay 1 --retry-connrefused \
+    if ! ${CURL} --location-trusted -f -v -L -s --retry 5 --retry-delay 1 --retry-connrefused \
         -H "Authorization: Bearer ${BEARER_TOKEN}" \
-        "${http_url}/$RMTDATADIR/$remote_name" -T "$file_path"; then
+        "${dest}" -T "$file_path"; then
         echo "Upload to $host failed!"
         exit 1
     fi
@@ -110,8 +114,8 @@ perform_rename() {
     local http_url
     http_url=$(get_http_url_for_host "$src_host")
 
-    local src_url="${http_url}/$RMTDATADIR/$old_name"
-    local dst_url="${http_url}/$RMTDATADIR/$new_name"
+    local src_url="${http_url}${RMTDATADIR}/${old_name}"
+    local dst_url="${http_url}${RMTDATADIR}/${new_name}"
 
     echo -e "\nRenaming '$src_url' to '$dst_url'"
 

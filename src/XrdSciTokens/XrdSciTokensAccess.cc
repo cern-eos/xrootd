@@ -510,6 +510,12 @@ public:
                                   const Access_Operation oper,
                                         XrdOucEnv       *env) override
     {
+        std::string canon_path;
+        const char *check_path = path;
+        if (path && MakeCanonical(path, canon_path)) {
+            check_path = canon_path.c_str();
+        }
+
         const char *authz = env ? env->Get("authz") : nullptr;
             // Note: this is more permissive than the plugin was previously.
             // The prefix 'Bearer%20' used to be required as that's what HTTP
@@ -526,7 +532,7 @@ public:
             authz = Entity->creds;
         }
         if (authz == nullptr) {
-            return OnMissing(Entity, path, oper, env);
+            return OnMissing(Entity, check_path, oper, env);
         }
         m_log.Log(LogMask::Debug, "Access", "Trying token-based access control");
         std::shared_ptr<XrdAccRules> access_rules;
@@ -555,14 +561,14 @@ public:
                     access_rules->parse(rules);
                 } else {
                     m_log.Log(LogMask::Warning, "Access", "Failed to generate ACLs for token");
-                    return OnMissing(Entity, path, oper, env);
+                    return OnMissing(Entity, check_path, oper, env);
                 }
                 if (m_log.getMsgMask() & LogMask::Debug) {
                     m_log.Log(LogMask::Debug, "Access", "New valid token", access_rules->str().c_str());
                 }
             } catch (std::exception &exc) {
                 m_log.Log(LogMask::Warning, "Access", "Error generating ACLs for authorization", exc.what());
-                return OnMissing(Entity, path, oper, env);
+                return OnMissing(Entity, check_path, oper, env);
             }
             std::lock_guard<std::mutex> guard(m_map_mutex);
             m_map[authz] = access_rules;
@@ -609,18 +615,18 @@ public:
         std::string username;
         bool mapping_success = false;
         bool scope_success = false;
-        username = access_rules->get_username(path);
+        username = access_rules->get_username(check_path);
 
         mapping_success = (access_rules->get_authz_strategy() & IssuerAuthz::Mapping) && !username.empty();
-        scope_success = (access_rules->get_authz_strategy() & IssuerAuthz::Capability) && access_rules->apply(oper, path);
+        scope_success = (access_rules->get_authz_strategy() & IssuerAuthz::Capability) && access_rules->apply(oper, check_path);
         if (scope_success && (m_log.getMsgMask() & LogMask::Debug)) {
             std::stringstream ss;
-            ss << "Grant authorization based on scopes for operation=" << OpToName(oper) << ", path=" << path;
+            ss << "Grant authorization based on scopes for operation=" << OpToName(oper) << ", path=" << check_path;
             m_log.Log(LogMask::Debug, "Access", ss.str().c_str());
         }
 
         if (!scope_success && !mapping_success && !group_success) {
-            auto returned_accs = OnMissing(&new_secentity, path, oper, env);
+            auto returned_accs = OnMissing(&new_secentity, check_path, oper, env);
             // Clean up the new_secentity
             if (new_secentity.vorg != nullptr) free(new_secentity.vorg);
             if (new_secentity.grps != nullptr) free(new_secentity.grps);
@@ -654,7 +660,7 @@ public:
         }
 
         // When the scope authorized this access, allow immediately.  Otherwise, chain
-        XrdAccPrivs returned_op = scope_success ? AddPriv(oper, XrdAccPriv_None) : OnMissing(&new_secentity, path, oper, env);
+        XrdAccPrivs returned_op = scope_success ? AddPriv(oper, XrdAccPriv_None) : OnMissing(&new_secentity, check_path, oper, env);
 
         // Since we are doing an early return, insert token info into the
         // monitoring stream if monitoring is in effect and access granted

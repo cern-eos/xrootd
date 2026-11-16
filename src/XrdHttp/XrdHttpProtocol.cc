@@ -1590,8 +1590,10 @@ int XrdHttpProtocol::getDataOneShot(int blen, bool wait) {
       if (rlen < 0 &&
           (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE))
         return 0;
-      if (rlen == 0 && err == SSL_ERROR_ZERO_RETURN)
-        return 0;
+      if (rlen == 0 && err == SSL_ERROR_ZERO_RETURN) {
+        Link->setEtext("link SSL closed by peer");
+        return -1;
+      }
       Link->setEtext("link SSL read error");
       ERR_print_errors(sslbio_err);
       return -1;
@@ -1674,6 +1676,10 @@ int XrdHttpProtocol::SSLPending() const
 {
   if (!ishttps || !ssl)
     return 0;
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+  if (SSL_has_pending(ssl))
+    return 1;
+#endif
   return SSL_pending(ssl);
 }
 
@@ -2040,7 +2046,11 @@ int XrdHttpProtocol::RecvWireData(char *buf, int buflen, int timeout_ms)
     // socket is readable. After login, DoIt can re-enter with a stale lp from
     // the poll that delivered the HTTP/2 preface; a blind SSL_read then fails
     // and the client sees the connection drop (httph2 PUT in ~200ms).
-    if (SSL_pending(ssl) <= 0 && Link) {
+    bool has_pending = false;
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+    has_pending = (SSL_has_pending(ssl) != 0);
+#endif
+    if (!has_pending && SSL_pending(ssl) <= 0 && Link) {
       struct pollfd pfd = {Link->FDnum(), POLLIN | POLLRDNORM, 0};
       const int wait = timeout_ms > 0 ? timeout_ms : 0;
       int prc;

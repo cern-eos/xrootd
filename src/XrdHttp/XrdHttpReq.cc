@@ -1856,7 +1856,6 @@ void XrdHttpReq::parseResource(char *res) {
 
     std::string resourceDecoded = decode_str(resource.c_str());
     resource = resourceDecoded.c_str();
-    resourceplusopaque = resourceDecoded.c_str();
 
     
     // Sanitize the resource string, removing double slashes
@@ -1866,6 +1865,10 @@ void XrdHttpReq::parseResource(char *res) {
       if (pos != STR_NPOS)
         resource.erase(pos, 1);
     } while (pos != STR_NPOS);
+
+    // Acc / Bridge use resourceplusopaque; keep it in sync with the
+    // sanitized path (otherwise "//srvdata/..." fails is_subdirectory).
+    resourceplusopaque = resource;
     
     return;
   }
