@@ -377,8 +377,9 @@ if (XTab)
 //
    if (fhProc) fhProc->Delete();
 
-// Delete this object
+// Delete this object. Unlock first, as the delete destroys tableMutex.
 //
+   lock.UnLock();
    delete this;
 }
   
