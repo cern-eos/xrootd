@@ -29,6 +29,8 @@
 /* specific prior written permission of the institution or contributor.       */
 /******************************************************************************/
 
+#include <atomic>
+
 class  XrdLink;
 class  XrdPoll;
 struct pollfd;
@@ -44,15 +46,20 @@ XrdPoll       *Poller;      // -> Poller object associated with this object
 int            FD;          // Associated target file descriptor number
 bool           inQ;         // True -> in a PollPoll event queue
 bool           isEnabled;   // True -> interrupts are enabled
-char           rsv[2];      // Reserved for future flags
+std::atomic<bool> inSched;  // True -> poller queued Link, DoIt not yet run
+char           rsv[1];      // Reserved for future flags
 
+// inSched is not cleared here: a job queued for the previous user of this
+// link may still be pending and must run before the poller queues it again.
+//
 void           Zorch() {Next      = 0;     PollEnt  = 0;
                         Poller    = 0;     FD       = -1;
                         isEnabled = false; inQ      = false;
-                        rsv[0]    = 0;     rsv[1]   = 0;
+                        rsv[0]    = 0;
                        }
 
-               XrdPollInfo(XrdLink &lnk) : Link(lnk) {Zorch();}
+               XrdPollInfo(XrdLink &lnk) : Link(lnk), inSched(false)
+                          {Zorch();}
               ~XrdPollInfo() {}
 };
 #endif

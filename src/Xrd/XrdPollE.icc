@@ -145,7 +145,10 @@ void XrdPollE::Disable(XrdPollInfo &pInfo, const char *etxt)
 // Check if this link needs to be rescheduled. If so, the caller better have
 // the link opMutex lock held for this to work!
 //
-   if (etxt && Finish(pInfo, etxt)) Sched.Schedule((XrdJob *)&pInfo.Link);
+   if (etxt && Finish(pInfo, etxt))
+      {pInfo.inSched = true;
+       Sched.Schedule((XrdJob *)&pInfo.Link);
+      }
 }
 
 /******************************************************************************/
@@ -156,9 +159,10 @@ int XrdPollE::Enable(XrdPollInfo &pInfo)
 {
    struct epoll_event myEvents = {ePollEvents, {(void *)&pInfo}};
 
-// Simply return if the link is already enabled
+// Simply return if the link is already enabled. A link we already queued
+// re-enables itself when its DoIt runs; arming it now could queue it twice.
 //
-   if (pInfo.isEnabled) return 1;
+   if (pInfo.isEnabled || pInfo.inSched) return 1;
 
 // Enable this fd. Unlike solaris, epoll_ctl() does not block when the pollfd
 // is being waited upon by another thread.
@@ -336,6 +340,7 @@ void XrdPollE::Start(XrdSysSemaphore *syncsem, int &retcode)
               {if (!(pInfo->isEnabled) && pInfo->FD >= 0)
                   remFD(*pInfo, PollTab[i].events);
                   else {pInfo->isEnabled = 0;
+                        pInfo->inSched = true;
                         if (!(PollTab[i].events & pollOK)
                         ||   (PollTab[i].events & POLLRDHUP))
                            Finish(*pInfo, x2Text(PollTab[i].events, eBuff));

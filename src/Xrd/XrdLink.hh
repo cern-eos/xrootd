@@ -271,6 +271,14 @@ XrdNetAddr     *NetAddr() const;
 int             Peek(char *buff, int blen, int timeout=-1);
 
 //-----------------------------------------------------------------------------
+//! Run the protocol on this link again without waiting for a socket event.
+//! Safe to call while the link is queued or already running; use this
+//! instead of scheduling the link object directly.
+//-----------------------------------------------------------------------------
+
+void            Poke();
+
+//-----------------------------------------------------------------------------
 //! Read data from a link. Note that this call blocks until some data is
 //! available. Use Recv() with a timeout to avoid blocking.
 //!

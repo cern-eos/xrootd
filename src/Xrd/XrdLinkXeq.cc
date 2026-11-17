@@ -105,7 +105,8 @@ using namespace XrdGlobal;
 /*                           C o n s t r u c t o r                            */
 /******************************************************************************/
   
-XrdLinkXeq::XrdLinkXeq() : XrdLink(*this), PollInfo((XrdLink &)*this)
+XrdLinkXeq::XrdLinkXeq() : XrdLink(*this), PollInfo((XrdLink &)*this),
+                           pokeJob(*this), pokeQueued(false)
 {
    XrdLinkXeq::Reset();
 }
@@ -292,6 +293,12 @@ int XrdLinkXeq::Close(bool defer)
  
 void XrdLinkXeq::DoIt()
 {
+   PollInfo.inSched = false;
+   RunProtocol();
+}
+
+void XrdLinkXeq::RunProtocol()
+{
    int rc;
 
 // One scheduler thread owns the link for the whole Process/Enable/Close
@@ -342,8 +349,8 @@ void XrdLinkXeq::DoIt()
                const int again = LinkInfo.doDoItAgain && Protocol;
                LinkInfo.doDoItAgain = 0;
                LinkInfo.inDoIt = 0;
+               if (again) SchedulePoke();
                LinkInfo.opMutex.UnLock();
-               if (again) Sched.Schedule((XrdJob *)this);
                return;
               }
           }
@@ -355,15 +362,43 @@ void XrdLinkXeq::DoIt()
        return;
       }
 
-// The job was dequeued before DoIt ran, so a follow-up Schedule is a new
-// queue node. Clear inDoIt first so that Schedule does not overlap Process.
+// Run again through the poke job: Enable() above may already have let the
+// poller queue this link, so it must not be scheduled a second time.
 //
    LinkInfo.opMutex.Lock();
    const int again = LinkInfo.doDoItAgain && Protocol;
    LinkInfo.doDoItAgain = 0;
    LinkInfo.inDoIt = 0;
+   if (again) SchedulePoke();
    LinkInfo.opMutex.UnLock();
-   if (again) Sched.Schedule((XrdJob *)this);
+}
+
+/******************************************************************************/
+/*                                  P o k e                                   */
+/******************************************************************************/
+
+void XrdLinkXeq::Poke()
+{
+   XrdSysMutexHelper opHelper(LinkInfo.opMutex);
+
+   if (!Protocol) return;
+   if (LinkInfo.inDoIt) LinkInfo.doDoItAgain = 1;
+      else SchedulePoke();
+}
+
+void XrdLinkXeq::SchedulePoke()
+{
+   if (pokeQueued) return;
+   pokeQueued = true;
+   Sched.Schedule((XrdJob *)&pokeJob);
+}
+
+void XrdLinkXeq::PokeJob::DoIt()
+{
+   linkP.LinkInfo.opMutex.Lock();
+   linkP.pokeQueued = false;
+   linkP.LinkInfo.opMutex.UnLock();
+   linkP.RunProtocol();
 }
 
 /******************************************************************************/

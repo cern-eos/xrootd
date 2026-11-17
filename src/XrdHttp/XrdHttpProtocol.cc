@@ -1676,10 +1676,6 @@ int XrdHttpProtocol::SSLPending() const
 {
   if (!ishttps || !ssl)
     return 0;
-#if OPENSSL_VERSION_NUMBER >= 0x10100000L
-  if (SSL_has_pending(ssl))
-    return 1;
-#endif
   return SSL_pending(ssl);
 }
 
@@ -2046,11 +2042,7 @@ int XrdHttpProtocol::RecvWireData(char *buf, int buflen, int timeout_ms)
     // socket is readable. After login, DoIt can re-enter with a stale lp from
     // the poll that delivered the HTTP/2 preface; a blind SSL_read then fails
     // and the client sees the connection drop (httph2 PUT in ~200ms).
-    bool has_pending = false;
-#if OPENSSL_VERSION_NUMBER >= 0x10100000L
-    has_pending = (SSL_has_pending(ssl) != 0);
-#endif
-    if (!has_pending && SSL_pending(ssl) <= 0 && Link) {
+    if (SSL_pending(ssl) <= 0 && Link) {
       struct pollfd pfd = {Link->FDnum(), POLLIN | POLLRDNORM, 0};
       const int wait = timeout_ms > 0 ? timeout_ms : 0;
       int prc;

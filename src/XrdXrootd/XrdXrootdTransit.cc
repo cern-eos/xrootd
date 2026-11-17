@@ -180,8 +180,8 @@ int XrdXrootdTransit::RunStaged(XrdXrootd::Bridge::Result *rslt,
 
 void XrdXrootdTransit::PokeLink()
 {
-   if (Link && Sched)
-      Sched->Schedule(static_cast<XrdJob *>(Link));
+   if (Link)
+      Link->Poke();
 }
 
 /******************************************************************************/

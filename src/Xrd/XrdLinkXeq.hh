@@ -64,6 +64,7 @@ int           Close(bool defer=false);
 
 void          DoIt(); // Override
 
+void          Poke();
 
        int    getIOStats(long long &inbytes, long long &outbytes,
                               int  &numstall,     int  &numtardy)
@@ -148,6 +149,25 @@ XrdLinkInfo   LinkInfo;
 XrdPollInfo   PollInfo;
 
 protected:
+
+// Wakes the link without using the link job itself, which the poller may
+// already have queued; XrdScheduler cannot hold the same job twice.
+//
+class PokeJob : public XrdJob
+{
+public:
+void          DoIt() override;
+              PokeJob(XrdLinkXeq &lnk) : XrdJob("link poke"), linkP(lnk) {}
+             ~PokeJob() {}
+private:
+XrdLinkXeq   &linkP;
+};
+
+void   RunProtocol();
+void   SchedulePoke(); // Caller holds LinkInfo.opMutex
+
+PokeJob pokeJob;
+bool    pokeQueued;    // Protected by LinkInfo.opMutex; not cleared by Reset()
 
 int    RecvIOV(const struct iovec *iov, int iocnt);
 void   Reset();
