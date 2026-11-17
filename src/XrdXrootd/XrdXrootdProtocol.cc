@@ -1218,7 +1218,6 @@ int XrdXrootdProtocol::getData(XrdXrootd::gdCallBack *cbP,
 }
 
 /******************************************************************************/
-namespace {int consumed = 0;}
   
 int XrdXrootdProtocol::getData(XrdXrootd::gdCallBack *cbP,
                                const char *dtype, struct iovec *iov, int iovn)
@@ -1241,7 +1240,6 @@ int XrdXrootdProtocol::getData(XrdXrootd::gdCallBack *cbP,
       {gdCtl.useCB = true;
        return 1;
       }
-consumed = 0;
    return getDataIovCont();
 }
 

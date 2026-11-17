@@ -283,9 +283,11 @@ int tlsHandshake(int fd, const XioFS::Url &url, const Options &opt,
   }
   SSL_set_fd(ssl, fd);
   SSL_set_tlsext_host_name(ssl, url.host.c_str());
-#ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
-  SSL_set1_host(ssl, url.host.c_str());
-#endif
+  {
+    X509_VERIFY_PARAM *vpm = SSL_get0_param(ssl);
+    if (!X509_VERIFY_PARAM_set1_ip_asc(vpm, url.host.c_str()))
+      X509_VERIFY_PARAM_set1_host(vpm, url.host.c_str(), 0);
+  }
   if (opt.http2 && !opt.krb5) {
     static const unsigned char alpn[] = {2, 'h', '2'};
     SSL_set_alpn_protos(ssl, alpn, sizeof(alpn));

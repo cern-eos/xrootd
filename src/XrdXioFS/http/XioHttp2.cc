@@ -583,9 +583,11 @@ int Http2Session::tlsHandshake(std::string &err)
   SSL_set_fd(ssl, fd_);
   SSL_set_tlsext_host_name(ssl, url_.host.c_str());
   SSL_set_alpn_protos(ssl, alpn, sizeof(alpn));
-#ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
-  SSL_set1_host(ssl, url_.host.c_str());
-#endif
+  {
+    X509_VERIFY_PARAM *vpm = SSL_get0_param(ssl);
+    if (!X509_VERIFY_PARAM_set1_ip_asc(vpm, url_.host.c_str()))
+      X509_VERIFY_PARAM_set1_host(vpm, url_.host.c_str(), 0);
+  }
 
   int rc;
   while ((rc = SSL_connect(ssl)) != 1) {
