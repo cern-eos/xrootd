@@ -7,6 +7,22 @@ set -ex
 servernames=("srv-bad-redir1" "srv-bad-redir2")
 DATAFOLDER="./data"
 
+# xrootd -b returns before the daemon writes its pid file.
+wait_for_pidfile() {
+    local pidfile=$1
+    local pid tries
+    for ((tries = 0; tries < 50; tries++)); do
+        if [[ -s "${pidfile}" ]]; then
+            pid=$(tr -d '[:space:]' < "${pidfile}")
+            if [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null; then
+                return 0
+            fi
+        fi
+        sleep 0.1
+    done
+    return 1
+}
+
 setup() {
     echo "Setting up XRootD with ${servernames[*]}"
 
@@ -26,8 +42,7 @@ setup() {
         if [[ "${rc}" -ne 0 ]]; then
             echo "warning: xrootd -b exited ${rc} for ${srv}" >&2
         fi
-        pid=$(tr -d '[:space:]' < "${srv}/xrootd.pid" 2>/dev/null)
-        if [[ ! "${pid}" =~ ^[0-9]+$ ]] || ! kill -0 "${pid}" 2>/dev/null; then
+        if ! wait_for_pidfile "${srv}/xrootd.pid"; then
             echo "failed to start ${srv}" >&2
             [[ -f "${srv}/xrootd.log" ]] && cat "${srv}/xrootd.log" >&2
             exit 1
