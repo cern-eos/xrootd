@@ -1136,12 +1136,9 @@ void Http2Session::ioLoop()
     if (!timedout.empty())
       continue;
 
+    // Keep polling the socket while idle so a server close is seen before
+    // the next request is queued on the dead connection.
     const bool want_write = sess && nghttp2_session_want_write(sess);
-    if (inflight_.empty() && !want_write) {
-      io_cv_.wait(lock, [&] { return stop_ || !inflight_.empty(); });
-      continue;
-    }
-
     int timeout = nextPollTimeoutMsLocked();
     const bool pending_ssl =
         ssl_ && SSL_pending(static_cast<SSL *>(ssl_)) > 0;
@@ -1207,6 +1204,10 @@ void Http2Session::ioLoop()
   }
   if (!inflight_.empty())
     failInflight(-ENOTCONN, "HTTP/2 I/O thread exiting");
+  // Without the I/O thread nothing would complete new requests. connected()
+  // now reports false and the next request reconnects.
+  stop_ = true;
+  slot_cv_.notify_all();
 }
 
 int planRedirect(const Url &current, const Http2Session::Options &opt,
