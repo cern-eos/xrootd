@@ -519,10 +519,26 @@ static int xiofs_getattr(xiofs_idmap_t idmap, const struct path *path,
 	return 0;
 }
 
+/* Whether the server must keep owner write for a chmod to @mode. */
+static bool xiofs_mode_needs_hold(struct inode *inode, umode_t mode)
+{
+	return !(mode & S_IWUSR) &&
+	       atomic_read(&XIOFS_I(inode)->open_writers) > 0;
+}
+
+static void xiofs_set_mode_held(struct inode *inode, bool held)
+{
+	if (held)
+		set_bit(XIOFS_I_MODE_HELD, &XIOFS_I(inode)->flags);
+	else
+		clear_bit(XIOFS_I_MODE_HELD, &XIOFS_I(inode)->flags);
+}
+
 static int xiofs_setattr(xiofs_idmap_t idmap, struct dentry *dentry,
 			    struct iattr *attr)
 {
 	struct inode *inode = d_inode(dentry);
+	bool hold = false;
 	int mode = -1;
 	u32 uid = (u32)-1, gid = (u32)-1;
 	time64_t at = -1, mt = -1;
@@ -545,6 +561,10 @@ static int xiofs_setattr(xiofs_idmap_t idmap, struct dentry *dentry,
 		if (!(attr->ia_valid & (ATTR_SIZE | ATTR_UID | ATTR_GID |
 					ATTR_ATIME_SET | ATTR_MTIME_SET))) {
 			/* chmod/touch before the first flush rides on the PUT. */
+			if (attr->ia_valid & ATTR_MODE)
+				xiofs_set_mode_held(inode,
+					xiofs_mode_needs_hold(inode,
+							      attr->ia_mode));
 			setattr_copy(idmap, inode, attr);
 			mark_inode_dirty(inode);
 			return 0;
@@ -560,8 +580,12 @@ static int xiofs_setattr(xiofs_idmap_t idmap, struct dentry *dentry,
 			return err;
 		truncate_setsize(inode, attr->ia_size);
 	}
-	if (attr->ia_valid & ATTR_MODE)
+	if (attr->ia_valid & ATTR_MODE) {
 		mode = attr->ia_mode & 07777;
+		hold = xiofs_mode_needs_hold(inode, mode);
+		if (hold)
+			mode |= S_IWUSR;
+	}
 	if (attr->ia_valid & ATTR_UID)
 		uid = from_kuid(&init_user_ns, attr->ia_uid);
 	if (attr->ia_valid & ATTR_GID)
@@ -576,6 +600,8 @@ static int xiofs_setattr(xiofs_idmap_t idmap, struct dentry *dentry,
 	err = xiofs_http_setattr(inode, mode, uid, gid, at, mt);
 	if (err)
 		return err;
+	if (attr->ia_valid & ATTR_MODE)
+		xiofs_set_mode_held(inode, hold);
 	setattr_copy(idmap, inode, attr);
 	XIOFS_I(inode)->attr_jiffies = jiffies;
 	mark_inode_dirty(inode);
@@ -588,6 +614,8 @@ static int xiofs_create(xiofs_idmap_t idmap, struct inode *dir,
 	struct xiofs_sb_info *sbi = XIOFS_SB(dir->i_sb);
 	struct xiofs_attr attr = {};
 	struct inode *inode;
+	/* The caller may write through the new fd even if mode is read-only. */
+	const bool held = !(mode & S_IWUSR);
 	int err;
 
 	attr.mode = mode & 07777;
@@ -599,13 +627,18 @@ static int xiofs_create(xiofs_idmap_t idmap, struct inode *dir,
 			return -ENOMEM;
 		err = xiofs_dentry_path(dentry, path, XIOFS_PATH_MAX);
 		if (!err)
-			err = xiofs_http_create(dir, path, mode, excl, &attr);
+			err = xiofs_http_create(dir, path,
+						held ? mode | S_IWUSR : mode,
+						excl, &attr);
 		kfree(path);
 		if (err)
 			return err;
+		attr.mode = mode & 07777;
 		inode = xiofs_iget(dir->i_sb, &attr);
 		if (IS_ERR(inode))
 			return PTR_ERR(inode);
+		if (held)
+			set_bit(XIOFS_I_MODE_HELD, &XIOFS_I(inode)->flags);
 		d_instantiate(dentry, inode);
 		xiofs_dir_invalidate(dir);
 		return 0;
@@ -622,6 +655,8 @@ static int xiofs_create(xiofs_idmap_t idmap, struct inode *dir,
 	set_bit(XIOFS_I_DEFERRED, &XIOFS_I(inode)->flags);
 	if (excl)
 		set_bit(XIOFS_I_EXCL, &XIOFS_I(inode)->flags);
+	if (held)
+		set_bit(XIOFS_I_MODE_HELD, &XIOFS_I(inode)->flags);
 	err = xiofs_deferred_add(dir, inode, &dentry->d_name);
 	if (err) {
 		iput(inode);
@@ -633,8 +668,8 @@ static int xiofs_create(xiofs_idmap_t idmap, struct inode *dir,
 	return 0;
 }
 
-static int xiofs_mkdir(xiofs_idmap_t idmap, struct inode *dir,
-			  struct dentry *dentry, umode_t mode)
+static int xiofs_do_mkdir(struct inode *dir, struct dentry *dentry,
+			  umode_t mode)
 {
 	struct xiofs_attr attr = {};
 	struct inode *inode;
@@ -658,6 +693,20 @@ static int xiofs_mkdir(xiofs_idmap_t idmap, struct inode *dir,
 	xiofs_dir_invalidate(dir);
 	return 0;
 }
+
+#ifdef XIOFS_HAS_MKDIR_DENTRY
+static struct dentry *xiofs_mkdir(xiofs_idmap_t idmap, struct inode *dir,
+				  struct dentry *dentry, umode_t mode)
+{
+	return ERR_PTR(xiofs_do_mkdir(dir, dentry, mode));
+}
+#else
+static int xiofs_mkdir(xiofs_idmap_t idmap, struct inode *dir,
+		       struct dentry *dentry, umode_t mode)
+{
+	return xiofs_do_mkdir(dir, dentry, mode);
+}
+#endif
 
 static int xiofs_unlink(struct inode *dir, struct dentry *dentry)
 {
@@ -866,7 +915,8 @@ static int xiofs_mknod(xiofs_idmap_t idmap, struct inode *dir,
 
 /*                                 x a t t r                                 */
 
-static int xiofs_listxattr(struct dentry *dentry, char *buffer, size_t size)
+static ssize_t xiofs_listxattr(struct dentry *dentry, char *buffer,
+			       size_t size)
 {
 	struct inode *inode = d_inode(dentry);
 

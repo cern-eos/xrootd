@@ -7,7 +7,13 @@ RHEL** ones:
 | Distro | Default kernel | VFS APIs used |
 |--------|----------------|---------------|
 | AlmaLinux 9 / RHEL 9 | `5.14.0-*.el9` | `readpage`, `user_namespace`, `write_cache_pages` |
+| AlmaLinux 9.6+ / RHEL 9.6+ | `5.14.0-570+.el9` | `read_folio`, `mnt_idmap`, `write_cache_pages` |
 | AlmaLinux 10 / RHEL 10 | `6.12.0-*.el10` | `read_folio`, `mnt_idmap`, `writeback_iter` |
+
+RHEL backports VFS changes without changing the kernel version, so the
+`Makefile` probes the kernel headers for each interface instead of
+relying on `LINUX_VERSION_CODE` alone (checked against EL9.2, 9.6, 9.9
+and 10.3 headers).
 
 From packages:
 

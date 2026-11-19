@@ -156,6 +156,13 @@ struct xiofs_sb_info {
 #define XIOFS_I_DEFERRED	0	/* create() not yet sent as PUT */
 #define XIOFS_I_EXCL		1	/* O_EXCL: PUT carries If-None-Match: * */
 #define XIOFS_I_GONE		2	/* unlinked before it reached the server */
+/*
+ * The server copy keeps the owner write bit that i_mode lacks. Every
+ * write-back PATCH is checked against the server's mode, so a file
+ * created read-only (or chmod'ed read-only while open for write) must
+ * stay writable there until its last writer closes.
+ */
+#define XIOFS_I_MODE_HELD	3
 
 /*
  * A child created locally but not yet PUT. Lives on the parent's
@@ -174,6 +181,7 @@ struct xiofs_inode_info {
 	char			*link_target;
 	unsigned long		attr_jiffies;
 	unsigned long		flags;
+	atomic_t		open_writers;
 	/* Deferred create: back pointer to the parent and its list entry. */
 	struct inode		*defer_parent;
 	struct xiofs_deferred	*defer_ent;
@@ -225,6 +233,16 @@ static inline struct xiofs_inode_info *XIOFS_I(struct inode *inode)
 static inline bool xiofs_is_deferred(struct inode *inode)
 {
 	return test_bit(XIOFS_I_DEFERRED, &XIOFS_I(inode)->flags);
+}
+
+/* The permission bits the server should have for this inode. */
+static inline umode_t xiofs_server_mode(struct inode *inode)
+{
+	umode_t mode = inode->i_mode & 07777;
+
+	if (test_bit(XIOFS_I_MODE_HELD, &XIOFS_I(inode)->flags))
+		mode |= S_IWUSR;
+	return mode;
 }
 
 /* super.c */

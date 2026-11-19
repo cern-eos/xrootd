@@ -200,6 +200,7 @@ static struct inode *xiofs_alloc_inode(struct super_block *sb)
 	ki->link_target = NULL;
 	ki->attr_jiffies = 0;
 	ki->flags = 0;
+	atomic_set(&ki->open_writers, 0);
 	ki->defer_parent = NULL;
 	ki->defer_ent = NULL;
 	INIT_LIST_HEAD(&ki->deferred);

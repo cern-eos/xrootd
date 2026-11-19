@@ -26,7 +26,8 @@
 
 #include "xiofs.h"
 #include "xiofs_compat.h"
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+/* 6.9 moved struct file_lock out of fs.h; EL9.9 backports the header. */
+#if __has_include(<linux/filelock.h>)
 #include <linux/filelock.h>
 #endif
 
@@ -219,7 +220,7 @@ static unsigned int xiofs_write_commit_page(struct inode *inode,
 }
 
 #ifdef XIOFS_HAS_WRITE_BEGIN_FOLIO
-static int xiofs_write_begin(struct file *file, struct address_space *mapping,
+static int xiofs_write_begin(xiofs_wb_file_t file, struct address_space *mapping,
 			     loff_t pos, unsigned int len,
 			     struct folio **foliop, void **fsdata)
 {
@@ -241,7 +242,7 @@ static int xiofs_write_begin(struct file *file, struct address_space *mapping,
 	return 0;
 }
 
-static int xiofs_write_end(struct file *file, struct address_space *mapping,
+static int xiofs_write_end(xiofs_wb_file_t file, struct address_space *mapping,
 			   loff_t pos, unsigned int len, unsigned int copied,
 			   struct folio *folio, void *fsdata)
 {
@@ -253,11 +254,11 @@ static int xiofs_write_end(struct file *file, struct address_space *mapping,
 }
 #else
 #ifdef XIOFS_HAS_WRITE_BEGIN_NOFLAGS
-static int xiofs_write_begin(struct file *file, struct address_space *mapping,
+static int xiofs_write_begin(xiofs_wb_file_t file, struct address_space *mapping,
 			     loff_t pos, unsigned int len,
 			     struct page **pagep, void **fsdata)
 #else
-static int xiofs_write_begin(struct file *file, struct address_space *mapping,
+static int xiofs_write_begin(xiofs_wb_file_t file, struct address_space *mapping,
 			     loff_t pos, unsigned int len, unsigned int flags,
 			     struct page **pagep, void **fsdata)
 #endif
@@ -282,7 +283,7 @@ static int xiofs_write_begin(struct file *file, struct address_space *mapping,
 	return 0;
 }
 
-static int xiofs_write_end(struct file *file, struct address_space *mapping,
+static int xiofs_write_end(xiofs_wb_file_t file, struct address_space *mapping,
 			   loff_t pos, unsigned int len, unsigned int copied,
 			   struct page *page, void *fsdata)
 {
@@ -432,12 +433,21 @@ static int xiofs_writepages(struct address_space *mapping,
 	return err;
 }
 #else
+#ifdef XIOFS_HAS_WRITEPAGE_FOLIO
+static int xiofs_writepage_cb(struct folio *folio,
+			      struct writeback_control *wbc, void *data)
+{
+	xiofs_wb_add(data, folio_page(folio, 0));
+	return 0;
+}
+#else
 static int xiofs_writepage_cb(struct page *page, struct writeback_control *wbc,
 			      void *data)
 {
 	xiofs_wb_add(data, page);
 	return 0;
 }
+#endif
 
 static int xiofs_writepages(struct address_space *mapping,
 			    struct writeback_control *wbc)
@@ -506,6 +516,47 @@ static int xiofs_flush(struct file *file, fl_owner_t id)
 	return xiofs_ensure_created(inode);
 }
 
+static int xiofs_file_open(struct inode *inode, struct file *file)
+{
+	if (file->f_mode & FMODE_WRITE)
+		atomic_inc(&XIOFS_I(inode)->open_writers);
+	return 0;
+}
+
+/*
+ * Last close of the file: if the server still has the owner write bit
+ * that i_mode lacks (XIOFS_I_MODE_HELD), push any data left in the page
+ * cache (mmap) and then set the real mode.
+ */
+static int xiofs_file_release(struct inode *inode, struct file *file)
+{
+	struct xiofs_inode_info *ki = XIOFS_I(inode);
+	int err;
+
+	if ((file->f_mode & FMODE_WRITE) &&
+	    !atomic_dec_and_test(&ki->open_writers))
+		return 0;
+	if (atomic_read(&ki->open_writers) > 0 ||
+	    !test_bit(XIOFS_I_MODE_HELD, &ki->flags) ||
+	    test_bit(XIOFS_I_GONE, &ki->flags))
+		return 0;
+
+	/* Pages that failed to write back still need the write bit. */
+	err = filemap_write_and_wait(inode->i_mapping);
+	if (err)
+		return 0;
+	clear_bit(XIOFS_I_MODE_HELD, &ki->flags);
+	/* A file that was never written: the create PUT carries the mode. */
+	if (xiofs_is_deferred(inode))
+		return xiofs_ensure_created(inode);
+	err = xiofs_http_setattr(inode, inode->i_mode & 07777, (u32)-1,
+				 (u32)-1, -1, -1);
+	if (err)
+		pr_warn_ratelimited("xiofs: cannot set mode %o after close: %d\n",
+				    inode->i_mode & 07777, err);
+	return 0;
+}
+
 static long xiofs_ioctl(struct file *file, unsigned int cmd,
 			unsigned long arg)
 {
@@ -563,6 +614,8 @@ const struct file_operations xiofs_file_ops = {
 	.mmap		= generic_file_mmap,
 	.fsync		= xiofs_fsync,
 	.flush		= xiofs_flush,
+	.open		= xiofs_file_open,
+	.release	= xiofs_file_release,
 	.llseek		= generic_file_llseek,
 #ifdef XIOFS_HAS_FILEMAP_SPLICE_READ
 	.splice_read	= filemap_splice_read,

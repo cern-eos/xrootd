@@ -1145,7 +1145,7 @@ int xiofs_http_put(struct inode *inode, const void *buf, size_t len,
 	xiofs_rq_start(&rq, sbi, "PUT", rq.path);
 	xiofs_rq_add(&rq, "Content-Type: application/octet-stream\r\n"
 		     "Content-Length: %zu\r\n"
-		     "Xrd-Mode: %o\r\n", len, inode->i_mode & 07777);
+		     "Xrd-Mode: %o\r\n", len, xiofs_server_mode(inode));
 	if (if_match)
 		xiofs_rq_if_match_id(&rq, inode);
 	if (if_none_star)

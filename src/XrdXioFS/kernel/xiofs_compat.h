@@ -3,8 +3,10 @@
  * AlmaLinux 9  = RHEL 9 kernel 5.14.0-*.el9  (user_namespace, readpage)
  * AlmaLinux 10 = RHEL 10 kernel 6.12.0-*.el10 (mnt_idmap, read_folio)
  *
- * LINUX_VERSION_CODE stays 5.14 on EL9 even when APIs are backported,
- * so version checks (not RHEL_MAJOR alone) pick the published kABI.
+ * LINUX_VERSION_CODE stays 5.14 on EL9 even when APIs are backported
+ * (EL9.6 has mnt_idmap and the folio address_space operations). The
+ * version checks below cover upstream kernels; the Makefile probes the
+ * headers and predefines the XIOFS_HAS_* flags for backports.
  */
 #ifndef XIOFS_COMPAT_H
 #define XIOFS_COMPAT_H
@@ -18,24 +20,57 @@
 #error "xiofs.ko needs Linux 5.14+ (AlmaLinux 9) or 6.12 (AlmaLinux 10)"
 #endif
 
+#if __has_include(<linux/mnt_idmapping.h>)
+#include <linux/mnt_idmapping.h>
+#endif
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
-#include <linux/mnt_idmap.h>
+#ifndef XIOFS_HAS_MNT_IDMAP
+#define XIOFS_HAS_MNT_IDMAP		1
+#endif
+#ifndef XIOFS_HAS_WRITEPAGE_FOLIO
+#define XIOFS_HAS_WRITEPAGE_FOLIO	1
+#endif
+#endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0) && !defined(XIOFS_HAS_FILLATTR_MASK)
+#define XIOFS_HAS_FILLATTR_MASK		1
+#endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0) && !defined(XIOFS_HAS_MKDIR_DENTRY)
+#define XIOFS_HAS_MKDIR_DENTRY		1
+#endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 17, 0) && !defined(XIOFS_HAS_WRITE_BEGIN_KIOCB)
+#define XIOFS_HAS_WRITE_BEGIN_KIOCB	1
+#endif
+
+#ifdef XIOFS_HAS_WRITE_BEGIN_KIOCB
+typedef const struct kiocb *xiofs_wb_file_t;
+#else
+typedef struct file *xiofs_wb_file_t;
+#endif
+
+#ifdef XIOFS_HAS_MNT_IDMAP
 typedef struct mnt_idmap *xiofs_idmap_t;
 #else
 typedef struct user_namespace *xiofs_idmap_t;
 #endif
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
+#ifndef XIOFS_HAS_READ_FOLIO
 #define XIOFS_HAS_READ_FOLIO		1
 #endif
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)
-#define XIOFS_HAS_READAHEAD_FOLIO		1
-#define XIOFS_HAS_DIRTY_FOLIO		1
-#endif
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
+#ifndef XIOFS_HAS_WRITE_BEGIN_NOFLAGS
 #define XIOFS_HAS_WRITE_BEGIN_NOFLAGS	1
 #endif
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 2, 0)
+#endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)
+#ifndef XIOFS_HAS_READAHEAD_FOLIO
+#define XIOFS_HAS_READAHEAD_FOLIO		1
+#endif
+#ifndef XIOFS_HAS_DIRTY_FOLIO
+#define XIOFS_HAS_DIRTY_FOLIO		1
+#endif
+#endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)
 #define XIOFS_HAS_WRITEBACK_ITER		1
 #endif
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 5, 0)
@@ -43,9 +78,6 @@ typedef struct user_namespace *xiofs_idmap_t;
 #endif
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
 #define XIOFS_HAS_INODE_SET_MTIME_TO_TS	1
-#endif
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
-#define XIOFS_HAS_FILLATTR_MASK		1
 #endif
 /* 6.12: write_begin/write_end hand out a folio instead of a page. */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
@@ -58,7 +90,7 @@ typedef struct user_namespace *xiofs_idmap_t;
 #define xiofs_fl_type(fl)	((fl)->fl_type)
 #endif
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
+#ifdef XIOFS_HAS_FILLATTR_MASK
 #define xiofs_fillattr(idmap, mask, inode, stat) \
 	generic_fillattr((idmap), (mask), (inode), (stat))
 #elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
@@ -146,13 +178,10 @@ static inline void xiofs_copy_to_page(struct page *page, const void *src)
 #endif
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
+#ifdef XIOFS_HAS_MNT_IDMAP
 #define XIOFS_XATTR_SET_IDMAP struct mnt_idmap *idmap
 #else
 #define XIOFS_XATTR_SET_IDMAP struct user_namespace *idmap
 #endif
-
-typedef int (*xiofs_writepage_cb_t)(struct page *, struct writeback_control *,
-				  void *);
 
 #endif
