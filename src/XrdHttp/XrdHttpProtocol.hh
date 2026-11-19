@@ -502,7 +502,7 @@ private:
   // Set when this stream must wait for another stream's open of the same path.
   bool http2Defer_{false};
 
-  const char *fileCacheKey(const XrdHttpReq &req) const;
+  std::string fileCacheKey(const XrdHttpReq &req) const;
   FileOpenCache *fileCacheFind(const std::string &key);
   const FileOpenCache *fileCacheFind(const std::string &key) const;
   bool fileCacheApply(XrdHttpReq &req, bool needWrite = false);

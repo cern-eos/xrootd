@@ -142,6 +142,10 @@ public:
   /// Drop pending responses whose DATA has fully been handed to nghttp2.
   void pruneFinishedResponses();
 
+  /// The request on stream_id failed. Keep the connection and the other
+  /// streams; reset this stream unless a complete response is already queued.
+  void endStreamOnError(int32_t stream_id);
+
   /// Reclaim sent prefix of pending bodies after a successful writev flush.
   void compactOutboundBodies();
 

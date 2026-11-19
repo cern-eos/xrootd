@@ -1040,13 +1040,21 @@ int XrdHttpProtocol::processParsedRequest(XrdLink *lp)
 
   rc = CurrentReq.ProcessHTTPReq();
   if (rc < 0) {
-    CurrentReq.reset();
 #ifdef HAVE_NGHTTP2
-    if (wireMode_ == XrdHttpWireMode::kHttp2)
-      http2Session_.reset();
-    else
+    // On HTTP/2 a failed request ends its stream only. Resetting the session
+    // here would drop every other stream and the client sees the connection
+    // close without GOAWAY.
+    if (wireMode_ == XrdHttpWireMode::kHttp2) {
+      const int32_t sid =
+          http2Session_.useStream(CurrentReq.http2StreamId);
+      CurrentReq.reset();
+      http2Session_.endStreamOnError(sid);
+      TRACEI(REQ, "Process is exiting rc:" << rc << " (HTTP/2 stream ended)");
+      return 1;
+    }
 #endif
-      http1Session_.reset();
+    CurrentReq.reset();
+    http1Session_.reset();
   } else if (rc == 1 && !CurrentReq.headerok && BuffUsed() == 0 &&
              fileCacheCloseIfOpen()) {
     rc = 0;
@@ -2882,10 +2890,33 @@ void XrdHttpProtocol::Reset() {
 /*                         f i l e C a c h e *                                */
 /******************************************************************************/
 
-const char *XrdHttpProtocol::fileCacheKey(const XrdHttpReq &req) const
+std::string XrdHttpProtocol::fileCacheKey(const XrdHttpReq &req) const
 {
-  const char *key = req.resourceplusopaque.c_str();
-  return key ? key : "";
+  const char *rpo = req.resourceplusopaque.c_str();
+  std::string key = rpo ? rpo : "";
+
+  // PUT adds oss.asize from Content-Length. It names no other file, and
+  // leaving it in hides a read handle cached by a GET of the same path, so
+  // the PUT's write open is then refused.
+  const std::string::size_type q = key.find('?');
+  if (q == std::string::npos)
+    return key;
+  std::string out = key.substr(0, q);
+  char sep = '?';
+  std::string::size_type pos = q + 1;
+  while (pos <= key.size()) {
+    std::string::size_type amp = key.find('&', pos);
+    if (amp == std::string::npos)
+      amp = key.size();
+    const std::string param = key.substr(pos, amp - pos);
+    if (!param.empty() && param.compare(0, 10, "oss.asize=") != 0) {
+      out += sep;
+      out += param;
+      sep = '&';
+    }
+    pos = amp + 1;
+  }
+  return out;
 }
 
 XrdHttpProtocol::FileOpenCache *
@@ -2988,8 +3019,7 @@ bool XrdHttpProtocol::fileCacheBeginCloseKey(const std::string &key)
   CurrentReq.xrdreq = creq;
   ent->switching = true;
   // Idle close has no request path to recover the key from later.
-  const char *curKey = fileCacheKey(CurrentReq);
-  if (!curKey || !curKey[0])
+  if (fileCacheKey(CurrentReq).empty())
     fileCacheClosingKey_ = key;
   TRACE(REQ, "Closing cached open " << key.c_str());
   if (!RunBridge(reinterpret_cast<char *>(&CurrentReq.xrdreq), 0, 0)) {

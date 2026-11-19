@@ -1093,6 +1093,27 @@ void XrdHttp2Session::pruneFinishedResponses()
   }
 }
 
+void XrdHttp2Session::endStreamOnError(int32_t stream_id)
+{
+  if (stream_id < 0)
+    return;
+
+  const XrdHttp2PendingResponse *p = pendingFor(stream_id);
+  const bool incomplete =
+      !p || (p->active && p->streaming && !p->finished);
+  if (incomplete && session_) {
+    TRACE(ALL, " HTTP/2 resetting failed stream=" << stream_id);
+    nghttp2_submit_rst_stream(static_cast<nghttp2_session *>(session_),
+                              NGHTTP2_FLAG_NONE, stream_id,
+                              NGHTTP2_INTERNAL_ERROR);
+    pendingResponses_.erase(stream_id);
+  }
+
+  dropStream(stream_id);
+  if (activeStreamId_ == stream_id)
+    activeStreamId_ = -1;
+}
+
 void XrdHttp2Session::compactOutboundBodies()
 {
   for (auto &kv : pendingResponses_)
