@@ -92,6 +92,8 @@ XioFS::Client g_client;
 
 struct FileState {
   std::string etag;
+  mode_t release_mode{0};
+  bool chmod_on_release{false};
 };
 
 FileState *fileState(struct fuse_file_info *fi)
@@ -241,21 +243,33 @@ int xiofs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
   int rc = putEmpty(path, {}, none);
   if (rc)
     return rc;
-  if (mode & 07777) {
+  // The server checks every write against the file's current mode, but the
+  // descriptor returned by create must stay writable (git creates 0444 files
+  // and then writes them). Keep the owner write bit until release.
+  const mode_t perm = mode & 07777;
+  const bool defer = perm && !(perm & 0200);
+  if (perm) {
     std::string err;
-    rc = g_client.chmod(path, mode, err);
+    rc = g_client.chmod(path, defer ? (perm | 0200) : perm, err);
     if (rc)
       return rc;
   }
   auto *st = new FileState;
   st->etag = currentEtag(path);
+  st->release_mode = perm;
+  st->chmod_on_release = defer;
   fi->fh = reinterpret_cast<uint64_t>(st);
   return 0;
 }
 
-int xiofs_release(const char *, struct fuse_file_info *fi)
+int xiofs_release(const char *path, struct fuse_file_info *fi)
 {
-  delete fileState(fi);
+  FileState *st = fileState(fi);
+  if (st && st->chmod_on_release && path) {
+    std::string err;
+    g_client.chmod(path, st->release_mode, err);
+  }
+  delete st;
   if (fi)
     fi->fh = 0;
   return 0;
