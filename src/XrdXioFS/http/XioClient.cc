@@ -225,6 +225,12 @@ bool isDataOperation(const char *method,
   return true;
 }
 
+bool connectionLost(int rc)
+{
+  return rc == -ECONNRESET || rc == -ENOTCONN || rc == -EPIPE ||
+         rc == -ECONNABORTED;
+}
+
 } // namespace
 
 int Client::sessionFor(const Url &url, const Http2Session::Options &opt,
@@ -310,16 +316,25 @@ int Client::invoke(const char *method, const std::string &rel,
         return src;
     }
     int rc = sess->exchange(req, resp, err, send_cred);
-    if (rc) {
-      std::lock_guard<std::mutex> lock(mu_);
-      sess->close();
-      const Url &reconnect_to = origin ? base_ : target;
-      const Http2Session::Options &reconnect_opt = origin ? opt_ : target_opt;
-      if (sess->connect(reconnect_to, reconnect_opt, err))
-        return rc;
-    }
-    if (rc)
+    // A dropped connection fails every request running on it, so a lost
+    // connection gets a few retries; other errors get one.
+    for (int retry = 0; rc && retry < 3 && (retry == 0 || connectionLost(rc));
+         ++retry) {
+      {
+        // Threads share the session. Reconnect only if it is still down;
+        // another thread may already have replaced it, and closing that
+        // connection would fail every request now running on it.
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!sess->connected()) {
+          const Url &reconnect_to = origin ? base_ : target;
+          const Http2Session::Options &reconnect_opt =
+              origin ? opt_ : target_opt;
+          if (sess->connect(reconnect_to, reconnect_opt, err))
+            return rc;
+        }
+      }
       rc = sess->exchange(req, resp, err, send_cred);
+    }
     if (rc)
       return rc;
 
