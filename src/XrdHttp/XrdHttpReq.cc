@@ -1563,10 +1563,12 @@ bool XrdHttpReq::Done(XrdXrootd::Bridge::Context & info) {
 
   this->iovN = 0;
   
+  const int sid = http2StreamId;
   int r = PostProcessHTTPReq(true);
   // Beware, we don't have to reset() if the result is 0
   if (r) reset();
-  if (r < 0) return false; 
+  // Returning false makes the bridge close the link with every HTTP/2 stream.
+  if (r < 0) return prot->endFailedHttp2Stream(sid);
   
   
   return true;
@@ -1588,6 +1590,7 @@ bool XrdHttpReq::Error(XrdXrootd::Bridge::Context &info, //!< the result context
     free(s);
   }
 
+  const int sid = http2StreamId;
   auto rc = PostProcessHTTPReq();
   if (rc) {
     reset();
@@ -1598,7 +1601,13 @@ bool XrdHttpReq::Error(XrdXrootd::Bridge::Context &info, //!< the result context
   // generate a directory listing (if configured).
   if ((request == rtGET) && (xrdreq.header.requestid == ntohs(kXR_open)) && (xrderrcode == kXR_isDirectory))
     return true;
-  
+
+  // Returning false makes the bridge close the link with every HTTP/2 stream.
+  if (rc > 0 && prot->isHttp2())
+    return true;
+  if (rc < 0 && prot->endFailedHttp2Stream(sid))
+    return true;
+
   return rc == 0;
 };
 

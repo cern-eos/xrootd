@@ -1040,20 +1040,15 @@ int XrdHttpProtocol::processParsedRequest(XrdLink *lp)
 
   rc = CurrentReq.ProcessHTTPReq();
   if (rc < 0) {
-#ifdef HAVE_NGHTTP2
     // On HTTP/2 a failed request ends its stream only. Resetting the session
     // here would drop every other stream and the client sees the connection
     // close without GOAWAY.
-    if (wireMode_ == XrdHttpWireMode::kHttp2) {
-      const int32_t sid =
-          http2Session_.useStream(CurrentReq.http2StreamId);
-      CurrentReq.reset();
-      http2Session_.endStreamOnError(sid);
+    const int sid = CurrentReq.http2StreamId;
+    CurrentReq.reset();
+    if (endFailedHttp2Stream(sid)) {
       TRACEI(REQ, "Process is exiting rc:" << rc << " (HTTP/2 stream ended)");
       return 1;
     }
-#endif
-    CurrentReq.reset();
     http1Session_.reset();
   } else if (rc == 1 && !CurrentReq.headerok && BuffUsed() == 0 &&
              fileCacheCloseIfOpen()) {
@@ -3227,6 +3222,18 @@ std::vector<int> XrdHttpProtocol::fileCacheTakeOpenWaiters(const XrdHttpReq &req
   std::vector<int> waiters;
   waiters.swap(ent->openWaiters);
   return waiters;
+}
+
+bool XrdHttpProtocol::endFailedHttp2Stream(int streamId)
+{
+#ifdef HAVE_NGHTTP2
+  if (wireMode_ == XrdHttpWireMode::kHttp2) {
+    http2Session_.endStreamOnError(http2Session_.useStream(streamId));
+    return true;
+  }
+#endif
+  (void)streamId;
+  return false;
 }
 
 bool XrdHttpProtocol::RunBridge(char *xreq, char *xdata, int xdataL)

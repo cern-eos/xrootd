@@ -167,6 +167,10 @@ public:
 #endif
   }
 
+  /// End the stream of a failed HTTP/2 request and keep the connection.
+  /// Returns false on HTTP/1, where the caller must close the connection.
+  bool endFailedHttp2Stream(int streamId);
+
   /// Append bytes to the read buffer (used by HTTP/2 request bodies).
   /// Returns the number of bytes actually stored (may be short if the
   /// protocol buffer is full).
