@@ -23,10 +23,13 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <cerrno>
+#include <csignal>
+#include <ctime>
 #include <cstdlib>
 #include <cstring>
 #include <strings.h>
@@ -38,6 +41,54 @@
 namespace XioFS {
 
 namespace {
+
+// A write to a socket the peer has closed raises SIGPIPE, which kills a
+// process that does not ignore it (xiofscli). TLS and parsock write through
+// their own calls, so MSG_NOSIGNAL alone is not enough: block SIGPIPE in this
+// thread for the write and discard one it raised. On macOS SO_NOSIGPIPE on
+// the socket does this instead.
+class SigPipeGuard {
+public:
+#ifdef __linux__
+  SigPipeGuard()
+  {
+    sigset_t pipe;
+    sigemptyset(&pipe);
+    sigaddset(&pipe, SIGPIPE);
+    sigset_t pending;
+    sigpending(&pending);
+    wasPending_ = sigismember(&pending, SIGPIPE) == 1;
+    if (!wasPending_)
+      blocked_ = pthread_sigmask(SIG_BLOCK, &pipe, &old_) == 0;
+  }
+
+  ~SigPipeGuard()
+  {
+    if (!blocked_)
+      return;
+    const int savedErrno = errno;
+    sigset_t pending;
+    sigpending(&pending);
+    if (sigismember(&pending, SIGPIPE) == 1) {
+      sigset_t pipe;
+      sigemptyset(&pipe);
+      sigaddset(&pipe, SIGPIPE);
+      const struct timespec zero = {0, 0};
+      while (sigtimedwait(&pipe, nullptr, &zero) < 0 && errno == EINTR) {
+      }
+    }
+    pthread_sigmask(SIG_SETMASK, &old_, nullptr);
+    errno = savedErrno;
+  }
+
+private:
+  sigset_t old_;
+  bool wasPending_{false};
+  bool blocked_{false};
+#else
+  SigPipeGuard() {}
+#endif
+};
 
 struct Completer {
   Completer() : thr_([this] { run(); }) {}
@@ -480,7 +531,10 @@ void Http2Session::close()
     session_ = nullptr;
   }
   if (ssl_) {
-    SSL_shutdown(static_cast<SSL *>(ssl_));
+    {
+      SigPipeGuard noSigPipe;
+      SSL_shutdown(static_cast<SSL *>(ssl_));
+    }
     SSL_free(static_cast<SSL *>(ssl_));
     ssl_ = nullptr;
   }
@@ -525,6 +579,9 @@ int Http2Session::tcpConnect(std::string &err)
     }
     int one = 1;
     setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+#ifdef SO_NOSIGPIPE
+    setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#endif
     if (::connect(s, ai->ai_addr, ai->ai_addrlen) == 0) {
       fd_ = s;
       freeaddrinfo(res);
@@ -642,6 +699,7 @@ int Http2Session::tlsHandshake(std::string &err)
 
 int Http2Session::sslWrite(const uint8_t *buf, size_t len, std::string &err)
 {
+  SigPipeGuard noSigPipe;
 #ifdef HAVE_PARSOCKET
   if (parsock_) {
     auto *conn = static_cast<ps_connection_t *>(parsock_);
@@ -725,7 +783,11 @@ int Http2Session::sslWrite(const uint8_t *buf, size_t len, std::string &err)
       err = "SSL_write failed";
       return -EIO;
     }
+#ifdef MSG_NOSIGNAL
+    ssize_t n = ::send(fd_, buf + off, len - off, MSG_NOSIGNAL);
+#else
     ssize_t n = ::send(fd_, buf + off, len - off, 0);
+#endif
     if (n > 0) {
       off += static_cast<size_t>(n);
       continue;
