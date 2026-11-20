@@ -475,7 +475,6 @@ private:
     bool        valid{false};
     bool        switching{false};
     bool        writable{false};
-    bool        verifyPending{false};
     bool        reopenPending{false};
     bool        openInFlight{false};
     std::string key;
@@ -521,8 +520,6 @@ private:
   void fileCacheForget();
   void fileCacheForgetAll();
   void fileCacheHoldReqstate() { fileCacheHoldReqstate_ = true; }
-  void fileCacheMarkVerifyPending();
-  bool fileCacheTakeVerifyPending();
   void fileCacheMarkReopenPending();
   bool fileCacheTakeReopenPending();
   bool fileCacheStale(long long filesize, long fileflags, long filemodtime) const;

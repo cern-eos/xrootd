@@ -705,7 +705,10 @@ void XrdHttp2Session::dropStream(int32_t stream_id)
   auto it = streams_.find(stream_id);
   if (it != streams_.end()) {
     // Body bytes that were never injected still hold connection window.
-    const size_t unconsumed = it->second->body.size() - it->second->body_offset;
+    const XrdHttp2StreamState &st = *it->second;
+    const size_t unconsumed = st.body.size() - st.body_offset -
+                              std::min(st.body_returned,
+                                       st.body.size() - st.body_offset);
     if (unconsumed && session_)
       nghttp2_session_consume_connection(
           static_cast<nghttp2_session *>(session_), unconsumed);
@@ -774,9 +777,14 @@ void XrdHttp2Session::parkActive(XrdHttpProtocol &prot, bool skipBump)
 {
   if (activeStreamId_ < 0)
     return;
+  stashBody(prot);
   ParkedReq &slot = parked_[activeStreamId_];
-  if (!slot.req)
+  if (!slot.req) {
+    // The constructor leaves most fields unset, and this object becomes the
+    // connection's CurrentReq for the next stream.
     slot.req.reset(new XrdHttpReq(&prot, XrdHttpProtocol::ReadRangeConfig));
+    slot.req->reset();
+  }
   prot.exchangeRequest(*slot.req);
   slot.skipBump = skipBump;
   slot.live = true;
@@ -858,12 +866,19 @@ int XrdHttp2Session::drainCompletions(XrdHttpProtocol &prot)
     prot.exchangeRequest(*pit->second.req);
     pit->second.live = false;
     activeStreamId_ = done.streamId;
+    // A write completion consumes its bytes from the protocol buffer.
+    if (injectPendingBody(prot) < 0)
+      return -1;
 
     // Take waiters before replay. A close completion erases the cache entry,
     // and that erase would drop the streams parked behind this open or close.
     std::vector<int> waiters;
     if (done.reqId == kXR_open || done.reqId == kXR_close)
       waiters = prot.fileCacheTakeOpenWaiters(prot.CurrentReq);
+
+    // Set by the replay below for this request only. A completion that
+    // resumes nothing (an idle close) must not hold the next stream back.
+    prot.fileCacheHoldReqstate_ = false;
 
     if (done.failed && done.events.empty()) {
       prot.SendSimpleResp(500, nullptr, nullptr, "Bridge request failed.", 0,
@@ -1071,11 +1086,13 @@ XrdHttp2PendingResponse &XrdHttp2Session::ensurePending(int32_t stream_id)
   return pendingResponses_[stream_id];
 }
 
-bool XrdHttp2Session::hasOutboundPending() const
+bool XrdHttp2Session::hasOutboundPending(int32_t stream_id) const
 {
   // Only bytes the application already produced count. Bytes the Bridge has
   // not read yet must not block here, otherwise the close step never runs.
   for (const auto &kv : pendingResponses_) {
+    if (stream_id >= 0 && kv.first != stream_id)
+      continue;
     const XrdHttp2PendingResponse &p = kv.second;
     if (p.active && p.unsent() > 0)
       return true;
@@ -1194,13 +1211,40 @@ int XrdHttp2Session::injectPendingBody(XrdHttpProtocol &prot)
   st->body_offset += static_cast<size_t>(n);
   // The bytes are now owned by the application buffer: open the receive
   // window by the same amount (auto window update is disabled).
-  consumeWindow(st->stream_id, static_cast<size_t>(n));
+  const size_t again = std::min(st->body_returned, static_cast<size_t>(n));
+  st->body_returned -= again;
+  consumeWindow(st->stream_id, static_cast<size_t>(n) - again);
   if (st->body_offset >= 4096 && st->body_offset >= st->body.size() / 2) {
     st->body.erase(st->body.begin(), st->body.begin() +
                    static_cast<std::ptrdiff_t>(st->body_offset));
     st->body_offset = 0;
   }
   return 0;
+}
+
+void XrdHttp2Session::stashBody(XrdHttpProtocol &prot)
+{
+  // Before the preface is drained the buffer holds wire bytes, not a body.
+  if (!wire_drained_ || prot.BuffUsed() <= 0)
+    return;
+  std::vector<char> left;
+  int avail = 0;
+  while (char *p = prot.BuffPeek(avail)) {
+    left.insert(left.end(), p, p + avail);
+    prot.BuffConsume(avail);
+  }
+  XrdHttp2StreamState *st =
+      activeStreamId_ >= 0 ? findStream(activeStreamId_) : nullptr;
+  if (!st) {
+    TRACE(ALL, " HTTP/2 dropping " << left.size()
+          << " unclaimed request body bytes");
+    return;
+  }
+  st->body.erase(st->body.begin(), st->body.begin() +
+                 static_cast<std::ptrdiff_t>(st->body_offset));
+  st->body.insert(st->body.begin(), left.begin(), left.end());
+  st->body_offset = 0;
+  st->body_returned += left.size();
 }
 
 int XrdHttp2Session::feedRecv(XrdHttpProtocol &prot, const uint8_t *data,
@@ -1325,6 +1369,7 @@ int XrdHttp2Session::dispatchStream(int32_t stream_id, XrdHttpProtocol &prot,
   if (applyTo(st, prot.CurrentReq) < 0)
     return -1;
 
+  stashBody(prot);
   activeStreamId_ = stream_id;
   prot.CurrentReq.http2StreamId = stream_id;
   st->dispatched = true;
@@ -1358,16 +1403,52 @@ int XrdHttp2Session::dispatchStream(int32_t stream_id, XrdHttpProtocol &prot,
   return rc;
 }
 
+static std::string pathKey(const std::string &path)
+{
+  return path.substr(0, path.find('?'));
+}
+
+bool XrdHttp2Session::pathBusy(const XrdHttp2StreamState &st) const
+{
+  const std::string key = pathKey(st.path);
+  for (const auto &kv : streams_) {
+    const XrdHttp2StreamState &o = *kv.second;
+    if (&o != &st && o.dispatched && pathKey(o.path) == key)
+      return true;
+  }
+  return false;
+}
+
+// Requests on one path share the connection's open-file cache entry, so
+// they run one at a time. Other paths keep running alongside.
+std::deque<int32_t>::iterator XrdHttp2Session::nextDispatchable()
+{
+  for (auto it = ready_queue_.begin(); it != ready_queue_.end(); ) {
+    const XrdHttp2StreamState *st = findStream(*it);
+    if (!st) {
+      it = ready_queue_.erase(it);
+      continue;
+    }
+    if (!pathBusy(*st))
+      return it;
+    ++it;
+  }
+  return ready_queue_.end();
+}
+
+bool XrdHttp2Session::canDispatch()
+{
+  return nextDispatchable() != ready_queue_.end();
+}
+
 int XrdHttp2Session::dispatchNext(XrdHttpProtocol &prot, XrdLink *lp)
 {
-  while (!ready_queue_.empty()) {
-    const int32_t stream_id = ready_queue_.front();
-    ready_queue_.pop_front();
-    if (!findStream(stream_id))
-      continue;
-    return dispatchStream(stream_id, prot, lp);
-  }
-  return 0;
+  const auto it = nextDispatchable();
+  if (it == ready_queue_.end())
+    return 0;
+  const int32_t stream_id = *it;
+  ready_queue_.erase(it);
+  return dispatchStream(stream_id, prot, lp);
 }
 
 bool XrdHttp2Session::finishActiveIfIdle(XrdHttpProtocol &prot)
@@ -1428,7 +1509,7 @@ int XrdHttp2Session::drive(XrdHttpProtocol &prot, XrdLink *lp)
     if (flushSend(prot) < 0)
       return -1;
     finishActiveIfIdle(prot);
-    if (!ready_queue_.empty() && !appInFlight(prot)) {
+    if (!appInFlight(prot) && canDispatch()) {
       const int drc = dispatchNext(prot, lp);
       if (drc != 0)
         return drc;
@@ -1441,7 +1522,7 @@ int XrdHttp2Session::drive(XrdHttpProtocol &prot, XrdLink *lp)
 
   finishActiveIfIdle(prot);
 
-  while (!ready_queue_.empty() && !appInFlight(prot)) {
+  while (!appInFlight(prot) && canDispatch()) {
     const int rc = dispatchNext(prot, lp);
     if (rc < 0)
       return rc;

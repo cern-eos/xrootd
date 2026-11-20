@@ -99,6 +99,9 @@ struct XrdHttp2StreamState
   std::vector<std::pair<std::string, std::string>> headers;
   std::vector<char> body;
   std::size_t body_offset{0};
+  /// Leading body bytes taken back from the protocol buffer when the stream
+  /// was parked; their flow-control window was already given back.
+  std::size_t body_returned{0};
   bool headers_done{false};
   bool end_stream{false};
   bool dispatched{false};
@@ -136,8 +139,9 @@ public:
   XrdHttp2PendingResponse *pendingFor(int32_t stream_id);
   XrdHttp2PendingResponse &ensurePending(int32_t stream_id);
 
-  /// True when response DATA is buffered but could not be sent (flow control).
-  bool hasOutboundPending() const;
+  /// True when response DATA of stream_id (any stream if < 0) is buffered
+  /// but could not be sent (flow control).
+  bool hasOutboundPending(int32_t stream_id = -1) const;
 
   /// Drop pending responses whose DATA has fully been handed to nghttp2.
   void pruneFinishedResponses();
@@ -159,6 +163,10 @@ public:
 
   /// Move buffered body of the active stream into the protocol buffer.
   int injectPendingBody(XrdHttpProtocol &prot);
+
+  /// The protocol buffer holds the body of one stream at a time. Move what
+  /// is left of it back to the active stream (or drop it without one).
+  void stashBody(XrdHttpProtocol &prot);
 
   int flushSend(XrdHttpProtocol &prot);
 
@@ -242,6 +250,9 @@ private:
   int ensureSession(XrdHttpProtocol &prot, bool flush = true);
   int dispatchStream(int32_t stream_id, XrdHttpProtocol &prot, XrdLink *lp);
   int dispatchNext(XrdHttpProtocol &prot, XrdLink *lp);
+  bool pathBusy(const XrdHttp2StreamState &st) const;
+  std::deque<int32_t>::iterator nextDispatchable();
+  bool canDispatch();
   bool finishActiveIfIdle(XrdHttpProtocol &prot);
 
   void *session_;

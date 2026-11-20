@@ -2250,9 +2250,9 @@ bool XrdHttpProtocol::Http2OutboundPending() const
 {
   if (wireMode_ != XrdHttpWireMode::kHttp2)
     return false;
-  // Buffered DATA that flow control did not let flushSend() send. Frames
-  // nghttp2 itself still wants to write are flushed on the next drive().
-  return http2Session_.hasOutboundPending();
+  // Buffered DATA of this request's stream that flow control did not let
+  // flushSend() send. Other streams' backlog must not hold this one.
+  return http2Session_.hasOutboundPending(CurrentReq.http2StreamId);
 }
 
 namespace
@@ -3131,21 +3131,6 @@ void XrdHttpProtocol::lockHoldErase(const std::string &key)
 bool XrdHttpProtocol::lockHoldHas(const std::string &key) const
 {
   return lockHolds_.count(key) != 0;
-}
-
-void XrdHttpProtocol::fileCacheMarkVerifyPending()
-{
-  fileCaches_[fileCacheKey(CurrentReq)].verifyPending = true;
-}
-
-bool XrdHttpProtocol::fileCacheTakeVerifyPending()
-{
-  FileOpenCache *ent = fileCacheFind(fileCacheKey(CurrentReq));
-  if (!ent)
-    return false;
-  const bool pending = ent->verifyPending;
-  ent->verifyPending = false;
-  return pending;
 }
 
 void XrdHttpProtocol::fileCacheMarkReopenPending()

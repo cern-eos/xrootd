@@ -2339,7 +2339,6 @@ int XrdHttpReq::ProcessHTTPReq() {
               prot->SendSimpleResp(404, NULL, NULL, (char *) "Could not run request.", 0, false);
               return -1;
             }
-            prot->fileCacheMarkVerifyPending();
             return 0;
           } else if (prot->fileCacheCloseIfOpen()) {
             return 0;
@@ -2466,6 +2465,9 @@ int XrdHttpReq::ProcessHTTPReq() {
           // before NextReadList(), which errors on a re-issued list.
           if (prot->Http2OutboundPending()) {
             TRACEI(REQ, "HTTP/2 flow control: response window exhausted, parking read loop");
+            // The headers are out: resume in the read loop, not in case 4.
+            if (reqstate == 4)
+              reqstate = 5;
             return 1;
           }
 #endif
@@ -3625,7 +3627,7 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
       switch (reqstate) {
         case 0: // open, or kXR_stat verifying a cached open
         {
-          if (prot->fileCacheTakeVerifyPending()) {
+          if (ntohs(xrdreq.header.requestid) == kXR_stat) {
             bool stale = true;
             if (xrdresp == kXR_ok && iovN > 0 && iovP && iovP[0].iov_base) {
               long long stsize = 0;
@@ -3674,7 +3676,7 @@ int XrdHttpReq::PostProcessHTTPReq(bool final_) {
 
             // Always try to parse response.  In the case of a caching proxy, the open
             // will have created the file in cache
-            if (iovP[1].iov_len > 1) {
+            if (iovN > 1 && iovP[1].iov_len > 1) {
               TRACEI(REQ, "Stat for GET " << resource.c_str()
                         << " stat=" << (char *) iovP[1].iov_base);
 
