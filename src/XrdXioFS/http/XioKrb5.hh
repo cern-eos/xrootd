@@ -16,7 +16,8 @@ namespace XioFS {
 bool getSpnegoToken(const std::string &host,
                     const std::string &principal,
                     std::string &outTokenB64,
-                    std::string &err);
+                    std::string &err,
+                    const std::string &ccache = "");
 
 } // namespace XioFS
 

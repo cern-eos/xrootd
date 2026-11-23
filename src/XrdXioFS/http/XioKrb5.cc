@@ -55,8 +55,13 @@ namespace XioFS {
 bool getSpnegoToken(const std::string &host,
                     const std::string &principal,
                     std::string &outTokenB64,
-                    std::string &err)
+                    std::string &err,
+                    const std::string &ccache)
 {
+  if (!ccache.empty()) {
+    OM_uint32 cmin = 0;
+    gss_krb5_ccache_name(&cmin, ccache.c_str(), nullptr);
+  }
   std::string target = "HTTP@" + host;
   gss_buffer_desc nameBuf = {target.size(), const_cast<char *>(target.data())};
   gss_name_t targetName = GSS_C_NO_NAME;
@@ -127,8 +132,10 @@ bool getSpnegoToken(const std::string &host,
 bool getSpnegoToken(const std::string &host,
                     const std::string &principal,
                     std::string &outTokenB64,
-                    std::string &err)
+                    std::string &err,
+                    const std::string &)
 {
+  (void)principal;
   CredHandle cred{};
   TimeStamp lifetime{};
   SECURITY_STATUS ss = AcquireCredentialsHandleA(
@@ -173,7 +180,8 @@ bool getSpnegoToken(const std::string &host,
 bool getSpnegoToken(const std::string &,
                     const std::string &,
                     std::string &,
-                    std::string &err)
+                    std::string &err,
+                    const std::string &)
 {
   err = "Kerberos SPNEGO is not available on this platform";
   return false;

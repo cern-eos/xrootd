@@ -70,6 +70,12 @@ public:
     std::string negotiate;
     bool krb5{false};
     std::string principal;
+    /// Ticket cache (KRB5CCNAME). Empty uses the process default.
+    std::string krb5cc;
+    /// PEM client certificate and key. The key defaults to the cert file,
+    /// which is how a GSI proxy is stored.
+    std::string cert;
+    std::string key;
     /// Idle timeout when the request streams through on_chunk (reset as body
     /// bytes arrive). Total timeout for a response that is buffered instead.
     int timeout_ms{30000};

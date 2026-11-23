@@ -623,6 +623,19 @@ int Http2Session::tlsHandshake(std::string &err)
   } else {
     SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, nullptr);
   }
+  if (!opt_.cert.empty()) {
+    if (SSL_CTX_use_certificate_file(ctx, opt_.cert.c_str(), SSL_FILETYPE_PEM) != 1) {
+      SSL_CTX_free(ctx);
+      err = "failed to load client certificate";
+      return -EINVAL;
+    }
+    const char *key = opt_.key.empty() ? opt_.cert.c_str() : opt_.key.c_str();
+    if (SSL_CTX_use_PrivateKey_file(ctx, key, SSL_FILETYPE_PEM) != 1) {
+      SSL_CTX_free(ctx);
+      err = "failed to load client private key";
+      return -EINVAL;
+    }
+  }
 
   static const unsigned char alpn[] = {2, 'h', '2'};
   if (SSL_CTX_set_alpn_protos(ctx, alpn, sizeof(alpn)) != 0) {
@@ -871,7 +884,8 @@ int Http2Session::connect(const Url &url, const Options &opt, std::string &err)
   stop_ = false;
 
   if (opt_.krb5 && opt_.negotiate.empty()) {
-    if (!getSpnegoToken(url_.host, opt_.principal, opt_.negotiate, err)) {
+    if (!getSpnegoToken(url_.host, opt_.principal, opt_.negotiate, err,
+                        opt_.krb5cc)) {
       return -EACCES;
     }
   }
@@ -1291,6 +1305,64 @@ int planRedirect(const Url &current, const Http2Session::Options &opt,
     return -EPROTO;
   }
 
+  // Keep the caller's query, then let the redirect overwrite keys it sets.
+  // XRootD does the same when it follows an open redirect, which is how
+  // tpc.* survives the hop from the MGM onto the FST.
+  auto queryOf = [](const std::string &p) -> std::string {
+    const auto q = p.find('?');
+    return q == std::string::npos ? std::string() : p.substr(q + 1);
+  };
+  auto pathOnly = [](const std::string &p) -> std::string {
+    const auto q = p.find('?');
+    std::string out = q == std::string::npos ? p : p.substr(0, q);
+    return out.empty() ? "/" : out;
+  };
+  auto splitQuery =
+      [](const std::string &q) -> std::vector<std::pair<std::string, std::string>> {
+    std::vector<std::pair<std::string, std::string>> out;
+    size_t i = 0;
+    while (i < q.size()) {
+      size_t amp = q.find('&', i);
+      if (amp == std::string::npos)
+        amp = q.size();
+      const std::string part = q.substr(i, amp - i);
+      if (!part.empty()) {
+        const auto eq = part.find('=');
+        if (eq == std::string::npos)
+          out.emplace_back(part, "");
+        else
+          out.emplace_back(part.substr(0, eq), part.substr(eq + 1));
+      }
+      i = amp + 1;
+    }
+    return out;
+  };
+  std::vector<std::pair<std::string, std::string>> merged =
+      splitQuery(queryOf(req.path));
+  for (const auto &kv : splitQuery(queryOf(next.path))) {
+    bool found = false;
+    for (auto &have : merged) {
+      if (have.first == kv.first) {
+        have.second = kv.second;
+        found = true;
+        break;
+      }
+    }
+    if (!found)
+      merged.push_back(kv);
+  }
+  std::string merged_path = pathOnly(next.path);
+  if (!merged.empty()) {
+    merged_path.push_back('?');
+    for (size_t i = 0; i < merged.size(); ++i) {
+      if (i)
+        merged_path.push_back('&');
+      merged_path += merged[i].first;
+      merged_path.push_back('=');
+      merged_path += merged[i].second;
+    }
+  }
+
   HttpRequest next_req = req;
   const bool rewrite_get =
       resp.status == 303 ||
@@ -1302,7 +1374,7 @@ int planRedirect(const Url &current, const Http2Session::Options &opt,
     next_req.pull = nullptr;
     next_req.content_length = -1;
   }
-  next_req.path = next.path.empty() ? "/" : next.path;
+  next_req.path = merged_path.empty() ? "/" : merged_path;
   next_req.headers.erase(
       std::remove_if(next_req.headers.begin(), next_req.headers.end(),
                      [&](const std::pair<std::string, std::string> &h) {

@@ -9,6 +9,9 @@ add_library(XrdXioFS STATIC
   http/XioClient.cc
   http/XioBearer.cc
   http/XioKrb5.cc
+  server/XioLanes.cc
+  server/XioPosixFs.cc
+  server/XioServer.cc
 )
 
 # Linked into libXrdHttpParsockTpc.so. A static archive needs -fPIC or the
@@ -19,6 +22,7 @@ target_include_directories(XrdXioFS
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/http
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/server
   PRIVATE
     ${NGHTTP2_INCLUDE_DIR}
 )
@@ -56,6 +60,13 @@ endif()
 add_executable(xiofscli fuse/xiofscli.cc)
 target_link_libraries(xiofscli PRIVATE XrdXioFS)
 install(TARGETS xiofscli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+# HTTP/2 server. Does not link XrdServer, XrdHttpUtils, or the xroot protocol.
+add_executable(xio-server server/xio-server.cc)
+target_link_libraries(xio-server PRIVATE XrdXioFS)
+install(TARGETS xio-server RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES include/XioFs.hh include/xiofs_ops.h
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/xrootd)
 
 # TLS handshake agent: Linux only (kTLS + /dev/xiofsctl). RDMA/GPU stay stubs.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

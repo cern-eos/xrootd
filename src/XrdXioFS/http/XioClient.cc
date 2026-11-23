@@ -214,6 +214,18 @@ bool isDataOperation(const char *method,
   if (!strcasecmp(method, "HEAD") || !strcasecmp(method, "PUT") ||
       !strcasecmp(method, "PATCH"))
     return true;
+  // Session open and close must follow a redirect onto the FST that holds
+  // the file handle. A later POST to the original host would miss it.
+  if (!strcasecmp(method, "POST")) {
+    for (const auto &h : hdrs) {
+      if (!strcasecmp(h.first.c_str(), "x-xio-open") ||
+          !strcasecmp(h.first.c_str(), "x-xio-handle") ||
+          !strcasecmp(h.first.c_str(), "x-xio-close") ||
+          !strcasecmp(h.first.c_str(), "x-xio-sync"))
+        return true;
+    }
+    return false;
+  }
   if (strcasecmp(method, "GET"))
     return false;
   for (const auto &h : hdrs) {
@@ -376,6 +388,13 @@ int Client::doReq(const char *method, const std::string &rel,
                   const std::string &body, HttpResponse &resp, std::string &err)
 {
   return invoke(method, rel, hdrs, body, resp, err, {});
+}
+
+int Client::exchange(const std::string &method, const std::string &relpath,
+                     const std::vector<std::pair<std::string, std::string>> &headers,
+                     const std::string &body, HttpResponse &resp, std::string &err)
+{
+  return doReq(method.c_str(), relpath, headers, body, resp, err);
 }
 
 int Client::getattr(const std::string &relpath, Attr &out, std::string &err)

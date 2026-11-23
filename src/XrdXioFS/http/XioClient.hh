@@ -46,6 +46,11 @@ public:
   int open(const std::string &url, Http2Session::Options opt, std::string &err);
   void close();
 
+  // One HTTP/2 request. rc is 0 when a response arrived, including 4xx/5xx.
+  int exchange(const std::string &method, const std::string &relpath,
+               const std::vector<std::pair<std::string, std::string>> &headers,
+               const std::string &body, HttpResponse &resp, std::string &err);
+
   int getattr(const std::string &relpath, Attr &out, std::string &err);
   int readdir(const std::string &relpath,
               const std::function<void(DavEntry &&)> &on_entry,
