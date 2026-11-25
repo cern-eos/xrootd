@@ -160,8 +160,9 @@ public:
     if (!alive_.load())
       return;
     char c = 1;
-    if (wake_wr_ >= 0)
-      ::write(wake_wr_, &c, 1);
+    // EAGAIN means the pipe already holds a wakeup.
+    if (wake_wr_ >= 0 && ::write(wake_wr_, &c, 1) < 0)
+      return;
   }
 
 private:
