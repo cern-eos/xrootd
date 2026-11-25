@@ -1256,6 +1256,13 @@ TEST(XrdHttpTests, http2ClientSeesServerClose) {
         break;
     }
     nghttp2_session_del(sess);
+    // Closing with unread client frames queued makes the kernel send RST,
+    // and the client can then lose the 404. Send FIN and drain instead.
+    shutdown(fd, SHUT_WR);
+    timeval tv{5, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    while (recv(fd, buf, sizeof(buf), 0) > 0) {
+    }
     close(fd);
   });
 
