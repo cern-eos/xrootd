@@ -167,10 +167,8 @@ void XrdPollPoll::Disable(XrdPollInfo &pInfo, const char *etxt)
 //
    if (myerrno) Log.Emsg("Poll", myerrno, "disable link", pInfo.Link.ID);
       else {mySem.Wait();
-            if (etxt && Finish(pInfo, etxt))
-               {pInfo.inSched = true;
-                Sched.Schedule((XrdJob *)&pInfo.Link);
-               }
+            if (etxt && Finish(pInfo, etxt) && !pInfo.inSched.exchange(true))
+               Sched.Schedule((XrdJob *)&pInfo.Link);
            }
 }
   
@@ -331,10 +329,13 @@ void XrdPollPoll::Start(XrdSysSemaphore *syncsem, int &retcode)
                   if (!(pInfo->isEnabled))
                      Log.Emsg("Poll", "Disabled event occurred for", lp->ID);
                      else {pInfo->isEnabled = false;
-                           pInfo->inSched = true;
-                           lp->NextJob = jfirst; jfirst = (XrdJob *)lp;
-                           if (!jlast) jlast=(XrdJob *)lp;
-                           num2sched++;
+                           // Already on the work queue: queuing it again
+                           // would drop the jobs queued behind it.
+                           if (!pInfo->inSched.exchange(true))
+                              {lp->NextJob = jfirst; jfirst = (XrdJob *)lp;
+                               if (!jlast) jlast=(XrdJob *)lp;
+                               num2sched++;
+                              }
                            continue;
                           }
                  }
@@ -534,8 +535,8 @@ void XrdPollPoll::Restart(int ecode)
         {PollQ = pInfo->Next;
          pInfo->PollEnt->fd = -1;
          Finish(*pInfo, "Unexpected polling error");
-         pInfo->inSched = true;
-         Sched.Schedule((XrdJob *)&(pInfo->Link));
+         if (!pInfo->inSched.exchange(true))
+            Sched.Schedule((XrdJob *)&(pInfo->Link));
         }
    PollMutex.UnLock();
 }

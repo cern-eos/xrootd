@@ -145,10 +145,8 @@ void XrdPollE::Disable(XrdPollInfo &pInfo, const char *etxt)
 // Check if this link needs to be rescheduled. If so, the caller better have
 // the link opMutex lock held for this to work!
 //
-   if (etxt && Finish(pInfo, etxt))
-      {pInfo.inSched = true;
-       Sched.Schedule((XrdJob *)&pInfo.Link);
-      }
+   if (etxt && Finish(pInfo, etxt) && !pInfo.inSched.exchange(true))
+      Sched.Schedule((XrdJob *)&pInfo.Link);
 }
 
 /******************************************************************************/
@@ -339,15 +337,21 @@ void XrdPollE::Start(XrdSysSemaphore *syncsem, int &retcode)
             else if ((pInfo = (XrdPollInfo *)PollTab[i].data.ptr))
               {if (!(pInfo->isEnabled) && pInfo->FD >= 0)
                   remFD(*pInfo, PollTab[i].events);
-                  else {pInfo->isEnabled = 0;
-                        pInfo->inSched = true;
+                  else {// An Enable() racing the previous event can re-arm a
+                        // link that is still on the work queue. Queuing it
+                        // again rewrites its NextJob and drops the jobs
+                        // queued behind it; its pending DoIt re-arms it.
+                        const bool queued = pInfo->inSched.exchange(true);
+                        pInfo->isEnabled = 0;
                         if (!(PollTab[i].events & pollOK)
                         ||   (PollTab[i].events & POLLRDHUP))
                            Finish(*pInfo, x2Text(PollTab[i].events, eBuff));
-                        lp = &(pInfo->Link);
-                        lp->NextJob = jfirst; jfirst = (XrdJob *)lp;
-                        if (!jlast) jlast=(XrdJob *)lp;
-                        num2sched++;
+                        if (!queued)
+                           {lp = &(pInfo->Link);
+                            lp->NextJob = jfirst; jfirst = (XrdJob *)lp;
+                            if (!jlast) jlast=(XrdJob *)lp;
+                            num2sched++;
+                           }
 #ifndef EPOLLONESHOT
                         PollTab[i].events  = 0;
                         if (epoll_ctl(PollDfd,EPOLL_CTL_MOD,pInfo.FD,&PollTab[i]))
