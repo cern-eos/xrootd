@@ -313,7 +313,13 @@ const char *XrdNetAddr::Set(const char *hSpec, int pNum)
             n = getaddrinfo(iP, 0, hostHints, &rP);
             if (n || !rP)
                {if (rP) freeaddrinfo(rP);
-                if (n == EAI_NONAME && dynDNS)
+// Some resolvers (e.g. systemd-resolved) report a missing name as EAI_NODATA.
+//
+                if (dynDNS && (n == EAI_NONAME
+#ifdef EAI_NODATA
+                               || n == EAI_NODATA
+#endif
+                              ))
                    return "Dynamic name or service not yet registered";
                 return (n ? gai_strerror(n) : "host not found");
                }
